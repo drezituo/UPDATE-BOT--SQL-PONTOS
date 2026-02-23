@@ -1,6 +1,6 @@
 import discord
 from discord.ext import commands
-import sqlite3
+import psycopg2
 import os
 
 # ---------- INTENTS ----------
