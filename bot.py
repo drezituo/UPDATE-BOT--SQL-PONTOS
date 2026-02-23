@@ -92,7 +92,7 @@ async def pontos(ctx, membro: discord.Member = None):
     total = resultado[0] if resultado else 0
     await ctx.send(f"⭐ {membro.mention} tem **{total} pontos**")
 
-# ---------- COMMAND: PAGINATED RANKING COM TOP 10 INICIAL ----------
+# ---------- COMMAND: PAGINATED RANKING COM BOTÕES ----------
 @bot.command()
 async def ranking(ctx):
     cursor.execute("SELECT user_id, pontos FROM pontos ORDER BY pontos DESC")
@@ -111,16 +111,18 @@ async def ranking(ctx):
             self.page = 0
 
         @discord.ui.button(label="⬅️", style=discord.ButtonStyle.gray)
-        async def previous(self, button: Button, interaction):
+        async def previous(self, button: Button, interaction: discord.Interaction):
             if self.page > 0:
                 self.page -= 1
-                await interaction.response.edit_message(content=self.format_page(), view=self)
+                await interaction.response.defer()
+                await interaction.message.edit(content=self.format_page(), view=self)
 
         @discord.ui.button(label="➡️", style=discord.ButtonStyle.gray)
-        async def next(self, button: Button, interaction):
+        async def next(self, button: Button, interaction: discord.Interaction):
             if self.page < len(pages) - 1:
                 self.page += 1
-                await interaction.response.edit_message(content=self.format_page(), view=self)
+                await interaction.response.defer()
+                await interaction.message.edit(content=self.format_page(), view=self)
 
         def format_page(self):
             msg = f"**🏆 Ranking de Pontos (Página {self.page+1}/{len(pages)}):**\n"
@@ -131,7 +133,6 @@ async def ranking(ctx):
             return msg
 
     view = RankingView()
-    # Mostra sempre o Top 10 na primeira página
     await ctx.send(content=view.format_page(), view=view)
 
 # ---------- RUN ----------
