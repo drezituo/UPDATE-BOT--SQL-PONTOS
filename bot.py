@@ -106,33 +106,33 @@ async def ranking(ctx):
     pages = [resultados[i:i+per_page] for i in range(0, len(resultados), per_page)]
 
     class RankingView(View):
-        def __init__(self):
+        def __init__(self, ctx, pages):
             super().__init__(timeout=None)
+            self.ctx = ctx
+            self.pages = pages
             self.page = 0
 
         @discord.ui.button(label="⬅️", style=discord.ButtonStyle.gray)
         async def previous(self, button: Button, interaction: discord.Interaction):
             if self.page > 0:
                 self.page -= 1
-                await interaction.response.defer()
-                await interaction.message.edit(content=self.format_page(), view=self)
+                await interaction.response.edit_message(content=self.format_page(), view=self)
 
         @discord.ui.button(label="➡️", style=discord.ButtonStyle.gray)
         async def next(self, button: Button, interaction: discord.Interaction):
-            if self.page < len(pages) - 1:
+            if self.page < len(self.pages) - 1:
                 self.page += 1
-                await interaction.response.defer()
-                await interaction.message.edit(content=self.format_page(), view=self)
+                await interaction.response.edit_message(content=self.format_page(), view=self)
 
         def format_page(self):
-            msg = f"**🏆 Ranking de Pontos (Página {self.page+1}/{len(pages)}):**\n"
-            for i, (user_id, pontos) in enumerate(pages[self.page], start=self.page*per_page+1):
-                membro = ctx.guild.get_member(user_id)
+            msg = f"**🏆 Ranking de Pontos (Página {self.page+1}/{len(self.pages)}):**\n"
+            for i, (user_id, pontos) in enumerate(self.pages[self.page], start=self.page*per_page+1):
+                membro = self.ctx.guild.get_member(user_id)
                 nome = membro.display_name if membro else "Usuário desconhecido"
                 msg += f"{i}. {nome} — {pontos} pontos\n"
             return msg
 
-    view = RankingView()
+    view = RankingView(ctx, pages)
     await ctx.send(content=view.format_page(), view=view)
 
 # ---------- RUN ----------
