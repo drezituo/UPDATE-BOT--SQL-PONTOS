@@ -10,18 +10,22 @@ intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ---------- DATABASE ----------
-conn = sqlite3.connect("pontos.db")
+# ---------- DATABASE (POSTGRESQL - RAILWAY) ----------
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+conn = psycopg2.connect(DATABASE_URL)
 cursor = conn.cursor()
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS pontos (
-    user_id INTEGER PRIMARY KEY,
+    user_id BIGINT PRIMARY KEY,
     nome TEXT,
     pontos INTEGER
 )
 """)
 conn.commit()
+
 
 # ---------- EVENTS ----------
 @bot.event
