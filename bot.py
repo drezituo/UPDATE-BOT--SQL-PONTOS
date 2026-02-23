@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands
+from discord.ui import View, Button
 import os
 import psycopg2
 
@@ -91,23 +92,47 @@ async def pontos(ctx, membro: discord.Member = None):
     total = resultado[0] if resultado else 0
     await ctx.send(f"⭐ {membro.mention} tem **{total} pontos**")
 
+# ---------- COMMAND: PAGINATED RANKING COM TOP 10 INICIAL ----------
 @bot.command()
 async def ranking(ctx):
-    # Todos os usuários, sem limite
-    cursor.execute(
-        "SELECT nome, pontos FROM pontos ORDER BY pontos DESC"
-    )
+    cursor.execute("SELECT user_id, pontos FROM pontos ORDER BY pontos DESC")
     resultados = cursor.fetchall()
 
     if not resultados:
         await ctx.send("⚠️ Ainda não há pontos registrados.")
         return
 
-    mensagem = "**🏆 Ranking de Pontos:**\n"
-    for i, (nome, pontos) in enumerate(resultados, start=1):
-        mensagem += f"{i}. {nome} — {pontos} pontos\n"
+    per_page = 10
+    pages = [resultados[i:i+per_page] for i in range(0, len(resultados), per_page)]
 
-    await ctx.send(mensagem)
+    class RankingView(View):
+        def __init__(self):
+            super().__init__(timeout=None)
+            self.page = 0
+
+        @discord.ui.button(label="⬅️", style=discord.ButtonStyle.gray)
+        async def previous(self, button: Button, interaction):
+            if self.page > 0:
+                self.page -= 1
+                await interaction.response.edit_message(content=self.format_page(), view=self)
+
+        @discord.ui.button(label="➡️", style=discord.ButtonStyle.gray)
+        async def next(self, button: Button, interaction):
+            if self.page < len(pages) - 1:
+                self.page += 1
+                await interaction.response.edit_message(content=self.format_page(), view=self)
+
+        def format_page(self):
+            msg = f"**🏆 Ranking de Pontos (Página {self.page+1}/{len(pages)}):**\n"
+            for i, (user_id, pontos) in enumerate(pages[self.page], start=self.page*per_page+1):
+                membro = ctx.guild.get_member(user_id)
+                nome = membro.display_name if membro else "Usuário desconhecido"
+                msg += f"{i}. {nome} — {pontos} pontos\n"
+            return msg
+
+    view = RankingView()
+    # Mostra sempre o Top 10 na primeira página
+    await ctx.send(content=view.format_page(), view=view)
 
 # ---------- RUN ----------
 bot.run(os.getenv("DISCORD_TOKEN"))
