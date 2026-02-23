@@ -1,13 +1,14 @@
 import discord
 from discord.ext import commands
-import psycopg2
 import os
+import psycopg2
 
-# ---------- INTENTS ----------
+# INTENTS
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
+# BOT COM COMMANDS
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ---------- DATABASE (POSTGRESQL - RAILWAY) ----------
