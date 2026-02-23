@@ -7,13 +7,11 @@ import psycopg2
 # ---------- INTENTS ----------
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True
-
+intents.members = True  # essencial para pegar membros
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ---------- DATABASE (POSTGRESQL - RAILWAY) ----------
 DATABASE_URL = os.getenv("DATABASE_URL")
-
 conn = psycopg2.connect(DATABASE_URL)
 cursor = conn.cursor()
 
@@ -82,17 +80,15 @@ async def removepontos(ctx, membro: discord.Member, quantidade: int):
 @bot.command()
 async def pontos(ctx, membro: discord.Member = None):
     membro = membro or ctx.author
-
     cursor.execute(
         "SELECT pontos FROM pontos WHERE user_id = %s",
         (membro.id,)
     )
     resultado = cursor.fetchone()
-
     total = resultado[0] if resultado else 0
     await ctx.send(f"⭐ {membro.mention} tem **{total} pontos**")
 
-# ---------- COMMAND: PAGINATED RANKING COM BOTÕES ----------
+# ---------- PAGINATED RANKING ----------
 @bot.command()
 async def ranking(ctx):
     cursor.execute("SELECT user_id, pontos FROM pontos ORDER BY pontos DESC")
@@ -106,9 +102,9 @@ async def ranking(ctx):
     pages = [resultados[i:i+per_page] for i in range(0, len(resultados), per_page)]
 
     class RankingView(View):
-        def __init__(self, ctx, pages):
+        def __init__(self, bot, pages):
             super().__init__(timeout=None)
-            self.ctx = ctx
+            self.bot = bot
             self.pages = pages
             self.page = 0
 
@@ -116,24 +112,27 @@ async def ranking(ctx):
         async def previous(self, button: Button, interaction: discord.Interaction):
             if self.page > 0:
                 self.page -= 1
-                await interaction.response.edit_message(content=self.format_page(), view=self)
+                await interaction.response.edit_message(content=await self.format_page(), view=self)
 
         @discord.ui.button(label="➡️", style=discord.ButtonStyle.gray)
         async def next(self, button: Button, interaction: discord.Interaction):
             if self.page < len(self.pages) - 1:
                 self.page += 1
-                await interaction.response.edit_message(content=self.format_page(), view=self)
+                await interaction.response.edit_message(content=await self.format_page(), view=self)
 
-        def format_page(self):
+        async def format_page(self):
             msg = f"**🏆 Ranking de Pontos (Página {self.page+1}/{len(self.pages)}):**\n"
             for i, (user_id, pontos) in enumerate(self.pages[self.page], start=self.page*per_page+1):
-                membro = self.ctx.guild.get_member(user_id)
-                nome = membro.display_name if membro else "Usuário desconhecido"
+                try:
+                    membro = await self.bot.fetch_user(user_id)
+                    nome = membro.name
+                except:
+                    nome = "Usuário desconhecido"
                 msg += f"{i}. {nome} — {pontos} pontos\n"
             return msg
 
-    view = RankingView(ctx, pages)
-    await ctx.send(content=view.format_page(), view=view)
+    view = RankingView(bot, pages)
+    await ctx.send(content=await view.format_page(), view=view)
 
 # ---------- RUN ----------
 bot.run(os.getenv("DISCORD_TOKEN"))
