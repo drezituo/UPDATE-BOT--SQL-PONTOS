@@ -120,6 +120,44 @@ async def pontos(ctx, membro: discord.Member = None):
     await ctx.send(f"⭐ {membro.display_name} tem **{total} pontos**")
 
 # =========================
+# 🆕 COMANDO DE RANKING NORMAL
+# =========================
+
+@bot.command()
+async def ranking(ctx):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT user_id, pontos FROM pontos ORDER BY pontos DESC")
+    dados = cursor.fetchall()
+
+    if not dados:
+        await ctx.send("⚠️ Nenhum ponto registrado ainda.")
+        cursor.close()
+        conn.close()
+        return
+
+    msg = "**🏆 Ranking de Pontos:**\n"
+
+    for i, (uid, pts) in enumerate(dados, 1):
+        membro = ctx.guild.get_member(uid)
+        nome = membro.display_name if membro else f"ID:{uid}"
+
+        linha = f"{i}. {nome} — {pts} pontos\n"
+
+        if len(msg) + len(linha) > 2000:
+            await ctx.send(msg)
+            msg = ""
+
+        msg += linha
+
+    if msg:
+        await ctx.send(msg)
+
+    cursor.close()
+    conn.close()
+
+# =========================
 # 🆕 SOLO REBIRTH
 # =========================
 
