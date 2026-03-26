@@ -21,7 +21,7 @@ def get_connection():
 conn = get_connection()
 cursor = conn.cursor()
 
-# Pontos normais (já tens)
+# Pontos normais
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS pontos (
     user_id BIGINT PRIMARY KEY,
@@ -55,7 +55,7 @@ async def on_ready():
     print(f"✅ Bot ligado como {bot.user}")
 
 # =========================
-# 🔥 SISTEMA ANTIGO (INALTERADO)
+# 🔥 SISTEMA ANTIGO
 # =========================
 
 @bot.command()
@@ -120,9 +120,8 @@ async def pontos(ctx, membro: discord.Member = None):
     await ctx.send(f"⭐ {membro.display_name} tem **{total} pontos**")
 
 # =========================
-# 🆕 COMANDO DE RANKING NORMAL
+# 🆕 RANKING PONTOS NORMAL
 # =========================
-
 @bot.command()
 async def ranking(ctx):
     conn = get_connection()
@@ -160,7 +159,6 @@ async def ranking(ctx):
 # =========================
 # 🆕 SOLO REBIRTH
 # =========================
-
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def addsolo(ctx, membro: discord.Member, quantidade: int):
@@ -254,7 +252,6 @@ async def rankingsolo(ctx):
 # =========================
 # 🆕 TEAM REBIRTH
 # =========================
-
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def addteam(ctx, membro: discord.Member, quantidade: int):
@@ -344,6 +341,74 @@ async def rankingteam(ctx):
 
     cursor.close()
     conn.close()
+
+# =========================
+# 🆕 COMANDO STATUS
+# =========================
+@bot.command()
+async def status(ctx, membro: discord.Member = None):
+    membro = membro or ctx.author
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # --- PONTOS NORMAIS ---
+    cursor.execute("SELECT pontos FROM pontos WHERE user_id = %s", (membro.id,))
+    r = cursor.fetchone()
+    pontos = r[0] if r else 0
+
+    # Ranking pontos normais
+    cursor.execute("SELECT user_id FROM pontos ORDER BY pontos DESC")
+    ranking_dados = [uid for (uid,) in cursor.fetchall()]
+    rank_pontos = ranking_dados.index(membro.id) + 1 if membro.id in ranking_dados else "N/A"
+
+    # --- PONTOS SOLO ---
+    cursor.execute("SELECT pontos FROM pontos_solo WHERE user_id = %s", (membro.id,))
+    r = cursor.fetchone()
+    pontos_solo = r[0] if r else 0
+
+    cursor.execute("SELECT user_id FROM pontos_solo ORDER BY pontos DESC")
+    ranking_dados_solo = [uid for (uid,) in cursor.fetchall()]
+    rank_solo = ranking_dados_solo.index(membro.id) + 1 if membro.id in ranking_dados_solo else "N/A"
+
+    # --- PONTOS TEAM ---
+    cursor.execute("SELECT pontos FROM pontos_team WHERE user_id = %s", (membro.id,))
+    r = cursor.fetchone()
+    pontos_team = r[0] if r else 0
+
+    cursor.execute("SELECT user_id FROM pontos_team ORDER BY pontos DESC")
+    ranking_dados_team = [uid for (uid,) in cursor.fetchall()]
+    rank_team = ranking_dados_team.index(membro.id) + 1 if membro.id in ranking_dados_team else "N/A"
+
+    cursor.close()
+    conn.close()
+
+    # --- CRIAR EMBED ---
+    embed = discord.Embed(
+        title=f"📊 Status de {membro.display_name}",
+        color=discord.Color.blurple()
+    )
+    embed.set_thumbnail(url=membro.display_avatar.url)
+
+    embed.add_field(
+        name="⭐ Presenças",
+        value=f"**{pontos:02} presenças**\n🏅 Classificação: {rank_pontos}",
+        inline=False
+    )
+    embed.add_field(
+        name="🔥 Solo Rebirth",
+        value=f"**{pontos_solo:02} vitórias solo**\n🏅 Classificação: {rank_solo}",
+        inline=False
+    )
+    embed.add_field(
+        name="👥 Team Rebirth",
+        value=f"**{pontos_team:02} vitórias team**\n🏅 Classificação: {rank_team}",
+        inline=False
+    )
+
+    embed.set_footer(text="💠 Status completo do jogador")
+
+    await ctx.send(embed=embed)
 
 # ---------- RUN ----------
 bot.run(TOKEN)
