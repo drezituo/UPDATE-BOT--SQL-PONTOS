@@ -1,74 +1,86 @@
-# bot.py
 import discord
 from discord.ext import commands
-import psycopg2
-from psycopg2.extras import RealDictCursor
+from discord.ui import View, Button
 import os
+import psycopg2
 
-# ---------- CONFIGURAÇÃO ----------
-TOKEN = os.getenv("DISCORD_TOKEN")
-DATABASE_URL = os.getenv("DATABASE_URL")  # ex: postgres://user:pass@host:port/dbname
-
+# ---------- INTENTS ----------
 intents = discord.Intents.default()
+intents.message_content = True
 intents.members = True
+
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ---------- CONEXÃO COM O BANCO ----------
-def get_connection():
-    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+# ---------- DATABASE ----------
+# ---------- DATABASE (POSTGRESQL - RAILWAY) ----------
+DATABASE_URL = os.getenv("DATABASE_URL")
+conn = psycopg2.connect(DATABASE_URL)
+cursor = conn.cursor()
+@@ -68,50 +68,31 @@ async def pontos(ctx, membro: discord.Member = None):
+    total = resultado[0] if resultado else 0
+    await ctx.send(f"⭐ {membro.mention} tem **{total} pontos**")
 
-# ---------- COMANDOS ----------
-@bot.command(name="pontos")
-async def pontos(ctx, membro: discord.Member = None):
-    membro = membro or ctx.author
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT pontos FROM pontos WHERE user_id = %s", (membro.id,))
-        resultado = cursor.fetchone()
-        pontos = resultado['pontos'] if resultado else 0
-        await ctx.send(f"{membro.display_name} tem {pontos} ponto(s).")
-    except Exception as e:
-        await ctx.send(f"Ocorreu um erro: {e}")
-    finally:
-        cursor.close()
-        conn.close()
-
-@bot.command(name="ranking")
+# ---------- PAGINATED RANKING ----------
+# ---------- RANKING ----------
+@bot.command()
 async def ranking(ctx):
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT user_id, pontos FROM pontos ORDER BY pontos DESC")
-        resultados = cursor.fetchall()
-        
-        mensagem = "**🏆 Ranking de Pontos:**\n"
-        contador = 1
+    cursor.execute("SELECT user_id, pontos FROM pontos ORDER BY pontos DESC")
+    resultados = cursor.fetchall()
 
-        for r in resultados:
-            user_id = r['user_id']
-            pontos = r['pontos']
-            user = ctx.guild.get_member(user_id)
-            nome = user.display_name if user else f"ID:{user_id}"
-            linha = f"{contador}. {nome} — {pontos} ponto(s)\n"
-            
-            if len(mensagem) + len(linha) > 2000:
-                await ctx.send(mensagem)
-                mensagem = ""
-            mensagem += linha
-            contador += 1
+    if not resultados:
+        await ctx.send("⚠️ Ainda não há pontos registrados.")
+        return
 
-        if mensagem:
+    per_page = 10
+    pages = [resultados[i:i+per_page] for i in range(0, len(resultados), per_page)]
+
+    class RankingView(View):
+        def __init__(self, guild):
+            super().__init__(timeout=None)
+            self.guild = guild
+            self.page = 0
+
+        async def interaction_check(self, interaction: discord.Interaction) -> bool:
+            # Permitir todos a interagir
+            return True
+
+        def format_page(self):
+            msg = f"**🏆 Ranking de Pontos (Página {self.page+1}/{len(pages)}):**\n"
+            for i, (user_id, pontos) in enumerate(pages[self.page], start=self.page*per_page+1):
+                membro = self.guild.get_member(user_id)
+                nome = membro.display_name if membro else "Usuário desconhecido"
+                msg += f"{i}. {nome} — {pontos} pontos\n"
+            return msg
+
+        @discord.ui.button(label="⬅️", style=discord.ButtonStyle.gray)
+        async def previous(self, button: Button, interaction: discord.Interaction):
+            if self.page > 0:
+                self.page -= 1
+                await interaction.response.edit_message(content=self.format_page(), view=self)
+
+        @discord.ui.button(label="➡️", style=discord.ButtonStyle.gray)
+        async def next(self, button: Button, interaction: discord.Interaction):
+            if self.page < len(pages) - 1:
+                self.page += 1
+                await interaction.response.edit_message(content=self.format_page(), view=self)
+
+    view = RankingView(ctx.guild)
+    await ctx.send(content=view.format_page(), view=view)
+    # Construir mensagens respeitando limite de 2000 caracteres
+    per_message = 2000
+    mensagem = "**🏆 Ranking de Pontos:**\n"
+    for i, (user_id, pontos) in enumerate(resultados, start=1):
+        membro = ctx.guild.get_member(user_id)
+        nome = membro.display_name if membro else "Usuário desconhecido"
+        linha = f"{i}. {nome} — {pontos} pontos\n"
+
+        if len(mensagem) + len(linha) > per_message:
             await ctx.send(mensagem)
-    except Exception as e:
-        await ctx.send(f"Ocorreu um erro: {e}")
-    finally:
-        cursor.close()
-        conn.close()
+            mensagem = ""
+        mensagem += linha
 
-# ---------- INICIAR BOT ----------
-@bot.event
-async def on_ready():
-    print(f"Bot conectado como {bot.user}")
+    if mensagem:
+        await ctx.send(mensagem)
 
-bot.run(TOKEN)
+# ---------- RUN ----------
+bot.run(os.getenv("DISCORD_TOKEN"))
