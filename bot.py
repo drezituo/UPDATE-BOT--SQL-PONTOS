@@ -1,86 +1,150 @@
 import discord
 from discord.ext import commands
-from discord.ui import View, Button
-import os
 import psycopg2
+import os
 
-# ---------- INTENTS ----------
+# ---------- CONFIG ----------
+TOKEN = os.getenv("DISCORD_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
+
 intents = discord.Intents.default()
-intents.message_content = True
 intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ---------- DATABASE ----------
-# ---------- DATABASE (POSTGRESQL - RAILWAY) ----------
-DATABASE_URL = os.getenv("DATABASE_URL")
-conn = psycopg2.connect(DATABASE_URL)
-cursor = conn.cursor()
-@@ -68,50 +68,31 @@ async def pontos(ctx, membro: discord.Member = None):
-    total = resultado[0] if resultado else 0
-    await ctx.send(f"⭐ {membro.mention} tem **{total} pontos**")
+def get_connection():
+    return psycopg2.connect(DATABASE_URL)
 
-# ---------- PAGINATED RANKING ----------
+# Criar tabela (não apaga dados existentes)
+conn = get_connection()
+cursor = conn.cursor()
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS pontos (
+    user_id BIGINT PRIMARY KEY,
+    pontos INTEGER DEFAULT 0
+)
+""")
+conn.commit()
+cursor.close()
+conn.close()
+
+# ---------- EVENTS ----------
+@bot.event
+async def on_ready():
+    print(f"✅ Bot ligado como {bot.user}")
+
+# ---------- ADD PONTOS ----------
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def addpontos(ctx, membro: discord.Member, quantidade: int):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT pontos FROM pontos WHERE user_id = %s", (membro.id,))
+    resultado = cursor.fetchone()
+
+    if resultado:
+        novo_total = resultado[0] + quantidade
+        cursor.execute(
+            "UPDATE pontos SET pontos = %s WHERE user_id = %s",
+            (novo_total, membro.id)
+        )
+    else:
+        novo_total = quantidade
+        cursor.execute(
+            "INSERT INTO pontos (user_id, pontos) VALUES (%s, %s)",
+            (membro.id, quantidade)
+        )
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    await ctx.send(f"✅ {membro.display_name} agora tem **{novo_total} pontos**")
+
+# ---------- REMOVE PONTOS ----------
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def removepontos(ctx, membro: discord.Member, quantidade: int):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT pontos FROM pontos WHERE user_id = %s", (membro.id,))
+    resultado = cursor.fetchone()
+
+    if not resultado:
+        await ctx.send("⚠️ Esse usuário não tem pontos.")
+        cursor.close()
+        conn.close()
+        return
+
+    novo_total = max(resultado[0] - quantidade, 0)
+
+    cursor.execute(
+        "UPDATE pontos SET pontos = %s WHERE user_id = %s",
+        (novo_total, membro.id)
+    )
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    await ctx.send(f"❌ {membro.display_name} agora tem **{novo_total} pontos**")
+
+# ---------- VER PONTOS ----------
+@bot.command()
+async def pontos(ctx, membro: discord.Member = None):
+    membro = membro or ctx.author
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT pontos FROM pontos WHERE user_id = %s", (membro.id,))
+    resultado = cursor.fetchone()
+
+    total = resultado[0] if resultado else 0
+
+    cursor.close()
+    conn.close()
+
+    await ctx.send(f"⭐ {membro.display_name} tem **{total} pontos**")
+
 # ---------- RANKING ----------
 @bot.command()
 async def ranking(ctx):
+    conn = get_connection()
+    cursor = conn.cursor()
+
     cursor.execute("SELECT user_id, pontos FROM pontos ORDER BY pontos DESC")
     resultados = cursor.fetchall()
 
     if not resultados:
         await ctx.send("⚠️ Ainda não há pontos registrados.")
+        cursor.close()
+        conn.close()
         return
 
-    per_page = 10
-    pages = [resultados[i:i+per_page] for i in range(0, len(resultados), per_page)]
-
-    class RankingView(View):
-        def __init__(self, guild):
-            super().__init__(timeout=None)
-            self.guild = guild
-            self.page = 0
-
-        async def interaction_check(self, interaction: discord.Interaction) -> bool:
-            # Permitir todos a interagir
-            return True
-
-        def format_page(self):
-            msg = f"**🏆 Ranking de Pontos (Página {self.page+1}/{len(pages)}):**\n"
-            for i, (user_id, pontos) in enumerate(pages[self.page], start=self.page*per_page+1):
-                membro = self.guild.get_member(user_id)
-                nome = membro.display_name if membro else "Usuário desconhecido"
-                msg += f"{i}. {nome} — {pontos} pontos\n"
-            return msg
-
-        @discord.ui.button(label="⬅️", style=discord.ButtonStyle.gray)
-        async def previous(self, button: Button, interaction: discord.Interaction):
-            if self.page > 0:
-                self.page -= 1
-                await interaction.response.edit_message(content=self.format_page(), view=self)
-
-        @discord.ui.button(label="➡️", style=discord.ButtonStyle.gray)
-        async def next(self, button: Button, interaction: discord.Interaction):
-            if self.page < len(pages) - 1:
-                self.page += 1
-                await interaction.response.edit_message(content=self.format_page(), view=self)
-
-    view = RankingView(ctx.guild)
-    await ctx.send(content=view.format_page(), view=view)
-    # Construir mensagens respeitando limite de 2000 caracteres
-    per_message = 2000
     mensagem = "**🏆 Ranking de Pontos:**\n"
+
     for i, (user_id, pontos) in enumerate(resultados, start=1):
         membro = ctx.guild.get_member(user_id)
-        nome = membro.display_name if membro else "Usuário desconhecido"
+        nome = membro.display_name if membro else f"ID:{user_id}"
+
         linha = f"{i}. {nome} — {pontos} pontos\n"
 
-        if len(mensagem) + len(linha) > per_message:
+        # Dividir mensagens se passar limite do Discord
+        if len(mensagem) + len(linha) > 2000:
             await ctx.send(mensagem)
             mensagem = ""
+
         mensagem += linha
 
     if mensagem:
         await ctx.send(mensagem)
 
+    cursor.close()
+    conn.close()
+
 # ---------- RUN ----------
-bot.run(os.getenv("DISCORD_TOKEN"))
+bot.run(TOKEN)
