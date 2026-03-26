@@ -9,6 +9,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 intents = discord.Intents.default()
 intents.members = True
+intents.message_content = True  # 🔥 ESSENCIAL PARA COMANDOS
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -16,7 +17,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 def get_connection():
     return psycopg2.connect(DATABASE_URL)
 
-# Criar tabela (não apaga dados existentes)
+# Criar tabela (não apaga dados)
 conn = get_connection()
 cursor = conn.cursor()
 cursor.execute("""
@@ -29,10 +30,15 @@ conn.commit()
 cursor.close()
 conn.close()
 
-# ---------- EVENTS ----------
+# ---------- EVENT ----------
 @bot.event
 async def on_ready():
     print(f"✅ Bot ligado como {bot.user}")
+
+# ---------- TESTE (opcional, podes apagar depois) ----------
+@bot.command()
+async def teste(ctx):
+    await ctx.send("🔥 Bot está a funcionar!")
 
 # ---------- ADD PONTOS ----------
 @bot.command()
@@ -63,7 +69,7 @@ async def addpontos(ctx, membro: discord.Member, quantidade: int):
 
     await ctx.send(f"✅ {membro.display_name} agora tem **{novo_total} pontos**")
 
-# ---------- REMOVE PONTOS ----------
+# ---------- REMOVER PONTOS ----------
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def removepontos(ctx, membro: discord.Member, quantidade: int):
@@ -133,7 +139,7 @@ async def ranking(ctx):
 
         linha = f"{i}. {nome} — {pontos} pontos\n"
 
-        # Dividir mensagens se passar limite do Discord
+        # Divide se passar limite do Discord
         if len(mensagem) + len(linha) > 2000:
             await ctx.send(mensagem)
             mensagem = ""
