@@ -1,8 +1,10 @@
 import discord
 from discord.ext import commands
+import os
 import psycopg2
 import os
 
+# ---------- INTENTS ----------
 # ---------------- INTENTS ----------------
 intents = discord.Intents.default()
 intents.message_content = True
@@ -10,8 +12,22 @@ intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# ---------- DATABASE (POSTGRESQL - RAILWAY) ----------
 # ---------------- DATABASE ----------------
 DATABASE_URL = os.getenv("DATABASE_URL")
+conn = psycopg2.connect(DATABASE_URL)
+cursor = conn.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS pontos (
+    user_id BIGINT PRIMARY KEY,
+    nome TEXT,
+    pontos INTEGER
+)
+""")
+conn.commit()
+
+# ---------- EVENTS ----------
 
 conn = None
 cursor = None
@@ -52,11 +68,13 @@ except:
 async def on_ready():
     print(f"✅ Bot ligado como {bot.user}")
 
+# ---------- COMMANDS ----------
 
 # ---------------- ADD PONTOS ----------------
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def addpontos(ctx, membro: discord.Member, quantidade: int):
+    cursor.execute("SELECT pontos FROM pontos WHERE user_id = %s", (membro.id,))
 
     cursor = get_db()
 
@@ -69,6 +87,8 @@ async def addpontos(ctx, membro: discord.Member, quantidade: int):
 
     if resultado:
         novo_total = resultado[0] + quantidade
+        cursor.execute("UPDATE pontos SET pontos = %s, nome = %s WHERE user_id = %s",
+                       (novo_total, membro.display_name, membro.id))
 
         cursor.execute(
             "UPDATE pontos SET pontos = %s WHERE user_id = %s",
@@ -77,6 +97,8 @@ async def addpontos(ctx, membro: discord.Member, quantidade: int):
 
     else:
         novo_total = quantidade
+        cursor.execute("INSERT INTO pontos (user_id, nome, pontos) VALUES (%s, %s, %s)",
+                       (membro.id, membro.display_name, quantidade))
 
         cursor.execute(
             "INSERT INTO pontos (user_id, pontos) VALUES (%s, %s)",
@@ -84,6 +106,7 @@ async def addpontos(ctx, membro: discord.Member, quantidade: int):
         )
 
     conn.commit()
+    await ctx.send(f"✅ {membro.mention} agora tem **{novo_total} pontos**")
 
     await ctx.send(f"✅ {membro.display_name} agora tem **{novo_total} pontos**")
 
@@ -92,6 +115,7 @@ async def addpontos(ctx, membro: discord.Member, quantidade: int):
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def removepontos(ctx, membro: discord.Member, quantidade: int):
+    cursor.execute("SELECT pontos FROM pontos WHERE user_id = %s", (membro.id,))
 
     cursor = get_db()
 
@@ -107,6 +131,8 @@ async def removepontos(ctx, membro: discord.Member, quantidade: int):
         return
 
     novo_total = max(resultado[0] - quantidade, 0)
+    cursor.execute("UPDATE pontos SET pontos = %s, nome = %s WHERE user_id = %s",
+                   (novo_total, membro.display_name, membro.id))
 
     cursor.execute(
         "UPDATE pontos SET pontos = %s WHERE user_id = %s",
@@ -114,6 +140,7 @@ async def removepontos(ctx, membro: discord.Member, quantidade: int):
     )
 
     conn.commit()
+    await ctx.send(f"❌ {membro.mention} agora tem **{novo_total} pontos**")
 
     await ctx.send(f"❌ {membro.display_name} agora tem **{novo_total} pontos**")
 
@@ -125,6 +152,7 @@ async def pontos(ctx, membro: discord.Member = None):
     cursor = get_db()
 
     membro = membro or ctx.author
+    cursor.execute("SELECT pontos FROM pontos WHERE user_id = %s", (membro.id,))
 
     cursor.execute(
         "SELECT pontos FROM pontos WHERE user_id = %s",
@@ -134,13 +162,16 @@ async def pontos(ctx, membro: discord.Member = None):
     resultado = cursor.fetchone()
 
     total = resultado[0] if resultado else 0
+    await ctx.send(f"⭐ {membro.mention} tem **{total} pontos**")
 
+# ---------- RANKING ----------
     await ctx.send(f"⭐ {membro.display_name} tem **{total} pontos**")
 
 
 # ---------------- RANKING ----------------
 @bot.command()
 async def ranking(ctx):
+    cursor.execute("SELECT user_id, pontos FROM pontos ORDER BY pontos DESC")
 
     cursor = get_db()
 
@@ -154,6 +185,8 @@ async def ranking(ctx):
         await ctx.send("⚠️ Ainda não há pontos registrados.")
         return
 
+    # Construir mensagens respeitando limite de 2000 caracteres
+    per_message = 2000
     mensagem = "**🏆 Ranking de Pontos:**\n"
 
     for i, (user_id, pontos) in enumerate(resultados, start=1):
@@ -164,6 +197,7 @@ async def ranking(ctx):
 
         linha = f"{i}. {nome} — {pontos} pontos\n"
 
+        if len(mensagem) + len(linha) > per_message:
         if len(mensagem) + len(linha) > 2000:
             await ctx.send(mensagem)
             mensagem = ""
@@ -173,6 +207,7 @@ async def ranking(ctx):
     if mensagem:
         await ctx.send(mensagem)
 
+# ---------- RUN ----------
 
 # ---------------- RUN BOT ----------------
 bot.run(os.getenv("DISCORD_TOKEN"))
