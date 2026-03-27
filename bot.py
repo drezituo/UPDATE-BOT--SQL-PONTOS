@@ -76,11 +76,6 @@ async def update_member_tier_role(membro: discord.Member, pontos_normais: int):
         await membro.add_roles(correct_role, reason="Atualização automática de tier por pontos")
 
 # ---------- ACTIVITY HELPERS ----------
-def formatar_data(dt):
-    if not dt:
-        return "Sem registo"
-    return dt.strftime("%d/%m/%Y %H:%M")
-
 def formatar_inatividade(dt):
     if not dt:
         return "Sem atividade registada"
@@ -592,7 +587,7 @@ async def rankingtempo(ctx):
     conn.close()
 
 # =========================
-# 🆕 STATUS (COM TIERS + ATIVIDADE + TEMPO)
+# 🆕 STATUS (COM TIERS + INATIVIDADE + TEMPO)
 # =========================
 @bot.command()
 async def status(ctx, membro: discord.Member = None):
@@ -689,7 +684,7 @@ async def status(ctx, membro: discord.Member = None):
     tier_team, nome_tier_team, barra_team, prog_team = get_tier_data(pontos_team)
 
     embed = discord.Embed(
-        title="🎮┃PERFIL DE COMBATE",
+        title="🎮┃PERFIL DE JOGADOR",
         description=f"**{membro.display_name}**",
         color=0x2b2d31
     )
@@ -741,7 +736,6 @@ async def status(ctx, membro: discord.Member = None):
     embed.add_field(
         name="🕒 ATIVIDADE",
         value=(
-            f"Última presença: **{formatar_data(ultima_atividade)}**\n"
             f"Inativo há: **{formatar_inatividade(ultima_atividade)}**"
         ),
         inline=False
