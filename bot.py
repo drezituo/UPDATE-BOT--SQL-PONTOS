@@ -667,26 +667,44 @@ async def status(ctx, membro: discord.Member = None):
             progresso = 0
 
         emojis_tier = {
-            1: ("🟩", "⬛", "BRONZE"),
-            2: ("🟦", "⬛", "PRATA"),
-            3: ("🟨", "⬛", "OURO"),
-            4: ("🟧", "⬛", "PLATINA"),
-            5: ("🟥", "⬛", "DIAMANTE"),
+            1: ("🟩", "⬛", "BRONZE", "🟩┃BRONZE"),
+            2: ("🟦", "⬛", "PRATA", "🟦┃PRATA"),
+            3: ("🟨", "⬛", "OURO", "🟨┃OURO"),
+            4: ("🟧", "⬛", "PLATINA", "🟧┃PLATINA"),
+            5: ("🟥", "⬛", "DIAMANTE", "🟥┃DIAMANTE"),
         }
 
-        cheio, vazio, nome_tier = emojis_tier[tier]
+        cheio, vazio, nome_tier, nome_visual = emojis_tier[tier]
         barra = cheio * progresso + vazio * (10 - progresso)
 
-        return tier, nome_tier, barra, progresso
+        return tier, nome_tier, nome_visual, barra, progresso
 
-    tier_pontos, nome_tier_pontos, barra_pontos, prog_pontos = get_tier_data(pontos)
-    tier_solo, nome_tier_solo, barra_solo, prog_solo = get_tier_data(pontos_solo)
-    tier_team, nome_tier_team, barra_team, prog_team = get_tier_data(pontos_team)
+    tier_pontos, nome_tier_pontos, nome_visual_pontos, barra_pontos, prog_pontos = get_tier_data(pontos)
+    tier_solo, nome_tier_solo, nome_visual_solo, barra_solo, prog_solo = get_tier_data(pontos_solo)
+    tier_team, nome_tier_team, nome_visual_team, barra_team, prog_team = get_tier_data(pontos_team)
+
+    # ----- COR BASEADA APENAS NO CARGO DE TIER -----
+    tier_roles = {
+        1: TIER_1_ROLE_ID,
+        2: TIER_2_ROLE_ID,
+        3: TIER_3_ROLE_ID,
+        4: TIER_4_ROLE_ID,
+        5: TIER_5_ROLE_ID,
+    }
+
+    cor = discord.Color.blurple()
+
+    for role in membro.roles:
+        for _, role_id in tier_roles.items():
+            if role.id == role_id:
+                if role.color.value != 0:
+                    cor = role.color
+                break
 
     embed = discord.Embed(
         title="🎮┃PERFIL DE JOGADOR",
         description=f"**{membro.display_name}**",
-        color=0x2b2d31
+        color=cor
     )
 
     embed.set_thumbnail(url=membro.display_avatar.url)
@@ -694,7 +712,7 @@ async def status(ctx, membro: discord.Member = None):
     embed.add_field(
         name="⭐ PRESENÇAS",
         value=(
-            f"**Tier {tier_pontos} • {nome_tier_pontos}**\n"
+            f"**{nome_visual_pontos}**\n"
             f"{barra_pontos}\n"
             f"`{prog_pontos}/10` no tier atual • 🏅 `#{rank_pontos}`\n"
             f"Total: **{pontos:02} presenças**"
@@ -705,7 +723,7 @@ async def status(ctx, membro: discord.Member = None):
     embed.add_field(
         name="🔥 SOLO REBIRTH",
         value=(
-            f"**Tier {tier_solo} • {nome_tier_solo}**\n"
+            f"**{nome_visual_solo}**\n"
             f"{barra_solo}\n"
             f"`{prog_solo}/10` no tier atual • 🏅 `#{rank_solo}`\n"
             f"Total: **{pontos_solo:02} vitórias**"
@@ -716,7 +734,7 @@ async def status(ctx, membro: discord.Member = None):
     embed.add_field(
         name="👥 TEAM REBIRTH",
         value=(
-            f"**Tier {tier_team} • {nome_tier_team}**\n"
+            f"**{nome_visual_team}**\n"
             f"{barra_team}\n"
             f"`{prog_team}/10` no tier atual • 🏅 `#{rank_team}`\n"
             f"Total: **{pontos_team:02} vitórias**"
