@@ -376,7 +376,7 @@ async def rankingteam(ctx):
     conn.close()
 
 # =========================
-# 🆕 STATUS
+# 🆕 STATUS (COM BARRAS)
 # =========================
 @bot.command()
 async def status(ctx, membro: discord.Member = None):
@@ -414,29 +414,50 @@ async def status(ctx, membro: discord.Member = None):
     cursor.close()
     conn.close()
 
+    def barra(valor, maximo, tamanho=10):
+        percent = min(valor / maximo, 1)
+        cheio = int(percent * tamanho)
+        vazio = tamanho - cheio
+        return "🟩" * cheio + "⬛" * vazio
+
+    barra_pontos = barra(pontos, 100)
+    barra_solo = barra(pontos_solo, 50)
+    barra_team = barra(pontos_team, 50)
+
     embed = discord.Embed(
-        title=f"📊 Status de {membro.display_name}",
-        color=discord.Color.blurple()
+        title="🎮┃PERFIL DE COMBATE",
+        description=f"**{membro.display_name}**",
+        color=0x2b2d31
     )
+
     embed.set_thumbnail(url=membro.display_avatar.url)
 
     embed.add_field(
-        name="⭐ Presenças",
-        value=f"**{pontos:02} presenças**\n🏅 Classificação: {rank_pontos}",
-        inline=False
-    )
-    embed.add_field(
-        name="🔥 Solo Rebirth",
-        value=f"**{pontos_solo:02} vitórias solo**\n🏅 Classificação: {rank_solo}",
-        inline=False
-    )
-    embed.add_field(
-        name="👥 Team Rebirth",
-        value=f"**{pontos_team:02} vitórias team**\n🏅 Classificação: {rank_team}",
+        name="⭐ PRESENÇAS",
+        value=f"{barra_pontos}\n`{pontos:02}` presenças • 🏅 #{rank_pontos}",
         inline=False
     )
 
-    embed.set_footer(text="💠 Status completo do jogador")
+    embed.add_field(
+        name="🔥 SOLO REBIRTH",
+        value=f"{barra_solo}\n`{pontos_solo:02}` vitórias • 🏅 #{rank_solo}",
+        inline=False
+    )
+
+    embed.add_field(
+        name="👥 TEAM REBIRTH",
+        value=f"{barra_team}\n`{pontos_team:02}` vitórias • 🏅 #{rank_team}",
+        inline=False
+    )
+
+    embed.add_field(
+        name="🏆 RESUMO",
+        value=f"🎯 Total vitórias: **{pontos_solo + pontos_team}**\n📊 Participações: **{pontos}**",
+        inline=False
+    )
+
+    embed.set_footer(text="⚡ Sistema competitivo ativo")
+    embed.timestamp = discord.utils.utcnow()
 
     await ctx.send(embed=embed)
 
