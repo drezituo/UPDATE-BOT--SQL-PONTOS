@@ -8,6 +8,8 @@ import asyncio
 TOKEN = os.getenv("DISCORD_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+DB_ERROR_MSG = "✅ Bot ativado, volta a digitar o comando."
+
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
@@ -70,7 +72,7 @@ async def on_command_error(ctx, error):
 async def addpontos(ctx, membro: discord.Member, quantidade: int):
     conn = get_connection()
     if not conn:
-        return await ctx.send("⚠️ Erro na base de dados.")
+        return await ctx.send(DB_ERROR_MSG)
     cursor = conn.cursor()
 
     cursor.execute("SELECT pontos FROM pontos WHERE user_id = %s", (membro.id,))
@@ -94,7 +96,7 @@ async def addpontos(ctx, membro: discord.Member, quantidade: int):
 async def removepontos(ctx, membro: discord.Member, quantidade: int):
     conn = get_connection()
     if not conn:
-        return await ctx.send("⚠️ Erro na base de dados.")
+        return await ctx.send(DB_ERROR_MSG)
     cursor = conn.cursor()
 
     cursor.execute("SELECT pontos FROM pontos WHERE user_id = %s", (membro.id,))
@@ -119,7 +121,7 @@ async def pontos(ctx, membro: discord.Member = None):
 
     conn = get_connection()
     if not conn:
-        return await ctx.send("⚠️ Erro na base de dados.")
+        return await ctx.send(DB_ERROR_MSG)
     cursor = conn.cursor()
 
     cursor.execute("SELECT pontos FROM pontos WHERE user_id = %s", (membro.id,))
@@ -139,7 +141,7 @@ async def pontos(ctx, membro: discord.Member = None):
 async def ranking(ctx):
     conn = get_connection()
     if not conn:
-        return await ctx.send("⚠️ Erro na base de dados.")
+        return await ctx.send(DB_ERROR_MSG)
     cursor = conn.cursor()
 
     cursor.execute("SELECT user_id, pontos FROM pontos ORDER BY pontos DESC")
@@ -179,7 +181,7 @@ async def ranking(ctx):
 async def addsolo(ctx, membro: discord.Member, quantidade: int):
     conn = get_connection()
     if not conn:
-        return await ctx.send("⚠️ Erro na base de dados.")
+        return await ctx.send(DB_ERROR_MSG)
     cursor = conn.cursor()
 
     cursor.execute("SELECT pontos FROM pontos_solo WHERE user_id = %s", (membro.id,))
@@ -203,7 +205,7 @@ async def addsolo(ctx, membro: discord.Member, quantidade: int):
 async def removesolo(ctx, membro: discord.Member, quantidade: int):
     conn = get_connection()
     if not conn:
-        return await ctx.send("⚠️ Erro na base de dados.")
+        return await ctx.send(DB_ERROR_MSG)
     cursor = conn.cursor()
 
     cursor.execute("SELECT pontos FROM pontos_solo WHERE user_id = %s", (membro.id,))
@@ -229,7 +231,7 @@ async def pontossolo(ctx, membro: discord.Member = None):
 
     conn = get_connection()
     if not conn:
-        return await ctx.send("⚠️ Erro na base de dados.")
+        return await ctx.send(DB_ERROR_MSG)
     cursor = conn.cursor()
 
     cursor.execute("SELECT pontos FROM pontos_solo WHERE user_id = %s", (membro.id,))
@@ -246,7 +248,7 @@ async def pontossolo(ctx, membro: discord.Member = None):
 async def rankingsolo(ctx):
     conn = get_connection()
     if not conn:
-        return await ctx.send("⚠️ Erro na base de dados.")
+        return await ctx.send(DB_ERROR_MSG)
     cursor = conn.cursor()
 
     cursor.execute("SELECT user_id, pontos FROM pontos_solo ORDER BY pontos DESC")
@@ -280,7 +282,7 @@ async def rankingsolo(ctx):
 async def addteam(ctx, membro: discord.Member, quantidade: int):
     conn = get_connection()
     if not conn:
-        return await ctx.send("⚠️ Erro na base de dados.")
+        return await ctx.send(DB_ERROR_MSG)
     cursor = conn.cursor()
 
     cursor.execute("SELECT pontos FROM pontos_team WHERE user_id = %s", (membro.id,))
@@ -304,7 +306,7 @@ async def addteam(ctx, membro: discord.Member, quantidade: int):
 async def removeteam(ctx, membro: discord.Member, quantidade: int):
     conn = get_connection()
     if not conn:
-        return await ctx.send("⚠️ Erro na base de dados.")
+        return await ctx.send(DB_ERROR_MSG)
     cursor = conn.cursor()
 
     cursor.execute("SELECT pontos FROM pontos_team WHERE user_id = %s", (membro.id,))
@@ -330,7 +332,7 @@ async def pontosteam(ctx, membro: discord.Member = None):
 
     conn = get_connection()
     if not conn:
-        return await ctx.send("⚠️ Erro na base de dados.")
+        return await ctx.send(DB_ERROR_MSG)
     cursor = conn.cursor()
 
     cursor.execute("SELECT pontos FROM pontos_team WHERE user_id = %s", (membro.id,))
@@ -347,7 +349,7 @@ async def pontosteam(ctx, membro: discord.Member = None):
 async def rankingteam(ctx):
     conn = get_connection()
     if not conn:
-        return await ctx.send("⚠️ Erro na base de dados.")
+        return await ctx.send(DB_ERROR_MSG)
     cursor = conn.cursor()
 
     cursor.execute("SELECT user_id, pontos FROM pontos_team ORDER BY pontos DESC")
@@ -382,7 +384,7 @@ async def status(ctx, membro: discord.Member = None):
 
     conn = get_connection()
     if not conn:
-        return await ctx.send("⚠️ Erro na base de dados.")
+        return await ctx.send(DB_ERROR_MSG)
     cursor = conn.cursor()
 
     cursor.execute("SELECT pontos FROM pontos WHERE user_id = %s", (membro.id,))
