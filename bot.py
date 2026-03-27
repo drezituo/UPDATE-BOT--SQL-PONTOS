@@ -10,6 +10,21 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 DB_ERROR_MSG = "✅ Bot ativado, volta a digitar o comando."
 
+# ---------- ROLE IDS (TIERS POR PONTOS NORMAIS) ----------
+TIER_1_ROLE_ID = 1458650693316509718
+TIER_2_ROLE_ID = 1463719829247885404
+TIER_3_ROLE_ID = 1463723971068301446
+TIER_4_ROLE_ID = 1463720049700372563
+TIER_5_ROLE_ID = 1487161001752400074
+
+TIER_ROLE_IDS = [
+    TIER_1_ROLE_ID,
+    TIER_2_ROLE_ID,
+    TIER_3_ROLE_ID,
+    TIER_4_ROLE_ID,
+    TIER_5_ROLE_ID,
+]
+
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
@@ -23,6 +38,41 @@ def get_connection():
     except Exception as e:
         print(f"Erro ao ligar à DB: {e}")
         return None
+
+# ---------- TIER HELPERS ----------
+def get_tier_from_points(valor: int) -> int:
+    if valor <= 10:
+        return 1
+    elif valor <= 20:
+        return 2
+    elif valor <= 30:
+        return 3
+    elif valor <= 40:
+        return 4
+    else:
+        return 5
+
+def get_tier_role_id(tier: int) -> int:
+    tier_map = {
+        1: TIER_1_ROLE_ID,
+        2: TIER_2_ROLE_ID,
+        3: TIER_3_ROLE_ID,
+        4: TIER_4_ROLE_ID,
+        5: TIER_5_ROLE_ID,
+    }
+    return tier_map[tier]
+
+async def update_member_tier_role(membro: discord.Member, pontos_normais: int):
+    tier = get_tier_from_points(pontos_normais)
+    correct_role_id = get_tier_role_id(tier)
+
+    roles_to_remove = [role for role in membro.roles if role.id in TIER_ROLE_IDS and role.id != correct_role_id]
+    if roles_to_remove:
+        await membro.remove_roles(*roles_to_remove, reason="Atualização automática de tier por pontos")
+
+    correct_role = membro.guild.get_role(correct_role_id)
+    if correct_role and correct_role not in membro.roles:
+        await membro.add_roles(correct_role, reason="Atualização automática de tier por pontos")
 
 # ---------- CRIAR TABELAS ----------
 conn = get_connection()
@@ -89,6 +139,11 @@ async def addpontos(ctx, membro: discord.Member, quantidade: int):
     cursor.close()
     conn.close()
 
+    try:
+        await update_member_tier_role(membro, novo_total)
+    except Exception as e:
+        print(f"Erro ao atualizar cargo de tier: {e}")
+
     await ctx.send(f"✅ {membro.display_name} agora tem **{novo_total} pontos**")
 
 @bot.command()
@@ -103,8 +158,9 @@ async def removepontos(ctx, membro: discord.Member, quantidade: int):
     resultado = cursor.fetchone()
 
     if not resultado:
-        await ctx.send("⚠️ Esse usuário não tem pontos.")
-        return
+        cursor.close()
+        conn.close()
+        return await ctx.send("⚠️ Esse usuário não tem pontos.")
 
     novo_total = max(resultado[0] - quantidade, 0)
     cursor.execute("UPDATE pontos SET pontos = %s WHERE user_id = %s", (novo_total, membro.id))
@@ -112,6 +168,11 @@ async def removepontos(ctx, membro: discord.Member, quantidade: int):
     conn.commit()
     cursor.close()
     conn.close()
+
+    try:
+        await update_member_tier_role(membro, novo_total)
+    except Exception as e:
+        print(f"Erro ao atualizar cargo de tier: {e}")
 
     await ctx.send(f"❌ {membro.display_name} agora tem **{novo_total} pontos**")
 
@@ -212,8 +273,9 @@ async def removesolo(ctx, membro: discord.Member, quantidade: int):
     r = cursor.fetchone()
 
     if not r:
-        await ctx.send("⚠️ Sem dados.")
-        return
+        cursor.close()
+        conn.close()
+        return await ctx.send("⚠️ Sem dados.")
 
     total = max(r[0] - quantidade, 0)
 
@@ -313,8 +375,9 @@ async def removeteam(ctx, membro: discord.Member, quantidade: int):
     r = cursor.fetchone()
 
     if not r:
-        await ctx.send("⚠️ Sem dados.")
-        return
+        cursor.close()
+        conn.close()
+        return await ctx.send("⚠️ Sem dados.")
 
     total = max(r[0] - quantidade, 0)
 
