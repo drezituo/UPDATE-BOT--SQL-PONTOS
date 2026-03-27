@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 import psycopg2
 import os
+import asyncio
 
 # ---------- CONFIG ----------
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -15,44 +16,50 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ---------- DATABASE ----------
 def get_connection():
-    return psycopg2.connect(DATABASE_URL)
+    try:
+        return psycopg2.connect(DATABASE_URL)
+    except Exception as e:
+        print(f"Erro ao ligar à DB: {e}")
+        return None
 
 # ---------- CRIAR TABELAS ----------
 conn = get_connection()
-cursor = conn.cursor()
+if conn:
+    cursor = conn.cursor()
 
-# Pontos normais
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS pontos (
-    user_id BIGINT PRIMARY KEY,
-    pontos INTEGER DEFAULT 0
-)
-""")
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS pontos (
+        user_id BIGINT PRIMARY KEY,
+        pontos INTEGER DEFAULT 0
+    )
+    """)
 
-# SOLO
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS pontos_solo (
-    user_id BIGINT PRIMARY KEY,
-    pontos INTEGER DEFAULT 0
-)
-""")
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS pontos_solo (
+        user_id BIGINT PRIMARY KEY,
+        pontos INTEGER DEFAULT 0
+    )
+    """)
 
-# TEAM
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS pontos_team (
-    user_id BIGINT PRIMARY KEY,
-    pontos INTEGER DEFAULT 0
-)
-""")
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS pontos_team (
+        user_id BIGINT PRIMARY KEY,
+        pontos INTEGER DEFAULT 0
+    )
+    """)
 
-conn.commit()
-cursor.close()
-conn.close()
+    conn.commit()
+    cursor.close()
+    conn.close()
 
 # ---------- EVENT ----------
 @bot.event
 async def on_ready():
     print(f"✅ Bot ligado como {bot.user}")
+
+@bot.event
+async def on_command_error(ctx, error):
+    print(f"Erro: {error}")
 
 # =========================
 # 🔥 SISTEMA ANTIGO
@@ -62,6 +69,8 @@ async def on_ready():
 @commands.has_permissions(administrator=True)
 async def addpontos(ctx, membro: discord.Member, quantidade: int):
     conn = get_connection()
+    if not conn:
+        return await ctx.send("⚠️ Erro na base de dados.")
     cursor = conn.cursor()
 
     cursor.execute("SELECT pontos FROM pontos WHERE user_id = %s", (membro.id,))
@@ -84,6 +93,8 @@ async def addpontos(ctx, membro: discord.Member, quantidade: int):
 @commands.has_permissions(administrator=True)
 async def removepontos(ctx, membro: discord.Member, quantidade: int):
     conn = get_connection()
+    if not conn:
+        return await ctx.send("⚠️ Erro na base de dados.")
     cursor = conn.cursor()
 
     cursor.execute("SELECT pontos FROM pontos WHERE user_id = %s", (membro.id,))
@@ -107,6 +118,8 @@ async def pontos(ctx, membro: discord.Member = None):
     membro = membro or ctx.author
 
     conn = get_connection()
+    if not conn:
+        return await ctx.send("⚠️ Erro na base de dados.")
     cursor = conn.cursor()
 
     cursor.execute("SELECT pontos FROM pontos WHERE user_id = %s", (membro.id,))
@@ -125,6 +138,8 @@ async def pontos(ctx, membro: discord.Member = None):
 @bot.command()
 async def ranking(ctx):
     conn = get_connection()
+    if not conn:
+        return await ctx.send("⚠️ Erro na base de dados.")
     cursor = conn.cursor()
 
     cursor.execute("SELECT user_id, pontos FROM pontos ORDER BY pontos DESC")
@@ -163,6 +178,8 @@ async def ranking(ctx):
 @commands.has_permissions(administrator=True)
 async def addsolo(ctx, membro: discord.Member, quantidade: int):
     conn = get_connection()
+    if not conn:
+        return await ctx.send("⚠️ Erro na base de dados.")
     cursor = conn.cursor()
 
     cursor.execute("SELECT pontos FROM pontos_solo WHERE user_id = %s", (membro.id,))
@@ -185,6 +202,8 @@ async def addsolo(ctx, membro: discord.Member, quantidade: int):
 @commands.has_permissions(administrator=True)
 async def removesolo(ctx, membro: discord.Member, quantidade: int):
     conn = get_connection()
+    if not conn:
+        return await ctx.send("⚠️ Erro na base de dados.")
     cursor = conn.cursor()
 
     cursor.execute("SELECT pontos FROM pontos_solo WHERE user_id = %s", (membro.id,))
@@ -209,6 +228,8 @@ async def pontossolo(ctx, membro: discord.Member = None):
     membro = membro or ctx.author
 
     conn = get_connection()
+    if not conn:
+        return await ctx.send("⚠️ Erro na base de dados.")
     cursor = conn.cursor()
 
     cursor.execute("SELECT pontos FROM pontos_solo WHERE user_id = %s", (membro.id,))
@@ -224,6 +245,8 @@ async def pontossolo(ctx, membro: discord.Member = None):
 @bot.command()
 async def rankingsolo(ctx):
     conn = get_connection()
+    if not conn:
+        return await ctx.send("⚠️ Erro na base de dados.")
     cursor = conn.cursor()
 
     cursor.execute("SELECT user_id, pontos FROM pontos_solo ORDER BY pontos DESC")
@@ -256,6 +279,8 @@ async def rankingsolo(ctx):
 @commands.has_permissions(administrator=True)
 async def addteam(ctx, membro: discord.Member, quantidade: int):
     conn = get_connection()
+    if not conn:
+        return await ctx.send("⚠️ Erro na base de dados.")
     cursor = conn.cursor()
 
     cursor.execute("SELECT pontos FROM pontos_team WHERE user_id = %s", (membro.id,))
@@ -278,6 +303,8 @@ async def addteam(ctx, membro: discord.Member, quantidade: int):
 @commands.has_permissions(administrator=True)
 async def removeteam(ctx, membro: discord.Member, quantidade: int):
     conn = get_connection()
+    if not conn:
+        return await ctx.send("⚠️ Erro na base de dados.")
     cursor = conn.cursor()
 
     cursor.execute("SELECT pontos FROM pontos_team WHERE user_id = %s", (membro.id,))
@@ -302,6 +329,8 @@ async def pontosteam(ctx, membro: discord.Member = None):
     membro = membro or ctx.author
 
     conn = get_connection()
+    if not conn:
+        return await ctx.send("⚠️ Erro na base de dados.")
     cursor = conn.cursor()
 
     cursor.execute("SELECT pontos FROM pontos_team WHERE user_id = %s", (membro.id,))
@@ -317,6 +346,8 @@ async def pontosteam(ctx, membro: discord.Member = None):
 @bot.command()
 async def rankingteam(ctx):
     conn = get_connection()
+    if not conn:
+        return await ctx.send("⚠️ Erro na base de dados.")
     cursor = conn.cursor()
 
     cursor.execute("SELECT user_id, pontos FROM pontos_team ORDER BY pontos DESC")
@@ -343,26 +374,25 @@ async def rankingteam(ctx):
     conn.close()
 
 # =========================
-# 🆕 COMANDO STATUS
+# 🆕 STATUS
 # =========================
 @bot.command()
 async def status(ctx, membro: discord.Member = None):
     membro = membro or ctx.author
 
     conn = get_connection()
+    if not conn:
+        return await ctx.send("⚠️ Erro na base de dados.")
     cursor = conn.cursor()
 
-    # --- PONTOS NORMAIS ---
     cursor.execute("SELECT pontos FROM pontos WHERE user_id = %s", (membro.id,))
     r = cursor.fetchone()
     pontos = r[0] if r else 0
 
-    # Ranking pontos normais
     cursor.execute("SELECT user_id FROM pontos ORDER BY pontos DESC")
     ranking_dados = [uid for (uid,) in cursor.fetchall()]
     rank_pontos = ranking_dados.index(membro.id) + 1 if membro.id in ranking_dados else "N/A"
 
-    # --- PONTOS SOLO ---
     cursor.execute("SELECT pontos FROM pontos_solo WHERE user_id = %s", (membro.id,))
     r = cursor.fetchone()
     pontos_solo = r[0] if r else 0
@@ -371,7 +401,6 @@ async def status(ctx, membro: discord.Member = None):
     ranking_dados_solo = [uid for (uid,) in cursor.fetchall()]
     rank_solo = ranking_dados_solo.index(membro.id) + 1 if membro.id in ranking_dados_solo else "N/A"
 
-    # --- PONTOS TEAM ---
     cursor.execute("SELECT pontos FROM pontos_team WHERE user_id = %s", (membro.id,))
     r = cursor.fetchone()
     pontos_team = r[0] if r else 0
@@ -383,7 +412,6 @@ async def status(ctx, membro: discord.Member = None):
     cursor.close()
     conn.close()
 
-    # --- CRIAR EMBED ---
     embed = discord.Embed(
         title=f"📊 Status de {membro.display_name}",
         color=discord.Color.blurple()
@@ -410,5 +438,13 @@ async def status(ctx, membro: discord.Member = None):
 
     await ctx.send(embed=embed)
 
-# ---------- RUN ----------
-bot.run(TOKEN)
+# ---------- AUTO RESTART ----------
+async def start_bot():
+    while True:
+        try:
+            await bot.start(TOKEN)
+        except Exception as e:
+            print(f"Erro crítico: {e}")
+            await asyncio.sleep(5)
+
+asyncio.run(start_bot())
