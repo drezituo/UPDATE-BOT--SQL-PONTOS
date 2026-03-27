@@ -3,6 +3,7 @@ from discord.ext import commands
 import psycopg2
 import os
 import asyncio
+from datetime import datetime, timezone
 
 # ---------- CONFIG ----------
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -74,6 +75,32 @@ async def update_member_tier_role(membro: discord.Member, pontos_normais: int):
     if correct_role and correct_role not in membro.roles:
         await membro.add_roles(correct_role, reason="Atualização automática de tier por pontos")
 
+# ---------- ACTIVITY HELPERS ----------
+def formatar_data(dt):
+    if not dt:
+        return "Sem registo"
+    return dt.strftime("%d/%m/%Y %H:%M")
+
+def formatar_inatividade(dt):
+    if not dt:
+        return "Sem atividade registada"
+
+    agora = datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    diff = agora - dt
+    dias = diff.days
+    segundos = diff.seconds
+    horas = segundos // 3600
+    minutos = (segundos % 3600) // 60
+
+    if dias > 0:
+        return f"{dias} dia(s)"
+    if horas > 0:
+        return f"{horas} hora(s)"
+    return f"{minutos} minuto(s)"
+
 # ---------- CRIAR TABELAS ----------
 conn = get_connection()
 if conn:
@@ -87,6 +114,11 @@ if conn:
     """)
 
     cursor.execute("""
+    ALTER TABLE pontos
+    ADD COLUMN IF NOT EXISTS ultima_atividade TIMESTAMP
+    """)
+
+    cursor.execute("""
     CREATE TABLE IF NOT EXISTS pontos_solo (
         user_id BIGINT PRIMARY KEY,
         pontos INTEGER DEFAULT 0
@@ -95,6 +127,13 @@ if conn:
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS pontos_team (
+        user_id BIGINT PRIMARY KEY,
+        pontos INTEGER DEFAULT 0
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS pontos_tempo (
         user_id BIGINT PRIMARY KEY,
         pontos INTEGER DEFAULT 0
     )
@@ -130,10 +169,16 @@ async def addpontos(ctx, membro: discord.Member, quantidade: int):
 
     if resultado:
         novo_total = resultado[0] + quantidade
-        cursor.execute("UPDATE pontos SET pontos = %s WHERE user_id = %s", (novo_total, membro.id))
+        cursor.execute(
+            "UPDATE pontos SET pontos = %s, ultima_atividade = NOW() WHERE user_id = %s",
+            (novo_total, membro.id)
+        )
     else:
         novo_total = quantidade
-        cursor.execute("INSERT INTO pontos (user_id, pontos) VALUES (%s, %s)", (membro.id, quantidade))
+        cursor.execute(
+            "INSERT INTO pontos (user_id, pontos, ultima_atividade) VALUES (%s, %s, NOW())",
+            (membro.id, quantidade)
+        )
 
     conn.commit()
     cursor.close()
@@ -439,7 +484,115 @@ async def rankingteam(ctx):
     conn.close()
 
 # =========================
-# 🆕 STATUS (COM TIERS)
+# 🆕 TEMPO EM PISTA
+# =========================
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def addtempo(ctx, membro: discord.Member, quantidade: int):
+    conn = get_connection()
+    if not conn:
+        return await ctx.send(DB_ERROR_MSG)
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT pontos FROM pontos_tempo WHERE user_id = %s", (membro.id,))
+    r = cursor.fetchone()
+
+    total = (r[0] if r else 0) + quantidade
+
+    if r:
+        cursor.execute("UPDATE pontos_tempo SET pontos = %s WHERE user_id = %s", (total, membro.id))
+    else:
+        cursor.execute("INSERT INTO pontos_tempo VALUES (%s, %s)", (membro.id, total))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    await ctx.send(f"⏱️ {membro.display_name} agora tem **{total} tempo em pista**")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def removetempo(ctx, membro: discord.Member, quantidade: int):
+    conn = get_connection()
+    if not conn:
+        return await ctx.send(DB_ERROR_MSG)
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT pontos FROM pontos_tempo WHERE user_id = %s", (membro.id,))
+    r = cursor.fetchone()
+
+    if not r:
+        cursor.close()
+        conn.close()
+        return await ctx.send("⚠️ Sem dados.")
+
+    total = max(r[0] - quantidade, 0)
+
+    cursor.execute("UPDATE pontos_tempo SET pontos = %s WHERE user_id = %s", (total, membro.id))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    await ctx.send(f"❌ {membro.display_name} agora tem **{total} tempo em pista**")
+
+@bot.command()
+async def tempopista(ctx, membro: discord.Member = None):
+    membro = membro or ctx.author
+
+    conn = get_connection()
+    if not conn:
+        return await ctx.send(DB_ERROR_MSG)
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT pontos FROM pontos_tempo WHERE user_id = %s", (membro.id,))
+    r = cursor.fetchone()
+
+    total = r[0] if r else 0
+
+    cursor.close()
+    conn.close()
+
+    await ctx.send(f"⏱️ {membro.display_name} tem **{total} tempo em pista**")
+
+@bot.command()
+async def rankingtempo(ctx):
+    conn = get_connection()
+    if not conn:
+        return await ctx.send(DB_ERROR_MSG)
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT user_id, pontos FROM pontos_tempo ORDER BY pontos DESC")
+    dados = cursor.fetchall()
+
+    if not dados:
+        await ctx.send("⚠️ Nenhum tempo em pista registrado ainda.")
+        cursor.close()
+        conn.close()
+        return
+
+    msg = "**⏱️ Ranking Tempo em Pista:**\n"
+
+    for i, (uid, pts) in enumerate(dados, 1):
+        m = ctx.guild.get_member(uid)
+        nome = m.display_name if m else f"ID:{uid}"
+
+        linha = f"{i}. {nome} — {pts} tempo em pista\n"
+
+        if len(msg) + len(linha) > 2000:
+            await ctx.send(msg)
+            msg = ""
+
+        msg += linha
+
+    if msg:
+        await ctx.send(msg)
+
+    cursor.close()
+    conn.close()
+
+# =========================
+# 🆕 STATUS (COM TIERS + ATIVIDADE + TEMPO)
 # =========================
 @bot.command()
 async def status(ctx, membro: discord.Member = None):
@@ -451,9 +604,10 @@ async def status(ctx, membro: discord.Member = None):
     cursor = conn.cursor()
 
     # ---------- PONTOS NORMAIS ----------
-    cursor.execute("SELECT pontos FROM pontos WHERE user_id = %s", (membro.id,))
+    cursor.execute("SELECT pontos, ultima_atividade FROM pontos WHERE user_id = %s", (membro.id,))
     r = cursor.fetchone()
     pontos = r[0] if r else 0
+    ultima_atividade = r[1] if r else None
 
     cursor.execute("SELECT user_id FROM pontos ORDER BY pontos DESC")
     ranking_dados = [uid for (uid,) in cursor.fetchall()]
@@ -476,6 +630,15 @@ async def status(ctx, membro: discord.Member = None):
     cursor.execute("SELECT user_id FROM pontos_team ORDER BY pontos DESC")
     ranking_dados_team = [uid for (uid,) in cursor.fetchall()]
     rank_team = ranking_dados_team.index(membro.id) + 1 if membro.id in ranking_dados_team else "N/A"
+
+    # ---------- TEMPO EM PISTA ----------
+    cursor.execute("SELECT pontos FROM pontos_tempo WHERE user_id = %s", (membro.id,))
+    r = cursor.fetchone()
+    pontos_tempo = r[0] if r else 0
+
+    cursor.execute("SELECT user_id FROM pontos_tempo ORDER BY pontos DESC")
+    ranking_dados_tempo = [uid for (uid,) in cursor.fetchall()]
+    rank_tempo = ranking_dados_tempo.index(membro.id) + 1 if membro.id in ranking_dados_tempo else "N/A"
 
     cursor.close()
     conn.close()
@@ -562,6 +725,24 @@ async def status(ctx, membro: discord.Member = None):
             f"{barra_team}\n"
             f"`{prog_team}/10` no tier atual • 🏅 `#{rank_team}`\n"
             f"Total: **{pontos_team:02} vitórias**"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="⏱️ TEMPO EM PISTA",
+        value=(
+            f"🏅 Ranking: `#{rank_tempo}`\n"
+            f"Total: **{pontos_tempo:02}**"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🕒 ATIVIDADE",
+        value=(
+            f"Última presença: **{formatar_data(ultima_atividade)}**\n"
+            f"Inativo há: **{formatar_inatividade(ultima_atividade)}**"
         ),
         inline=False
     )
