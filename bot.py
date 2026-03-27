@@ -376,7 +376,7 @@ async def rankingteam(ctx):
     conn.close()
 
 # =========================
-# 🆕 STATUS (COM BARRAS)
+# 🆕 STATUS (COM TIERS)
 # =========================
 @bot.command()
 async def status(ctx, membro: discord.Member = None):
@@ -387,6 +387,7 @@ async def status(ctx, membro: discord.Member = None):
         return await ctx.send(DB_ERROR_MSG)
     cursor = conn.cursor()
 
+    # ---------- PONTOS NORMAIS ----------
     cursor.execute("SELECT pontos FROM pontos WHERE user_id = %s", (membro.id,))
     r = cursor.fetchone()
     pontos = r[0] if r else 0
@@ -395,6 +396,7 @@ async def status(ctx, membro: discord.Member = None):
     ranking_dados = [uid for (uid,) in cursor.fetchall()]
     rank_pontos = ranking_dados.index(membro.id) + 1 if membro.id in ranking_dados else "N/A"
 
+    # ---------- SOLO ----------
     cursor.execute("SELECT pontos FROM pontos_solo WHERE user_id = %s", (membro.id,))
     r = cursor.fetchone()
     pontos_solo = r[0] if r else 0
@@ -403,6 +405,7 @@ async def status(ctx, membro: discord.Member = None):
     ranking_dados_solo = [uid for (uid,) in cursor.fetchall()]
     rank_solo = ranking_dados_solo.index(membro.id) + 1 if membro.id in ranking_dados_solo else "N/A"
 
+    # ---------- TEAM ----------
     cursor.execute("SELECT pontos FROM pontos_team WHERE user_id = %s", (membro.id,))
     r = cursor.fetchone()
     pontos_team = r[0] if r else 0
@@ -414,15 +417,50 @@ async def status(ctx, membro: discord.Member = None):
     cursor.close()
     conn.close()
 
-    def barra(valor, maximo, tamanho=10):
-        percent = min(valor / maximo, 1)
-        cheio = int(percent * tamanho)
-        vazio = tamanho - cheio
-        return "🟩" * cheio + "⬛" * vazio
+    def get_tier_data(valor):
+        if valor <= 10:
+            tier = 1
+        elif valor <= 20:
+            tier = 2
+        elif valor <= 30:
+            tier = 3
+        elif valor <= 40:
+            tier = 4
+        else:
+            tier = 5
 
-    barra_pontos = barra(pontos, 100)
-    barra_solo = barra(pontos_solo, 50)
-    barra_team = barra(pontos_team, 50)
+        if tier == 1:
+            progresso = valor
+        elif tier == 2:
+            progresso = valor - 10
+        elif tier == 3:
+            progresso = valor - 20
+        elif tier == 4:
+            progresso = valor - 30
+        else:
+            progresso = valor - 40
+
+        if progresso > 10:
+            progresso = 10
+        if progresso < 0:
+            progresso = 0
+
+        emojis_tier = {
+            1: ("🟩", "⬛", "BRONZE"),
+            2: ("🟦", "⬛", "PRATA"),
+            3: ("🟨", "⬛", "OURO"),
+            4: ("🟧", "⬛", "PLATINA"),
+            5: ("🟥", "⬛", "DIAMANTE"),
+        }
+
+        cheio, vazio, nome_tier = emojis_tier[tier]
+        barra = cheio * progresso + vazio * (10 - progresso)
+
+        return tier, nome_tier, barra, progresso
+
+    tier_pontos, nome_tier_pontos, barra_pontos, prog_pontos = get_tier_data(pontos)
+    tier_solo, nome_tier_solo, barra_solo, prog_solo = get_tier_data(pontos_solo)
+    tier_team, nome_tier_team, barra_team, prog_team = get_tier_data(pontos_team)
 
     embed = discord.Embed(
         title="🎮┃PERFIL DE COMBATE",
@@ -434,29 +472,47 @@ async def status(ctx, membro: discord.Member = None):
 
     embed.add_field(
         name="⭐ PRESENÇAS",
-        value=f"{barra_pontos}\n`{pontos:02}` presenças • 🏅 #{rank_pontos}",
+        value=(
+            f"**Tier {tier_pontos} • {nome_tier_pontos}**\n"
+            f"{barra_pontos}\n"
+            f"`{prog_pontos}/10` no tier atual • 🏅 `#{rank_pontos}`\n"
+            f"Total: **{pontos:02} presenças**"
+        ),
         inline=False
     )
 
     embed.add_field(
         name="🔥 SOLO REBIRTH",
-        value=f"{barra_solo}\n`{pontos_solo:02}` vitórias • 🏅 #{rank_solo}",
+        value=(
+            f"**Tier {tier_solo} • {nome_tier_solo}**\n"
+            f"{barra_solo}\n"
+            f"`{prog_solo}/10` no tier atual • 🏅 `#{rank_solo}`\n"
+            f"Total: **{pontos_solo:02} vitórias**"
+        ),
         inline=False
     )
 
     embed.add_field(
         name="👥 TEAM REBIRTH",
-        value=f"{barra_team}\n`{pontos_team:02}` vitórias • 🏅 #{rank_team}",
+        value=(
+            f"**Tier {tier_team} • {nome_tier_team}**\n"
+            f"{barra_team}\n"
+            f"`{prog_team}/10` no tier atual • 🏅 `#{rank_team}`\n"
+            f"Total: **{pontos_team:02} vitórias**"
+        ),
         inline=False
     )
 
     embed.add_field(
         name="🏆 RESUMO",
-        value=f"🎯 Total vitórias: **{pontos_solo + pontos_team}**\n📊 Participações: **{pontos}**",
+        value=(
+            f"🎯 Total vitórias: **{pontos_solo + pontos_team}**\n"
+            f"📊 Participações: **{pontos}**"
+        ),
         inline=False
     )
 
-    embed.set_footer(text="⚡ Sistema competitivo ativo")
+    embed.set_footer(text="⚡ Sistema competitivo ativo • 5 Tiers")
     embed.timestamp = discord.utils.utcnow()
 
     await ctx.send(embed=embed)
