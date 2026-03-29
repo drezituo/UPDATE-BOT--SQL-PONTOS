@@ -132,12 +132,19 @@ def extrair_jogador_da_inscricao(ctx, nome: str):
     return nome, None
 
 
-async def obter_avatar_url_jogador(guild: discord.Guild, nome_jogador: str, membro: discord.Member = None):
-    if membro is not None:
-        return membro.display_avatar.url
+def extrair_nome_cancelamento(ctx, nome: str):
+    nome = normalizar_nome(nome)
 
+    if ctx.message.mentions:
+        membro_mencionado = ctx.message.mentions[0]
+        return membro_mencionado.display_name, membro_mencionado
+
+    return nome, None
+
+
+async def encontrar_membro_por_nome(guild: discord.Guild, nome_jogador: str):
     if guild is None:
-        return "https://cdn.discordapp.com/embed/avatars/0.png"
+        return None
 
     nome_jogador = normalizar_nome(nome_jogador).lower()
 
@@ -155,16 +162,38 @@ async def obter_avatar_url_jogador(guild: discord.Guild, nome_jogador: str, memb
 
     for member in guild.members:
         if corresponde(member):
-            return member.display_avatar.url
+            return member
 
     try:
         async for member in guild.fetch_members(limit=None):
             if corresponde(member):
-                return member.display_avatar.url
+                return member
     except (discord.Forbidden, discord.HTTPException):
         pass
 
+    return None
+
+
+async def obter_avatar_url_jogador(guild: discord.Guild, nome_jogador: str, membro: discord.Member = None):
+    if membro is not None:
+        return membro.display_avatar.url
+
+    membro_encontrado = await encontrar_membro_por_nome(guild, nome_jogador)
+    if membro_encontrado:
+        return membro_encontrado.display_avatar.url
+
     return "https://cdn.discordapp.com/embed/avatars/0.png"
+
+
+async def obter_valor_jogador_embed(guild: discord.Guild, nome_jogador: str, membro: discord.Member = None):
+    if membro is not None:
+        return membro.mention
+
+    membro_encontrado = await encontrar_membro_por_nome(guild, nome_jogador)
+    if membro_encontrado:
+        return membro_encontrado.mention
+
+    return nome_jogador
 
 
 async def apagar_mensagem_comando(ctx):
@@ -225,6 +254,7 @@ def contar_inscricoes_validas(thread_id: int):
 
 async def criar_embed_inscricao_pendente(ctx, nome: str, expira_em: datetime, membro_jogador: discord.Member = None):
     avatar_url = await obter_avatar_url_jogador(ctx.guild, nome, membro_jogador)
+    jogador_valor = await obter_valor_jogador_embed(ctx.guild, nome, membro_jogador)
 
     embed = discord.Embed(
         title=f"🎟️ Inscrição - {ctx.channel.name}",
@@ -232,7 +262,7 @@ async def criar_embed_inscricao_pendente(ctx, nome: str, expira_em: datetime, me
         timestamp=discord.utils.utcnow()
     )
     embed.set_thumbnail(url=avatar_url)
-    embed.add_field(name="👤 Jogador", value=nome, inline=True)
+    embed.add_field(name="👤 Jogador", value=jogador_valor, inline=True)
     embed.add_field(name="📝 Autor da inscrição", value=ctx.author.mention, inline=True)
     embed.add_field(name="📌 Estado", value="⏳ Inscrição por finalizar", inline=False)
     embed.add_field(name="⏰ Expira", value=f"<t:{int(expira_em.timestamp())}:F>", inline=True)
@@ -243,6 +273,7 @@ async def criar_embed_inscricao_pendente(ctx, nome: str, expira_em: datetime, me
 
 async def criar_embed_inscricao_paga(guild: discord.Guild, thread_name: str, nome: str, autor_inscricao_mention: str, membro_jogador: discord.Member = None):
     avatar_url = await obter_avatar_url_jogador(guild, nome, membro_jogador)
+    jogador_valor = await obter_valor_jogador_embed(guild, nome, membro_jogador)
 
     embed = discord.Embed(
         title=f"🎟️ Inscrição confirmada - {thread_name}",
@@ -250,7 +281,7 @@ async def criar_embed_inscricao_paga(guild: discord.Guild, thread_name: str, nom
         timestamp=discord.utils.utcnow()
     )
     embed.set_thumbnail(url=avatar_url)
-    embed.add_field(name="👤 Jogador", value=nome, inline=True)
+    embed.add_field(name="👤 Jogador", value=jogador_valor, inline=True)
     embed.add_field(name="📝 Autor da inscrição", value=autor_inscricao_mention, inline=True)
     embed.add_field(name="📌 Estado", value="✅ Inscrição finalizada", inline=False)
     embed.set_footer(text="✅ Inscrição concluída com sucesso")
@@ -259,6 +290,7 @@ async def criar_embed_inscricao_paga(guild: discord.Guild, thread_name: str, nom
 
 async def criar_embed_inscricao_expirada(guild: discord.Guild, thread_name: str, nome: str, autor_inscricao_mention: str, membro_jogador: discord.Member = None):
     avatar_url = await obter_avatar_url_jogador(guild, nome, membro_jogador)
+    jogador_valor = await obter_valor_jogador_embed(guild, nome, membro_jogador)
 
     embed = discord.Embed(
         title=f"🎟️ Inscrição cancelada - {thread_name}",
@@ -266,7 +298,7 @@ async def criar_embed_inscricao_expirada(guild: discord.Guild, thread_name: str,
         timestamp=discord.utils.utcnow()
     )
     embed.set_thumbnail(url=avatar_url)
-    embed.add_field(name="👤 Jogador", value=nome, inline=True)
+    embed.add_field(name="👤 Jogador", value=jogador_valor, inline=True)
     embed.add_field(name="📝 Autor da inscrição", value=autor_inscricao_mention, inline=True)
     embed.add_field(name="📌 Estado", value="❌ Inscrição expirada por falta de finalização", inline=False)
     embed.set_footer(text="⌛ O prazo para finalizar a inscrição terminou")
@@ -275,6 +307,7 @@ async def criar_embed_inscricao_expirada(guild: discord.Guild, thread_name: str,
 
 async def criar_embed_inscricao_cancelada(guild: discord.Guild, thread_name: str, nome: str, autor_inscricao_mention: str, cancelado_por="", membro_jogador: discord.Member = None):
     avatar_url = await obter_avatar_url_jogador(guild, nome, membro_jogador)
+    jogador_valor = await obter_valor_jogador_embed(guild, nome, membro_jogador)
 
     embed = discord.Embed(
         title=f"🎟️ Inscrição cancelada - {thread_name}",
@@ -282,7 +315,7 @@ async def criar_embed_inscricao_cancelada(guild: discord.Guild, thread_name: str
         timestamp=discord.utils.utcnow()
     )
     embed.set_thumbnail(url=avatar_url)
-    embed.add_field(name="👤 Jogador", value=nome, inline=True)
+    embed.add_field(name="👤 Jogador", value=jogador_valor, inline=True)
     embed.add_field(name="📝 Autor da inscrição", value=autor_inscricao_mention, inline=True)
     embed.add_field(name="📌 Estado", value="❌ Inscrição cancelada manualmente", inline=False)
     embed.add_field(name="🛑 Cancelado por", value=cancelado_por, inline=False)
@@ -663,7 +696,8 @@ async def cancelarinscricao(ctx, *, nome: str):
         await apagar_mensagem_comando(ctx)
         return await ctx.send("⚠️ Este comando só pode ser usado dentro da thread do jogo.", delete_after=10)
 
-    nome = normalizar_nome(nome)
+    nome, membro_jogador = extrair_nome_cancelamento(ctx, nome)
+
     if len(nome) < 3:
         await apagar_mensagem_comando(ctx)
         return await ctx.send("⚠️ Nome inválido.", delete_after=10)
@@ -741,7 +775,8 @@ async def cancelarinscricao(ctx, *, nome: str):
             ctx.channel.name,
             nome_jogador,
             autor_inscricao_mention,
-            cancelado_por
+            cancelado_por,
+            membro_jogador
         )
         await msg.edit(embed=embed)
     except (discord.NotFound, discord.Forbidden, discord.HTTPException):
