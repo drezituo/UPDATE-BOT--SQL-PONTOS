@@ -146,7 +146,7 @@ def obter_thread_config(thread_id: int):
 
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT inscricoes_abertas, limite, thread_name
+        SELECT inscricoes_abertas, limite, thread_name, estado_msg_id
         FROM jogos_threads
         WHERE thread_id = %s
     """, (thread_id,))
@@ -176,7 +176,7 @@ def contar_inscricoes_validas(thread_id: int):
 
 async def criar_embed_inscricao_pendente(ctx, nome: str, expira_em: datetime):
     embed = discord.Embed(
-        title=f"⚽ Inscrição - {ctx.channel.name}",
+        title=f"🎟️ Inscrição - {ctx.channel.name}",
         color=discord.Color.orange(),
         timestamp=discord.utils.utcnow()
     )
@@ -192,7 +192,7 @@ async def criar_embed_inscricao_pendente(ctx, nome: str, expira_em: datetime):
 
 async def criar_embed_inscricao_paga(thread_name: str, nome: str, member_mention: str, avatar_url=None):
     embed = discord.Embed(
-        title=f"⚽ Inscrição confirmada - {thread_name}",
+        title=f"🎟️ Inscrição confirmada - {thread_name}",
         color=discord.Color.green(),
         timestamp=discord.utils.utcnow()
     )
@@ -207,7 +207,7 @@ async def criar_embed_inscricao_paga(thread_name: str, nome: str, member_mention
 
 async def criar_embed_inscricao_expirada(thread_name: str, nome: str, member_mention: str, avatar_url=None):
     embed = discord.Embed(
-        title=f"⚽ Inscrição cancelada - {thread_name}",
+        title=f"🎟️ Inscrição cancelada - {thread_name}",
         color=discord.Color.red(),
         timestamp=discord.utils.utcnow()
     )
@@ -222,7 +222,7 @@ async def criar_embed_inscricao_expirada(thread_name: str, nome: str, member_men
 
 async def criar_embed_inscricao_cancelada(thread_name: str, nome: str, member_mention: str, avatar_url=None, cancelado_por=""):
     embed = discord.Embed(
-        title=f"⚽ Inscrição cancelada - {thread_name}",
+        title=f"🎟️ Inscrição cancelada - {thread_name}",
         color=discord.Color.red(),
         timestamp=discord.utils.utcnow()
     )
@@ -234,6 +234,67 @@ async def criar_embed_inscricao_cancelada(thread_name: str, nome: str, member_me
     embed.add_field(name="🛑 Cancelado por", value=cancelado_por, inline=False)
     embed.set_footer(text="ℹ️ A vaga foi libertada")
     return embed
+
+
+async def atualizar_embed_estado(channel: discord.Thread):
+    conn = get_connection()
+    if not conn:
+        return
+
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT inscricoes_abertas, limite, estado_msg_id
+        FROM jogos_threads
+        WHERE thread_id = %s
+    """, (channel.id,))
+    row = cursor.fetchone()
+
+    if not row:
+        cursor.close()
+        conn.close()
+        return
+
+    abertas, limite, estado_msg_id = row
+
+    cursor.execute("""
+        SELECT COUNT(*)
+        FROM inscricoes_jogos
+        WHERE thread_id = %s
+          AND estado IN ('pendente_pagamento', 'pago')
+    """, (channel.id,))
+    total = cursor.fetchone()[0]
+
+    embed = discord.Embed(
+        title="📋 Estado das Inscrições",
+        color=discord.Color.blurple(),
+        timestamp=discord.utils.utcnow()
+    )
+    embed.add_field(name="🔓 Estado", value="Abertas" if abertas else "Fechadas", inline=True)
+    embed.add_field(name="✅ Inscrições ativas", value=str(total), inline=True)
+    embed.add_field(name="📉 Vagas restantes", value=str(max(limite - total, 0)), inline=True)
+
+    if estado_msg_id:
+        try:
+            old_msg = await channel.fetch_message(estado_msg_id)
+            await old_msg.delete()
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            pass
+
+    try:
+        new_msg = await channel.send(embed=embed)
+    except (discord.Forbidden, discord.HTTPException):
+        cursor.close()
+        conn.close()
+        return
+
+    cursor.execute("""
+        UPDATE jogos_threads
+        SET estado_msg_id = %s
+        WHERE thread_id = %s
+    """, (new_msg.id, channel.id))
+    conn.commit()
+    cursor.close()
+    conn.close()
 
 
 # ---------- CRIAR TABELAS ----------
@@ -283,7 +344,8 @@ if conn:
             inscricoes_abertas BOOLEAN NOT NULL DEFAULT FALSE,
             limite INTEGER NOT NULL DEFAULT 25,
             criado_por BIGINT NOT NULL,
-            criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            estado_msg_id BIGINT
         )
         """)
 
@@ -299,9 +361,18 @@ if conn:
             expira_em TIMESTAMPTZ NOT NULL,
             aviso_30min_enviado BOOLEAN NOT NULL DEFAULT FALSE,
             confirmado_por BIGINT,
-            confirmado_em TIMESTAMPTZ,
-            UNIQUE(thread_id, user_id)
+            confirmado_em TIMESTAMPTZ
         )
+        """)
+
+        cursor.execute("""
+        ALTER TABLE jogos_threads
+        ADD COLUMN IF NOT EXISTS estado_msg_id BIGINT
+        """)
+
+        cursor.execute("""
+        ALTER TABLE inscricoes_jogos
+        DROP CONSTRAINT IF EXISTS inscricoes_jogos_thread_id_user_id_key
         """)
 
         conn.commit()
@@ -397,6 +468,7 @@ async def abrir_inscricoes(ctx, limite: int = LIMITE_PADRAO_INSCRICOES):
     conn.close()
 
     await ctx.send(f"✅ Inscrições abertas nesta thread.\n👥 Limite: **{limite} jogadores**")
+    await atualizar_embed_estado(ctx.channel)
 
 
 @bot.command()
@@ -420,6 +492,7 @@ async def fechar_inscricoes(ctx):
     conn.close()
 
     await ctx.send("🛑 Inscrições fechadas nesta thread.")
+    await atualizar_embed_estado(ctx.channel)
 
 
 @bot.command()
@@ -432,22 +505,7 @@ async def estado_inscricoes(ctx):
     if not dados:
         return await ctx.send("ℹ️ Esta thread ainda não foi configurada para inscrições.", delete_after=10)
 
-    abertas, limite, _ = dados
-    validas = contar_inscricoes_validas(ctx.channel.id) or 0
-    vagas = max(limite - validas, 0)
-
-    embed = discord.Embed(
-        title="📋 Estado das Inscrições",
-        color=discord.Color.blurple(),
-        timestamp=discord.utils.utcnow()
-    )
-    embed.add_field(name="🧵 Thread", value=ctx.channel.name, inline=False)
-    embed.add_field(name="🔓 Estado", value="Abertas" if abertas else "Fechadas", inline=True)
-    embed.add_field(name="👥 Limite", value=str(limite), inline=True)
-    embed.add_field(name="✅ Válidas", value=str(validas), inline=True)
-    embed.add_field(name="📉 Vagas restantes", value=str(vagas), inline=False)
-
-    await ctx.send(embed=embed)
+    await atualizar_embed_estado(ctx.channel)
 
 
 @bot.command()
@@ -467,7 +525,7 @@ async def inscrever(ctx, *, nome: str):
         await apagar_mensagem_comando(ctx)
         return await ctx.send("⚠️ As inscrições não estão ativas nesta thread.", delete_after=10)
 
-    abertas, limite, _ = dados
+    abertas, limite, _, _ = dados
 
     if not abertas:
         await apagar_mensagem_comando(ctx)
@@ -544,6 +602,7 @@ async def inscrever(ctx, *, nome: str):
     cursor.close()
     conn.close()
     await apagar_mensagem_comando(ctx)
+    await atualizar_embed_estado(ctx.channel)
 
 
 @bot.command()
@@ -624,6 +683,8 @@ async def cancelarinscricao(ctx, membro: discord.Member = None):
             await membro.send(f"❌ A tua inscrição na thread **{ctx.channel.name}** foi cancelada por um admin.")
         except (discord.Forbidden, discord.HTTPException):
             pass
+
+    await atualizar_embed_estado(ctx.channel)
 
 
 # =========================
@@ -1338,6 +1399,8 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             pass
 
+        await atualizar_embed_estado(canal)
+
     if user:
         try:
             await user.send(f"✅ O teu pagamento foi confirmado na thread **{canal.name if canal else 'do jogo'}**.")
@@ -1410,6 +1473,8 @@ async def verificar_inscricoes():
                     await msg.edit(embed=embed)
                 except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                     pass
+
+                await atualizar_embed_estado(canal)
 
             if user:
                 try:
