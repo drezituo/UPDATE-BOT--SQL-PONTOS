@@ -1,15 +1,21 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import psycopg2
 import os
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 # ---------- CONFIG ----------
 TOKEN = os.getenv("DISCORD_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 DB_ERROR_MSG = "✅ Bot ativado, volta a digitar o comando."
+
+# ---------- INSCRIÇÕES ----------
+LIMITE_PADRAO_INSCRICOES = 25
+EMOJI_CONFIRMACAO = "✅"
+HORAS_PAGAMENTO = 12
+MINUTOS_AVISO = 30
 
 # ---------- ROLE IDS (TIERS POR PONTOS NORMAIS) ----------
 TIER_1_ROLE_ID = 1458650693316509718
@@ -29,6 +35,8 @@ TIER_ROLE_IDS = [
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
+intents.reactions = True
+intents.guilds = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -96,6 +104,123 @@ def formatar_inatividade(dt):
         return f"{horas} hora(s)"
     return f"{minutos} minuto(s)"
 
+# ---------- INSCRIÇÕES HELPERS ----------
+def utc_now():
+    return datetime.now(timezone.utc)
+
+def is_thread_channel(channel):
+    return isinstance(channel, discord.Thread)
+
+async def apagar_mensagem_comando(ctx):
+    try:
+        await ctx.message.delete()
+    except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+        pass
+
+async def utilizador_e_admin_no_guild(guild: discord.Guild, user_id: int) -> bool:
+    if guild is None:
+        return False
+
+    member = guild.get_member(user_id)
+    if member is None:
+        try:
+            member = await guild.fetch_member(user_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return False
+
+    return member.guild_permissions.administrator
+
+def obter_thread_config(thread_id: int):
+    conn = get_connection()
+    if not conn:
+        return None
+
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT inscricoes_abertas, limite, thread_name
+        FROM jogos_threads
+        WHERE thread_id = %s
+    """, (thread_id,))
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return row
+
+def contar_inscricoes_validas(thread_id: int):
+    conn = get_connection()
+    if not conn:
+        return None
+
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT COUNT(*)
+        FROM inscricoes_jogos
+        WHERE thread_id = %s
+          AND estado IN ('pendente_pagamento', 'pago')
+    """, (thread_id,))
+    total = cursor.fetchone()[0]
+    cursor.close()
+    conn.close()
+    return total
+
+async def criar_embed_inscricao_pendente(ctx, nome: str, expira_em: datetime):
+    embed = discord.Embed(
+        title=f"⚽ Inscrição - {ctx.channel.name}",
+        color=discord.Color.orange(),
+        timestamp=discord.utils.utcnow()
+    )
+    embed.set_thumbnail(url=ctx.author.display_avatar.url)
+    embed.add_field(name="👤 Jogador", value=nome, inline=True)
+    embed.add_field(name="💬 Discord", value=ctx.author.mention, inline=True)
+    embed.add_field(name="💰 Estado", value="⏳ Pendente de pagamento", inline=False)
+    embed.add_field(name="⏰ Expira", value=f"<t:{int(expira_em.timestamp())}:F>", inline=True)
+    embed.add_field(name="⌛ Tempo restante", value=f"<t:{int(expira_em.timestamp())}:R>", inline=True)
+    embed.set_footer(text=f"⚡ Tens {HORAS_PAGAMENTO} horas para efetuar o pagamento")
+    return embed
+
+async def criar_embed_inscricao_paga(thread_name: str, nome: str, member_mention: str, avatar_url=None):
+    embed = discord.Embed(
+        title=f"⚽ Inscrição confirmada - {thread_name}",
+        color=discord.Color.green(),
+        timestamp=discord.utils.utcnow()
+    )
+    if avatar_url:
+        embed.set_thumbnail(url=avatar_url)
+    embed.add_field(name="👤 Jogador", value=nome, inline=True)
+    embed.add_field(name="💬 Discord", value=member_mention, inline=True)
+    embed.add_field(name="💰 Estado", value="✅ Pago", inline=False)
+    embed.set_footer(text="✅ Pagamento confirmado")
+    return embed
+
+async def criar_embed_inscricao_expirada(thread_name: str, nome: str, member_mention: str, avatar_url=None):
+    embed = discord.Embed(
+        title=f"⚽ Inscrição cancelada - {thread_name}",
+        color=discord.Color.red(),
+        timestamp=discord.utils.utcnow()
+    )
+    if avatar_url:
+        embed.set_thumbnail(url=avatar_url)
+    embed.add_field(name="👤 Jogador", value=nome, inline=True)
+    embed.add_field(name="💬 Discord", value=member_mention, inline=True)
+    embed.add_field(name="💰 Estado", value="❌ Expirada por falta de pagamento", inline=False)
+    embed.set_footer(text="⌛ O prazo de pagamento terminou")
+    return embed
+
+async def criar_embed_inscricao_cancelada(thread_name: str, nome: str, member_mention: str, avatar_url=None, cancelado_por=""):
+    embed = discord.Embed(
+        title=f"⚽ Inscrição cancelada - {thread_name}",
+        color=discord.Color.red(),
+        timestamp=discord.utils.utcnow()
+    )
+    if avatar_url:
+        embed.set_thumbnail(url=avatar_url)
+    embed.add_field(name="👤 Jogador", value=nome, inline=True)
+    embed.add_field(name="💬 Discord", value=member_mention, inline=True)
+    embed.add_field(name="💰 Estado", value="❌ Cancelada manualmente", inline=False)
+    embed.add_field(name="🛑 Cancelado por", value=cancelado_por, inline=False)
+    embed.set_footer(text="ℹ️ A vaga foi libertada")
+    return embed
+
 # ---------- CRIAR TABELAS ----------
 conn = get_connection()
 if conn:
@@ -134,6 +259,34 @@ if conn:
     )
     """)
 
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS jogos_threads (
+        thread_id BIGINT PRIMARY KEY,
+        thread_name TEXT NOT NULL,
+        inscricoes_abertas BOOLEAN NOT NULL DEFAULT FALSE,
+        limite INTEGER NOT NULL DEFAULT 25,
+        criado_por BIGINT NOT NULL,
+        criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS inscricoes_jogos (
+        id BIGSERIAL PRIMARY KEY,
+        thread_id BIGINT NOT NULL,
+        message_id BIGINT NOT NULL UNIQUE,
+        user_id BIGINT NOT NULL,
+        nome_jogador TEXT NOT NULL,
+        estado TEXT NOT NULL CHECK (estado IN ('pendente_pagamento', 'pago', 'expirado', 'cancelado')),
+        criado_em TIMESTAMPTZ NOT NULL,
+        expira_em TIMESTAMPTZ NOT NULL,
+        aviso_30min_enviado BOOLEAN NOT NULL DEFAULT FALSE,
+        confirmado_por BIGINT,
+        confirmado_em TIMESTAMPTZ,
+        UNIQUE(thread_id, user_id)
+    )
+    """)
+
     conn.commit()
     cursor.close()
     conn.close()
@@ -141,11 +294,278 @@ if conn:
 # ---------- EVENT ----------
 @bot.event
 async def on_ready():
+    if not verificar_inscricoes.is_running():
+        verificar_inscricoes.start()
     print(f"✅ Bot ligado como {bot.user}")
 
 @bot.event
 async def on_command_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Não tens permissão para usar este comando.", delete_after=10)
+        return
+
+    if isinstance(error, commands.MissingRequiredArgument):
+        if ctx.command and ctx.command.name == "inscrever":
+            await ctx.send("⚠️ Usa o comando assim: `!inscrever Nome Apelido`", delete_after=10)
+            return
+
     print(f"Erro: {error}")
+
+# =========================
+# 🆕 INSCRIÇÕES EM THREADS
+# =========================
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def abrir_inscricoes(ctx, limite: int = LIMITE_PADRAO_INSCRICOES):
+    if not is_thread_channel(ctx.channel):
+        return await ctx.send("⚠️ Este comando só pode ser usado dentro de uma thread.", delete_after=10)
+
+    if limite <= 0:
+        return await ctx.send("⚠️ O limite tem de ser superior a 0.", delete_after=10)
+
+    conn = get_connection()
+    if not conn:
+        return await ctx.send(DB_ERROR_MSG)
+
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO jogos_threads (thread_id, thread_name, inscricoes_abertas, limite, criado_por)
+        VALUES (%s, %s, TRUE, %s, %s)
+        ON CONFLICT (thread_id)
+        DO UPDATE SET
+            thread_name = EXCLUDED.thread_name,
+            inscricoes_abertas = TRUE,
+            limite = EXCLUDED.limite,
+            criado_por = EXCLUDED.criado_por
+    """, (ctx.channel.id, ctx.channel.name, limite, ctx.author.id))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    await ctx.send(f"✅ Inscrições abertas nesta thread.\n👥 Limite: **{limite} jogadores**")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def fechar_inscricoes(ctx):
+    if not is_thread_channel(ctx.channel):
+        return await ctx.send("⚠️ Este comando só pode ser usado dentro de uma thread.", delete_after=10)
+
+    conn = get_connection()
+    if not conn:
+        return await ctx.send(DB_ERROR_MSG)
+
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE jogos_threads
+        SET inscricoes_abertas = FALSE
+        WHERE thread_id = %s
+    """, (ctx.channel.id,))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    await ctx.send("🛑 Inscrições fechadas nesta thread.")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def estado_inscricoes(ctx):
+    if not is_thread_channel(ctx.channel):
+        return await ctx.send("⚠️ Este comando só pode ser usado dentro de uma thread.", delete_after=10)
+
+    dados = obter_thread_config(ctx.channel.id)
+    if not dados:
+        return await ctx.send("ℹ️ Esta thread ainda não foi configurada para inscrições.", delete_after=10)
+
+    abertas, limite, _ = dados
+    validas = contar_inscricoes_validas(ctx.channel.id) or 0
+    vagas = max(limite - validas, 0)
+
+    embed = discord.Embed(
+        title="📋 Estado das Inscrições",
+        color=discord.Color.blurple(),
+        timestamp=discord.utils.utcnow()
+    )
+    embed.add_field(name="🧵 Thread", value=ctx.channel.name, inline=False)
+    embed.add_field(name="🔓 Estado", value="Abertas" if abertas else "Fechadas", inline=True)
+    embed.add_field(name="👥 Limite", value=str(limite), inline=True)
+    embed.add_field(name="✅ Válidas", value=str(validas), inline=True)
+    embed.add_field(name="📉 Vagas restantes", value=str(vagas), inline=False)
+
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def inscrever(ctx, *, nome: str):
+    nome = nome.strip()
+
+    if not is_thread_channel(ctx.channel):
+        await apagar_mensagem_comando(ctx)
+        return await ctx.send("⚠️ Este comando só pode ser usado dentro da thread do jogo.", delete_after=10)
+
+    if len(nome) < 3:
+        await apagar_mensagem_comando(ctx)
+        return await ctx.send("⚠️ Nome inválido.", delete_after=10)
+
+    dados = obter_thread_config(ctx.channel.id)
+    if not dados:
+        await apagar_mensagem_comando(ctx)
+        return await ctx.send("⚠️ As inscrições não estão ativas nesta thread.", delete_after=10)
+
+    abertas, limite, _ = dados
+
+    if not abertas:
+        await apagar_mensagem_comando(ctx)
+        return await ctx.send("🛑 As inscrições estão fechadas nesta thread.", delete_after=10)
+
+    validas = contar_inscricoes_validas(ctx.channel.id)
+    if validas is None:
+        await apagar_mensagem_comando(ctx)
+        return await ctx.send(DB_ERROR_MSG)
+
+    if validas >= limite:
+        await apagar_mensagem_comando(ctx)
+        return await ctx.send(f"⚠️ Este jogo já atingiu o limite de **{limite} jogadores**.", delete_after=10)
+
+    conn = get_connection()
+    if not conn:
+        await apagar_mensagem_comando(ctx)
+        return await ctx.send(DB_ERROR_MSG)
+
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT estado
+        FROM inscricoes_jogos
+        WHERE thread_id = %s
+          AND user_id = %s
+          AND estado IN ('pendente_pagamento', 'pago')
+    """, (ctx.channel.id, ctx.author.id))
+    existente = cursor.fetchone()
+
+    if existente:
+        estado = existente[0]
+        cursor.close()
+        conn.close()
+        await apagar_mensagem_comando(ctx)
+
+        if estado == "pendente_pagamento":
+            return await ctx.send("⚠️ Já estás inscrito. Falta apenas confirmar o pagamento.", delete_after=10)
+        return await ctx.send("✅ Já estás confirmado neste jogo.", delete_after=10)
+
+    criado_em = utc_now()
+    expira_em = criado_em + timedelta(hours=HORAS_PAGAMENTO)
+
+    embed = await criar_embed_inscricao_pendente(ctx, nome, expira_em)
+    msg = await ctx.channel.send(embed=embed)
+
+    try:
+        cursor.execute("""
+            INSERT INTO inscricoes_jogos (
+                thread_id, message_id, user_id, nome_jogador,
+                estado, criado_em, expira_em, aviso_30min_enviado
+            )
+            VALUES (%s, %s, %s, %s, 'pendente_pagamento', %s, %s, FALSE)
+        """, (
+            ctx.channel.id,
+            msg.id,
+            ctx.author.id,
+            nome,
+            criado_em,
+            expira_em
+        ))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        try:
+            await msg.delete()
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+            pass
+        cursor.close()
+        conn.close()
+        await apagar_mensagem_comando(ctx)
+        return await ctx.send("⚠️ Já tens uma inscrição ativa neste jogo.", delete_after=10)
+
+    cursor.close()
+    conn.close()
+    await apagar_mensagem_comando(ctx)
+
+@bot.command()
+async def cancelarinscricao(ctx, membro: discord.Member = None):
+    if not is_thread_channel(ctx.channel):
+        await apagar_mensagem_comando(ctx)
+        return await ctx.send("⚠️ Este comando só pode ser usado dentro da thread do jogo.", delete_after=10)
+
+    membro = membro or ctx.author
+    is_admin = ctx.author.guild_permissions.administrator
+
+    if not is_admin and membro.id != ctx.author.id:
+        await apagar_mensagem_comando(ctx)
+        return await ctx.send("❌ Só podes cancelar a tua própria inscrição.", delete_after=10)
+
+    conn = get_connection()
+    if not conn:
+        await apagar_mensagem_comando(ctx)
+        return await ctx.send(DB_ERROR_MSG)
+
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, message_id, nome_jogador, estado
+        FROM inscricoes_jogos
+        WHERE thread_id = %s
+          AND user_id = %s
+          AND estado IN ('pendente_pagamento', 'pago')
+    """, (ctx.channel.id, membro.id))
+    row = cursor.fetchone()
+
+    if not row:
+        cursor.close()
+        conn.close()
+        await apagar_mensagem_comando(ctx)
+        return await ctx.send("⚠️ Não existe nenhuma inscrição ativa para esse jogador nesta thread.", delete_after=10)
+
+    inscricao_id, message_id, nome_jogador, estado = row
+
+    cursor.execute("""
+        UPDATE inscricoes_jogos
+        SET estado = 'cancelado'
+        WHERE id = %s
+    """, (inscricao_id,))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    avatar_url = membro.display_avatar.url if membro else None
+    member_mention = membro.mention
+
+    if ctx.author.id == membro.id:
+        cancelado_por = ctx.author.mention
+    else:
+        cancelado_por = f"{ctx.author.mention} (admin)"
+
+    try:
+        msg = await ctx.channel.fetch_message(message_id)
+        embed = await criar_embed_inscricao_cancelada(
+            ctx.channel.name,
+            nome_jogador,
+            member_mention,
+            avatar_url,
+            cancelado_por
+        )
+        await msg.edit(embed=embed)
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        pass
+
+    await apagar_mensagem_comando(ctx)
+
+    if ctx.author.id == membro.id:
+        await ctx.send(f"✅ {membro.mention}, a tua inscrição foi cancelada.", delete_after=10)
+    else:
+        await ctx.send(f"✅ A inscrição de {membro.mention} foi cancelada por {ctx.author.mention}.", delete_after=10)
+
+    if ctx.author.id != membro.id:
+        try:
+            await membro.send(f"❌ A tua inscrição na thread **{ctx.channel.name}** foi cancelada por um admin.")
+        except (discord.Forbidden, discord.HTTPException):
+            pass
 
 # =========================
 # 🔥 SISTEMA ANTIGO
@@ -683,7 +1103,6 @@ async def status(ctx, membro: discord.Member = None):
     tier_solo, nome_tier_solo, barra_solo, prog_solo = get_tier_data(pontos_solo)
     tier_team, nome_tier_team, barra_team, prog_team = get_tier_data(pontos_team)
 
-    # ----- COR BASEADA APENAS NO CARGO DE TIER -----
     tier_roles = {
         1: TIER_1_ROLE_ID,
         2: TIER_2_ROLE_ID,
@@ -772,6 +1191,162 @@ async def status(ctx, membro: discord.Member = None):
     embed.timestamp = discord.utils.utcnow()
 
     await ctx.send(embed=embed)
+
+@bot.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    if str(payload.emoji) != EMOJI_CONFIRMACAO:
+        return
+
+    if payload.guild_id is None:
+        return
+
+    guild = bot.get_guild(payload.guild_id)
+    if guild is None:
+        return
+
+    if not await utilizador_e_admin_no_guild(guild, payload.user_id):
+        return
+
+    conn = get_connection()
+    if not conn:
+        return
+
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT thread_id, user_id, nome_jogador, estado
+        FROM inscricoes_jogos
+        WHERE message_id = %s
+    """, (payload.message_id,))
+    row = cursor.fetchone()
+
+    if not row:
+        cursor.close()
+        conn.close()
+        return
+
+    thread_id, user_id, nome_jogador, estado = row
+
+    if estado != "pendente_pagamento":
+        cursor.close()
+        conn.close()
+        return
+
+    cursor.execute("""
+        UPDATE inscricoes_jogos
+        SET estado = 'pago',
+            confirmado_por = %s,
+            confirmado_em = NOW()
+        WHERE message_id = %s
+    """, (payload.user_id, payload.message_id))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    canal = bot.get_channel(thread_id)
+    user = bot.get_user(user_id)
+
+    if user is None:
+        try:
+            user = await bot.fetch_user(user_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            user = None
+
+    avatar_url = None
+    if user:
+        avatar_url = user.display_avatar.url
+    elif guild.icon:
+        avatar_url = guild.icon.url
+
+    member_mention = f"<@{user_id}>"
+
+    if canal:
+        try:
+            msg = await canal.fetch_message(payload.message_id)
+            embed = await criar_embed_inscricao_paga(canal.name, nome_jogador, member_mention, avatar_url)
+            await msg.edit(embed=embed)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            pass
+
+    if user:
+        try:
+            await user.send(f"✅ O teu pagamento foi confirmado na thread **{canal.name if canal else 'do jogo'}**.")
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+@tasks.loop(minutes=1)
+async def verificar_inscricoes():
+    conn = get_connection()
+    if not conn:
+        return
+
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, thread_id, message_id, user_id, nome_jogador, expira_em, aviso_30min_enviado
+        FROM inscricoes_jogos
+        WHERE estado = 'pendente_pagamento'
+    """)
+    rows = cursor.fetchall()
+
+    agora = utc_now()
+
+    for inscricao_id, thread_id, message_id, user_id, nome_jogador, expira_em, aviso_30min_enviado in rows:
+        if expira_em.tzinfo is None:
+            expira_em = expira_em.replace(tzinfo=timezone.utc)
+
+        tempo_restante = expira_em - agora
+
+        user = bot.get_user(user_id)
+        if user is None:
+            try:
+                user = await bot.fetch_user(user_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                user = None
+
+        if (not aviso_30min_enviado) and timedelta(minutes=0) < tempo_restante <= timedelta(minutes=MINUTOS_AVISO):
+            if user:
+                try:
+                    await user.send(
+                        "⏰ Faltam menos de 30 minutos para a tua inscrição expirar.\n"
+                        "Se o pagamento não for confirmado a tempo, a inscrição será cancelada."
+                    )
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
+
+            cursor.execute("""
+                UPDATE inscricoes_jogos
+                SET aviso_30min_enviado = TRUE
+                WHERE id = %s
+            """, (inscricao_id,))
+            conn.commit()
+
+        if agora >= expira_em:
+            cursor.execute("""
+                UPDATE inscricoes_jogos
+                SET estado = 'expirado'
+                WHERE id = %s
+            """, (inscricao_id,))
+            conn.commit()
+
+            canal = bot.get_channel(thread_id)
+            avatar_url = user.display_avatar.url if user else None
+            member_mention = f"<@{user_id}>"
+
+            if canal:
+                try:
+                    msg = await canal.fetch_message(message_id)
+                    embed = await criar_embed_inscricao_expirada(canal.name, nome_jogador, member_mention, avatar_url)
+                    await msg.edit(embed=embed)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    pass
+
+            if user:
+                try:
+                    await user.send(f"❌ A tua inscrição expirou porque passaram {HORAS_PAGAMENTO} horas sem confirmação de pagamento.")
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
+
+    cursor.close()
+    conn.close()
 
 # ---------- AUTO RESTART ----------
 async def start_bot():
