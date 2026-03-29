@@ -2,7 +2,6 @@ import discord
 from discord.ext import commands, tasks
 import psycopg2
 import os
-import asyncio
 from datetime import datetime, timezone, timedelta
 
 # ---------- CONFIG ----------
@@ -40,6 +39,7 @@ intents.guilds = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+
 # ---------- DATABASE ----------
 def get_connection():
     try:
@@ -47,6 +47,7 @@ def get_connection():
     except Exception as e:
         print(f"Erro ao ligar à DB: {e}")
         return None
+
 
 # ---------- TIER HELPERS ----------
 def get_tier_from_points(valor: int) -> int:
@@ -61,6 +62,7 @@ def get_tier_from_points(valor: int) -> int:
     else:
         return 5
 
+
 def get_tier_role_id(tier: int) -> int:
     tier_map = {
         1: TIER_1_ROLE_ID,
@@ -70,6 +72,7 @@ def get_tier_role_id(tier: int) -> int:
         5: TIER_5_ROLE_ID,
     }
     return tier_map[tier]
+
 
 async def update_member_tier_role(membro: discord.Member, pontos_normais: int):
     tier = get_tier_from_points(pontos_normais)
@@ -82,6 +85,7 @@ async def update_member_tier_role(membro: discord.Member, pontos_normais: int):
     correct_role = membro.guild.get_role(correct_role_id)
     if correct_role and correct_role not in membro.roles:
         await membro.add_roles(correct_role, reason="Atualização automática de tier por pontos")
+
 
 # ---------- ACTIVITY HELPERS ----------
 def formatar_inatividade(dt):
@@ -104,18 +108,22 @@ def formatar_inatividade(dt):
         return f"{horas} hora(s)"
     return f"{minutos} minuto(s)"
 
+
 # ---------- INSCRIÇÕES HELPERS ----------
 def utc_now():
     return datetime.now(timezone.utc)
 
+
 def is_thread_channel(channel):
     return isinstance(channel, discord.Thread)
+
 
 async def apagar_mensagem_comando(ctx):
     try:
         await ctx.message.delete()
     except (discord.Forbidden, discord.NotFound, discord.HTTPException):
         pass
+
 
 async def utilizador_e_admin_no_guild(guild: discord.Guild, user_id: int) -> bool:
     if guild is None:
@@ -129,6 +137,7 @@ async def utilizador_e_admin_no_guild(guild: discord.Guild, user_id: int) -> boo
             return False
 
     return member.guild_permissions.administrator
+
 
 def obter_thread_config(thread_id: int):
     conn = get_connection()
@@ -145,6 +154,7 @@ def obter_thread_config(thread_id: int):
     cursor.close()
     conn.close()
     return row
+
 
 def contar_inscricoes_validas(thread_id: int):
     conn = get_connection()
@@ -163,6 +173,7 @@ def contar_inscricoes_validas(thread_id: int):
     conn.close()
     return total
 
+
 async def criar_embed_inscricao_pendente(ctx, nome: str, expira_em: datetime):
     embed = discord.Embed(
         title=f"⚽ Inscrição - {ctx.channel.name}",
@@ -178,6 +189,7 @@ async def criar_embed_inscricao_pendente(ctx, nome: str, expira_em: datetime):
     embed.set_footer(text=f"⚡ Tens {HORAS_PAGAMENTO} horas para efetuar o pagamento")
     return embed
 
+
 async def criar_embed_inscricao_paga(thread_name: str, nome: str, member_mention: str, avatar_url=None):
     embed = discord.Embed(
         title=f"⚽ Inscrição confirmada - {thread_name}",
@@ -191,6 +203,7 @@ async def criar_embed_inscricao_paga(thread_name: str, nome: str, member_mention
     embed.add_field(name="💰 Estado", value="✅ Pago", inline=False)
     embed.set_footer(text="✅ Pagamento confirmado")
     return embed
+
 
 async def criar_embed_inscricao_expirada(thread_name: str, nome: str, member_mention: str, avatar_url=None):
     embed = discord.Embed(
@@ -206,6 +219,7 @@ async def criar_embed_inscricao_expirada(thread_name: str, nome: str, member_men
     embed.set_footer(text="⌛ O prazo de pagamento terminou")
     return embed
 
+
 async def criar_embed_inscricao_cancelada(thread_name: str, nome: str, member_mention: str, avatar_url=None, cancelado_por=""):
     embed = discord.Embed(
         title=f"⚽ Inscrição cancelada - {thread_name}",
@@ -220,6 +234,7 @@ async def criar_embed_inscricao_cancelada(thread_name: str, nome: str, member_me
     embed.add_field(name="🛑 Cancelado por", value=cancelado_por, inline=False)
     embed.set_footer(text="ℹ️ A vaga foi libertada")
     return embed
+
 
 # ---------- CRIAR TABELAS ----------
 conn = get_connection()
@@ -303,12 +318,29 @@ if conn:
 else:
     print("❌ Não foi possível ligar à base de dados para criar/verificar as tabelas.")
 
+
 # ---------- EVENT ----------
 @bot.event
 async def on_ready():
+    print("========== BOT READY ==========")
+    print(f"✅ Bot ligado como {bot.user}")
+    print(f"message_content: {bot.intents.message_content}")
+    print(f"members: {bot.intents.members}")
+    print(f"guilds: {bot.intents.guilds}")
+    print("===============================")
+
     if not verificar_inscricoes.is_running():
         verificar_inscricoes.start()
-    print(f"✅ Bot ligado como {bot.user}")
+
+
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
+
+    print(f"[MSG] {message.author} em #{message.channel}: {message.content}")
+    await bot.process_commands(message)
+
 
 @bot.event
 async def on_command_error(ctx, error):
@@ -327,9 +359,15 @@ async def on_command_error(ctx, error):
     except Exception:
         pass
 
+
 # =========================
 # 🆕 INSCRIÇÕES EM THREADS
 # =========================
+@bot.command()
+async def ping(ctx):
+    await ctx.send("pong")
+
+
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def abrir_inscricoes(ctx, limite: int = LIMITE_PADRAO_INSCRICOES):
@@ -360,6 +398,7 @@ async def abrir_inscricoes(ctx, limite: int = LIMITE_PADRAO_INSCRICOES):
 
     await ctx.send(f"✅ Inscrições abertas nesta thread.\n👥 Limite: **{limite} jogadores**")
 
+
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def fechar_inscricoes(ctx):
@@ -381,6 +420,7 @@ async def fechar_inscricoes(ctx):
     conn.close()
 
     await ctx.send("🛑 Inscrições fechadas nesta thread.")
+
 
 @bot.command()
 @commands.has_permissions(administrator=True)
@@ -408,6 +448,7 @@ async def estado_inscricoes(ctx):
     embed.add_field(name="📉 Vagas restantes", value=str(vagas), inline=False)
 
     await ctx.send(embed=embed)
+
 
 @bot.command()
 async def inscrever(ctx, *, nome: str):
@@ -504,6 +545,7 @@ async def inscrever(ctx, *, nome: str):
     conn.close()
     await apagar_mensagem_comando(ctx)
 
+
 @bot.command()
 async def cancelarinscricao(ctx, membro: discord.Member = None):
     if not is_thread_channel(ctx.channel):
@@ -538,7 +580,7 @@ async def cancelarinscricao(ctx, membro: discord.Member = None):
         await apagar_mensagem_comando(ctx)
         return await ctx.send("⚠️ Não existe nenhuma inscrição ativa para esse jogador nesta thread.", delete_after=10)
 
-    inscricao_id, message_id, nome_jogador, estado = row
+    inscricao_id, message_id, nome_jogador, _estado = row
 
     cursor.execute("""
         UPDATE inscricoes_jogos
@@ -583,6 +625,7 @@ async def cancelarinscricao(ctx, membro: discord.Member = None):
         except (discord.Forbidden, discord.HTTPException):
             pass
 
+
 # =========================
 # 🔥 SISTEMA ANTIGO
 # =========================
@@ -621,6 +664,7 @@ async def addpontos(ctx, membro: discord.Member, quantidade: int):
 
     await ctx.send(f"✅ {membro.display_name} agora tem **{novo_total} pontos**")
 
+
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def removepontos(ctx, membro: discord.Member, quantidade: int):
@@ -651,6 +695,7 @@ async def removepontos(ctx, membro: discord.Member, quantidade: int):
 
     await ctx.send(f"❌ {membro.display_name} agora tem **{novo_total} pontos**")
 
+
 @bot.command()
 async def pontos(ctx, membro: discord.Member = None):
     membro = membro or ctx.author
@@ -669,6 +714,7 @@ async def pontos(ctx, membro: discord.Member = None):
     conn.close()
 
     await ctx.send(f"⭐ {membro.display_name} tem **{total} pontos**")
+
 
 # =========================
 # 🆕 RANKING PONTOS NORMAL
@@ -709,6 +755,7 @@ async def ranking(ctx):
     cursor.close()
     conn.close()
 
+
 # =========================
 # 🆕 SOLO REBIRTH
 # =========================
@@ -736,6 +783,7 @@ async def addsolo(ctx, membro: discord.Member, quantidade: int):
 
     await ctx.send(f"🔥 {membro.display_name} agora tem **{total} vitórias no Solo Rebirth**")
 
+
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def removesolo(ctx, membro: discord.Member, quantidade: int):
@@ -762,6 +810,7 @@ async def removesolo(ctx, membro: discord.Member, quantidade: int):
 
     await ctx.send(f"❌ {membro.display_name} agora tem **{total} vitórias no Solo Rebirth**")
 
+
 @bot.command()
 async def pontossolo(ctx, membro: discord.Member = None):
     membro = membro or ctx.author
@@ -780,6 +829,7 @@ async def pontossolo(ctx, membro: discord.Member = None):
     conn.close()
 
     await ctx.send(f"🎯 {membro.display_name} tem **{total} vitórias no Solo Rebirth!**")
+
 
 @bot.command()
 async def rankingsolo(ctx):
@@ -811,6 +861,7 @@ async def rankingsolo(ctx):
     cursor.close()
     conn.close()
 
+
 # =========================
 # 🆕 TEAM REBIRTH
 # =========================
@@ -838,6 +889,7 @@ async def addteam(ctx, membro: discord.Member, quantidade: int):
 
     await ctx.send(f"👥 {membro.display_name} agora tem **{total} vitórias no Team Rebirth**")
 
+
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def removeteam(ctx, membro: discord.Member, quantidade: int):
@@ -864,6 +916,7 @@ async def removeteam(ctx, membro: discord.Member, quantidade: int):
 
     await ctx.send(f"❌ {membro.display_name} agora tem **{total} vitórias no Team Rebirth**")
 
+
 @bot.command()
 async def pontosteam(ctx, membro: discord.Member = None):
     membro = membro or ctx.author
@@ -882,6 +935,7 @@ async def pontosteam(ctx, membro: discord.Member = None):
     conn.close()
 
     await ctx.send(f"👥 {membro.display_name} tem **{total} vitórias no Team Rebirth!**")
+
 
 @bot.command()
 async def rankingteam(ctx):
@@ -913,6 +967,7 @@ async def rankingteam(ctx):
     cursor.close()
     conn.close()
 
+
 # =========================
 # 🆕 TEMPO EM PISTA
 # =========================
@@ -940,6 +995,7 @@ async def addtempo(ctx, membro: discord.Member, quantidade: int):
 
     await ctx.send(f"⏱️ {membro.display_name} agora tem **{total} tempo em pista**")
 
+
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def removetempo(ctx, membro: discord.Member, quantidade: int):
@@ -966,6 +1022,7 @@ async def removetempo(ctx, membro: discord.Member, quantidade: int):
 
     await ctx.send(f"❌ {membro.display_name} agora tem **{total} tempo em pista**")
 
+
 @bot.command()
 async def tempopista(ctx, membro: discord.Member = None):
     membro = membro or ctx.author
@@ -984,6 +1041,7 @@ async def tempopista(ctx, membro: discord.Member = None):
     conn.close()
 
     await ctx.send(f"⏱️ {membro.display_name} tem **{total} tempo em pista**")
+
 
 @bot.command()
 async def rankingtempo(ctx):
@@ -1021,6 +1079,7 @@ async def rankingtempo(ctx):
     cursor.close()
     conn.close()
 
+
 # =========================
 # 🆕 STATUS (COM TIERS + INATIVIDADE + TEMPO)
 # =========================
@@ -1033,7 +1092,6 @@ async def status(ctx, membro: discord.Member = None):
         return await ctx.send(DB_ERROR_MSG)
     cursor = conn.cursor()
 
-    # ---------- PONTOS NORMAIS ----------
     cursor.execute("SELECT pontos, ultima_atividade FROM pontos WHERE user_id = %s", (membro.id,))
     r = cursor.fetchone()
     pontos = r[0] if r else 0
@@ -1043,7 +1101,6 @@ async def status(ctx, membro: discord.Member = None):
     ranking_dados = [uid for (uid,) in cursor.fetchall()]
     rank_pontos = ranking_dados.index(membro.id) + 1 if membro.id in ranking_dados else "N/A"
 
-    # ---------- SOLO ----------
     cursor.execute("SELECT pontos FROM pontos_solo WHERE user_id = %s", (membro.id,))
     r = cursor.fetchone()
     pontos_solo = r[0] if r else 0
@@ -1052,7 +1109,6 @@ async def status(ctx, membro: discord.Member = None):
     ranking_dados_solo = [uid for (uid,) in cursor.fetchall()]
     rank_solo = ranking_dados_solo.index(membro.id) + 1 if membro.id in ranking_dados_solo else "N/A"
 
-    # ---------- TEAM ----------
     cursor.execute("SELECT pontos FROM pontos_team WHERE user_id = %s", (membro.id,))
     r = cursor.fetchone()
     pontos_team = r[0] if r else 0
@@ -1061,7 +1117,6 @@ async def status(ctx, membro: discord.Member = None):
     ranking_dados_team = [uid for (uid,) in cursor.fetchall()]
     rank_team = ranking_dados_team.index(membro.id) + 1 if membro.id in ranking_dados_team else "N/A"
 
-    # ---------- TEMPO EM PISTA ----------
     cursor.execute("SELECT pontos FROM pontos_tempo WHERE user_id = %s", (membro.id,))
     r = cursor.fetchone()
     pontos_tempo = r[0] if r else 0
@@ -1207,6 +1262,7 @@ async def status(ctx, membro: discord.Member = None):
 
     await ctx.send(embed=embed)
 
+
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     if str(payload.emoji) != EMOJI_CONFIRMACAO:
@@ -1288,6 +1344,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         except (discord.Forbidden, discord.HTTPException):
             pass
 
+
 @tasks.loop(minutes=1)
 async def verificar_inscricoes():
     conn = get_connection()
@@ -1363,13 +1420,6 @@ async def verificar_inscricoes():
     cursor.close()
     conn.close()
 
-# ---------- AUTO RESTART ----------
-async def start_bot():
-    while True:
-        try:
-            await bot.start(TOKEN)
-        except Exception as e:
-            print(f"Erro crítico: {e}")
-            await asyncio.sleep(5)
 
-asyncio.run(start_bot())
+# ---------- START ----------
+bot.run(TOKEN)
