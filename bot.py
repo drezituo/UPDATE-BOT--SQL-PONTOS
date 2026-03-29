@@ -118,6 +118,10 @@ def is_thread_channel(channel):
     return isinstance(channel, discord.Thread)
 
 
+def normalizar_nome(nome: str) -> str:
+    return " ".join(nome.split()).strip()
+
+
 async def apagar_mensagem_comando(ctx):
     try:
         await ctx.message.delete()
@@ -420,8 +424,8 @@ async def on_command_error(ctx, error):
         return
 
     if isinstance(error, commands.MissingRequiredArgument):
-        if ctx.command and ctx.command.name == "inscrever":
-            await ctx.send("⚠️ Usa o comando assim: `!inscrever Nome Apelido`", delete_after=10)
+        if ctx.command and ctx.command.name in ("inscrever", "cancelarinscricao"):
+            await ctx.send("⚠️ Usa o comando com o nome do jogador.", delete_after=10)
             return
 
     print(f"Erro completo: {repr(error)}")
@@ -510,7 +514,7 @@ async def estado_inscricoes(ctx):
 
 @bot.command()
 async def inscrever(ctx, *, nome: str):
-    nome = nome.strip()
+    nome = normalizar_nome(nome)
 
     if not is_thread_channel(ctx.channel):
         await apagar_mensagem_comando(ctx)
@@ -548,23 +552,19 @@ async def inscrever(ctx, *, nome: str):
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT estado
+        SELECT 1
         FROM inscricoes_jogos
         WHERE thread_id = %s
-          AND user_id = %s
+          AND LOWER(nome_jogador) = LOWER(%s)
           AND estado IN ('pendente_pagamento', 'pago')
-    """, (ctx.channel.id, ctx.author.id))
-    existente = cursor.fetchone()
+    """, (ctx.channel.id, nome))
+    existe_nome = cursor.fetchone()
 
-    if existente:
-        estado = existente[0]
+    if existe_nome:
         cursor.close()
         conn.close()
         await apagar_mensagem_comando(ctx)
-
-        if estado == "pendente_pagamento":
-            return await ctx.send("⚠️ Já estás inscrito. Falta apenas confirmar o pagamento.", delete_after=10)
-        return await ctx.send("✅ Já estás confirmado neste jogo.", delete_after=10)
+        return await ctx.send("⚠️ Já existe uma inscrição com esse nome neste jogo.", delete_after=10)
 
     criado_em = utc_now()
     expira_em = criado_em + timedelta(hours=HORAS_PAGAMENTO)
@@ -588,7 +588,7 @@ async def inscrever(ctx, *, nome: str):
             expira_em
         ))
         conn.commit()
-    except Exception:
+    except Exception as e:
         conn.rollback()
         try:
             await msg.delete()
@@ -597,7 +597,8 @@ async def inscrever(ctx, *, nome: str):
         cursor.close()
         conn.close()
         await apagar_mensagem_comando(ctx)
-        return await ctx.send("⚠️ Já tens uma inscrição ativa neste jogo.", delete_after=10)
+        print(f"Erro ao inserir inscrição: {e}")
+        return await ctx.send("⚠️ Erro ao criar a inscrição.", delete_after=10)
 
     cursor.close()
     conn.close()
@@ -606,17 +607,17 @@ async def inscrever(ctx, *, nome: str):
 
 
 @bot.command()
-async def cancelarinscricao(ctx, membro: discord.Member = None):
+async def cancelarinscricao(ctx, *, nome: str):
     if not is_thread_channel(ctx.channel):
         await apagar_mensagem_comando(ctx)
         return await ctx.send("⚠️ Este comando só pode ser usado dentro da thread do jogo.", delete_after=10)
 
-    membro = membro or ctx.author
-    is_admin = ctx.author.guild_permissions.administrator
-
-    if not is_admin and membro.id != ctx.author.id:
+    nome = normalizar_nome(nome)
+    if len(nome) < 3:
         await apagar_mensagem_comando(ctx)
-        return await ctx.send("❌ Só podes cancelar a tua própria inscrição.", delete_after=10)
+        return await ctx.send("⚠️ Nome inválido.", delete_after=10)
+
+    is_admin = ctx.author.guild_permissions.administrator
 
     conn = get_connection()
     if not conn:
@@ -624,22 +625,40 @@ async def cancelarinscricao(ctx, membro: discord.Member = None):
         return await ctx.send(DB_ERROR_MSG)
 
     cursor = conn.cursor()
-    cursor.execute("""
-        SELECT id, message_id, nome_jogador, estado
-        FROM inscricoes_jogos
-        WHERE thread_id = %s
-          AND user_id = %s
-          AND estado IN ('pendente_pagamento', 'pago')
-    """, (ctx.channel.id, membro.id))
+
+    if is_admin:
+        cursor.execute("""
+            SELECT id, message_id, nome_jogador, user_id
+            FROM inscricoes_jogos
+            WHERE thread_id = %s
+              AND LOWER(nome_jogador) = LOWER(%s)
+              AND estado IN ('pendente_pagamento', 'pago')
+            ORDER BY id DESC
+            LIMIT 1
+        """, (ctx.channel.id, nome))
+    else:
+        cursor.execute("""
+            SELECT id, message_id, nome_jogador, user_id
+            FROM inscricoes_jogos
+            WHERE thread_id = %s
+              AND LOWER(nome_jogador) = LOWER(%s)
+              AND user_id = %s
+              AND estado IN ('pendente_pagamento', 'pago')
+            ORDER BY id DESC
+            LIMIT 1
+        """, (ctx.channel.id, nome, ctx.author.id))
+
     row = cursor.fetchone()
 
     if not row:
         cursor.close()
         conn.close()
         await apagar_mensagem_comando(ctx)
-        return await ctx.send("⚠️ Não existe nenhuma inscrição ativa para esse jogador nesta thread.", delete_after=10)
+        if is_admin:
+            return await ctx.send("⚠️ Não existe nenhuma inscrição ativa com esse nome nesta thread.", delete_after=10)
+        return await ctx.send("⚠️ Não encontrei uma inscrição ativa tua com esse nome nesta thread.", delete_after=10)
 
-    inscricao_id, message_id, nome_jogador, _estado = row
+    inscricao_id, message_id, nome_jogador, user_id = row
 
     cursor.execute("""
         UPDATE inscricoes_jogos
@@ -650,10 +669,17 @@ async def cancelarinscricao(ctx, membro: discord.Member = None):
     cursor.close()
     conn.close()
 
-    avatar_url = membro.display_avatar.url if membro else None
-    member_mention = membro.mention
+    user = ctx.guild.get_member(user_id)
+    if user is None:
+        try:
+            user = await ctx.guild.fetch_member(user_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            user = None
 
-    if ctx.author.id == membro.id:
+    avatar_url = user.display_avatar.url if user else None
+    member_mention = f"<@{user_id}>"
+
+    if ctx.author.id == user_id:
         cancelado_por = ctx.author.mention
     else:
         cancelado_por = f"{ctx.author.mention} (admin)"
@@ -673,14 +699,14 @@ async def cancelarinscricao(ctx, membro: discord.Member = None):
 
     await apagar_mensagem_comando(ctx)
 
-    if ctx.author.id == membro.id:
-        await ctx.send(f"✅ {membro.mention}, a tua inscrição foi cancelada.", delete_after=10)
+    if ctx.author.id == user_id:
+        await ctx.send(f"✅ A inscrição de **{nome_jogador}** foi cancelada.", delete_after=10)
     else:
-        await ctx.send(f"✅ A inscrição de {membro.mention} foi cancelada por {ctx.author.mention}.", delete_after=10)
+        await ctx.send(f"✅ A inscrição de **{nome_jogador}** foi cancelada por {ctx.author.mention}.", delete_after=10)
 
-    if ctx.author.id != membro.id:
+    if user and ctx.author.id != user_id:
         try:
-            await membro.send(f"❌ A tua inscrição na thread **{ctx.channel.name}** foi cancelada por um admin.")
+            await user.send(f"❌ A inscrição de **{nome_jogador}** na thread **{ctx.channel.name}** foi cancelada por um admin.")
         except (discord.Forbidden, discord.HTTPException):
             pass
 
