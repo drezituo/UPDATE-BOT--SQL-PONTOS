@@ -224,72 +224,84 @@ async def criar_embed_inscricao_cancelada(thread_name: str, nome: str, member_me
 # ---------- CRIAR TABELAS ----------
 conn = get_connection()
 if conn:
-    cursor = conn.cursor()
+    cursor = None
+    try:
+        cursor = conn.cursor()
 
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS pontos (
-        user_id BIGINT PRIMARY KEY,
-        pontos INTEGER DEFAULT 0
-    )
-    """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pontos (
+            user_id BIGINT PRIMARY KEY,
+            pontos INTEGER DEFAULT 0
+        )
+        """)
 
-    cursor.execute("""
-    ALTER TABLE pontos
-    ADD COLUMN IF NOT EXISTS ultima_atividade TIMESTAMP
-    """)
+        cursor.execute("""
+        ALTER TABLE pontos
+        ADD COLUMN IF NOT EXISTS ultima_atividade TIMESTAMP
+        """)
 
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS pontos_solo (
-        user_id BIGINT PRIMARY KEY,
-        pontos INTEGER DEFAULT 0
-    )
-    """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pontos_solo (
+            user_id BIGINT PRIMARY KEY,
+            pontos INTEGER DEFAULT 0
+        )
+        """)
 
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS pontos_team (
-        user_id BIGINT PRIMARY KEY,
-        pontos INTEGER DEFAULT 0
-    )
-    """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pontos_team (
+            user_id BIGINT PRIMARY KEY,
+            pontos INTEGER DEFAULT 0
+        )
+        """)
 
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS pontos_tempo (
-        user_id BIGINT PRIMARY KEY,
-        pontos INTEGER DEFAULT 0
-    )
-    """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pontos_tempo (
+            user_id BIGINT PRIMARY KEY,
+            pontos INTEGER DEFAULT 0
+        )
+        """)
 
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS jogos_threads (
-        thread_id BIGINT PRIMARY KEY,
-        thread_name TEXT NOT NULL,
-        inscricoes_abertas BOOLEAN NOT NULL DEFAULT FALSE,
-        limite INTEGER NOT NULL DEFAULT 25,
-        criado_por BIGINT NOT NULL,
-        criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-    """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS jogos_threads (
+            thread_id BIGINT PRIMARY KEY,
+            thread_name TEXT NOT NULL,
+            inscricoes_abertas BOOLEAN NOT NULL DEFAULT FALSE,
+            limite INTEGER NOT NULL DEFAULT 25,
+            criado_por BIGINT NOT NULL,
+            criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """)
 
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS inscricoes_jogos (
-        id BIGSERIAL PRIMARY KEY,
-        thread_id BIGINT NOT NULL,
-        message_id BIGINT NOT NULL UNIQUE,
-        user_id BIGINT NOT NULL,
-        nome_jogador TEXT NOT NULL,
-        estado TEXT NOT NULL CHECK (estado IN ('pendente_pagamento', 'pago', 'expirado', 'cancelado')),
-        criado_em TIMESTAMPTZ NOT NULL,
-        expira_em TIMESTAMPTZ NOT NULL,
-        aviso_30min_enviado BOOLEAN NOT NULL DEFAULT FALSE,
-        confirmado_por BIGINT,
-        confirmado_em TIMESTAMPTZ,
-        UNIQUE(thread_id, user_id)
-    )
-    """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS inscricoes_jogos (
+            id BIGSERIAL PRIMARY KEY,
+            thread_id BIGINT NOT NULL,
+            message_id BIGINT NOT NULL UNIQUE,
+            user_id BIGINT NOT NULL,
+            nome_jogador TEXT NOT NULL,
+            estado TEXT NOT NULL CHECK (estado IN ('pendente_pagamento', 'pago', 'expirado', 'cancelado')),
+            criado_em TIMESTAMPTZ NOT NULL,
+            expira_em TIMESTAMPTZ NOT NULL,
+            aviso_30min_enviado BOOLEAN NOT NULL DEFAULT FALSE,
+            confirmado_por BIGINT,
+            confirmado_em TIMESTAMPTZ,
+            UNIQUE(thread_id, user_id)
+        )
+        """)
 
-    conn.commit()
-    cursor.close()
-    conn.close()
+        conn.commit()
+        print("✅ Tabelas verificadas/criadas com sucesso.")
+
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ Erro ao criar tabelas: {e}")
+
+    finally:
+        if cursor:
+            cursor.close()
+        conn.close()
+else:
+    print("❌ Não foi possível ligar à base de dados para criar/verificar as tabelas.")
 
 # ---------- EVENT ----------
 @bot.event
@@ -309,7 +321,11 @@ async def on_command_error(ctx, error):
             await ctx.send("⚠️ Usa o comando assim: `!inscrever Nome Apelido`", delete_after=10)
             return
 
-    print(f"Erro: {error}")
+    print(f"Erro completo: {repr(error)}")
+    try:
+        await ctx.send(f"Erro: `{repr(error)}`", delete_after=15)
+    except Exception:
+        pass
 
 # =========================
 # 🆕 INSCRIÇÕES EM THREADS
@@ -570,7 +586,6 @@ async def cancelarinscricao(ctx, membro: discord.Member = None):
 # =========================
 # 🔥 SISTEMA ANTIGO
 # =========================
-
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def addpontos(ctx, membro: discord.Member, quantidade: int):
