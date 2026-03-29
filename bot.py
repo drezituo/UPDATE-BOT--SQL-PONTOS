@@ -122,11 +122,24 @@ def normalizar_nome(nome: str) -> str:
     return " ".join(nome.split()).strip()
 
 
-async def obter_avatar_url_jogador(guild: discord.Guild, nome_jogador: str):
+def extrair_jogador_da_inscricao(ctx, nome: str):
+    nome = normalizar_nome(nome)
+
+    if ctx.message.mentions:
+        membro_mencionado = ctx.message.mentions[0]
+        return membro_mencionado.display_name, membro_mencionado
+
+    return nome, None
+
+
+async def obter_avatar_url_jogador(guild: discord.Guild, nome_jogador: str, membro: discord.Member = None):
+    if membro is not None:
+        return membro.display_avatar.url
+
     if guild is None:
         return "https://cdn.discordapp.com/embed/avatars/0.png"
 
-    nome_normalizado = normalizar_nome(nome_jogador).lower()
+    nome_jogador = normalizar_nome(nome_jogador).lower()
 
     def corresponde(member: discord.Member) -> bool:
         candidatos = {
@@ -138,7 +151,7 @@ async def obter_avatar_url_jogador(guild: discord.Guild, nome_jogador: str):
         if global_name:
             candidatos.add(normalizar_nome(global_name).lower())
 
-        return nome_normalizado in candidatos
+        return nome_jogador in candidatos
 
     for member in guild.members:
         if corresponde(member):
@@ -210,8 +223,8 @@ def contar_inscricoes_validas(thread_id: int):
     return total
 
 
-async def criar_embed_inscricao_pendente(ctx, nome: str, expira_em: datetime):
-    avatar_url = await obter_avatar_url_jogador(ctx.guild, nome)
+async def criar_embed_inscricao_pendente(ctx, nome: str, expira_em: datetime, membro_jogador: discord.Member = None):
+    avatar_url = await obter_avatar_url_jogador(ctx.guild, nome, membro_jogador)
 
     embed = discord.Embed(
         title=f"🎟️ Inscrição - {ctx.channel.name}",
@@ -228,8 +241,8 @@ async def criar_embed_inscricao_pendente(ctx, nome: str, expira_em: datetime):
     return embed
 
 
-async def criar_embed_inscricao_paga(guild: discord.Guild, thread_name: str, nome: str, autor_inscricao_mention: str):
-    avatar_url = await obter_avatar_url_jogador(guild, nome)
+async def criar_embed_inscricao_paga(guild: discord.Guild, thread_name: str, nome: str, autor_inscricao_mention: str, membro_jogador: discord.Member = None):
+    avatar_url = await obter_avatar_url_jogador(guild, nome, membro_jogador)
 
     embed = discord.Embed(
         title=f"🎟️ Inscrição confirmada - {thread_name}",
@@ -244,8 +257,8 @@ async def criar_embed_inscricao_paga(guild: discord.Guild, thread_name: str, nom
     return embed
 
 
-async def criar_embed_inscricao_expirada(guild: discord.Guild, thread_name: str, nome: str, autor_inscricao_mention: str):
-    avatar_url = await obter_avatar_url_jogador(guild, nome)
+async def criar_embed_inscricao_expirada(guild: discord.Guild, thread_name: str, nome: str, autor_inscricao_mention: str, membro_jogador: discord.Member = None):
+    avatar_url = await obter_avatar_url_jogador(guild, nome, membro_jogador)
 
     embed = discord.Embed(
         title=f"🎟️ Inscrição cancelada - {thread_name}",
@@ -260,8 +273,8 @@ async def criar_embed_inscricao_expirada(guild: discord.Guild, thread_name: str,
     return embed
 
 
-async def criar_embed_inscricao_cancelada(guild: discord.Guild, thread_name: str, nome: str, autor_inscricao_mention: str, cancelado_por=""):
-    avatar_url = await obter_avatar_url_jogador(guild, nome)
+async def criar_embed_inscricao_cancelada(guild: discord.Guild, thread_name: str, nome: str, autor_inscricao_mention: str, cancelado_por="", membro_jogador: discord.Member = None):
+    avatar_url = await obter_avatar_url_jogador(guild, nome, membro_jogador)
 
     embed = discord.Embed(
         title=f"🎟️ Inscrição cancelada - {thread_name}",
@@ -551,13 +564,14 @@ async def estado_inscricoes(ctx):
 
 @bot.command()
 async def inscrever(ctx, *, nome: str):
-    nome = normalizar_nome(nome)
+    nome_original = nome
+    nome, membro_jogador = extrair_jogador_da_inscricao(ctx, nome_original)
 
     if not is_thread_channel(ctx.channel):
         await apagar_mensagem_comando(ctx)
         return await ctx.send("⚠️ Este comando só pode ser usado dentro da thread do jogo.", delete_after=10)
 
-    if len(nome) < 3:
+    if len(normalizar_nome(nome)) < 3:
         await apagar_mensagem_comando(ctx)
         return await ctx.send("⚠️ Nome inválido.", delete_after=10)
 
@@ -606,7 +620,7 @@ async def inscrever(ctx, *, nome: str):
     criado_em = utc_now()
     expira_em = criado_em + timedelta(hours=HORAS_PAGAMENTO)
 
-    embed = await criar_embed_inscricao_pendente(ctx, nome, expira_em)
+    embed = await criar_embed_inscricao_pendente(ctx, nome, expira_em, membro_jogador)
     msg = await ctx.channel.send(embed=embed)
 
     try:
