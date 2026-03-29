@@ -122,13 +122,13 @@ def normalizar_nome(nome: str) -> str:
     return " ".join(nome.split()).strip()
 
 
-def encontrar_membro_por_nome(guild: discord.Guild, nome: str):
+async def obter_avatar_url_jogador(guild: discord.Guild, nome_jogador: str):
     if guild is None:
-        return None
+        return "https://cdn.discordapp.com/embed/avatars/0.png"
 
-    nome_normalizado = normalizar_nome(nome).lower()
+    nome_normalizado = normalizar_nome(nome_jogador).lower()
 
-    for member in guild.members:
+    def corresponde(member: discord.Member) -> bool:
         candidatos = {
             normalizar_nome(member.display_name).lower(),
             normalizar_nome(member.name).lower(),
@@ -138,17 +138,18 @@ def encontrar_membro_por_nome(guild: discord.Guild, nome: str):
         if global_name:
             candidatos.add(normalizar_nome(global_name).lower())
 
-        if nome_normalizado in candidatos:
-            return member
+        return nome_normalizado in candidatos
 
-    return None
+    for member in guild.members:
+        if corresponde(member):
+            return member.display_avatar.url
 
-
-def obter_avatar_url_jogador(guild: discord.Guild, nome_jogador: str):
-    membro = encontrar_membro_por_nome(guild, nome_jogador)
-
-    if membro:
-        return membro.display_avatar.url
+    try:
+        async for member in guild.fetch_members(limit=None):
+            if corresponde(member):
+                return member.display_avatar.url
+    except (discord.Forbidden, discord.HTTPException):
+        pass
 
     return "https://cdn.discordapp.com/embed/avatars/0.png"
 
@@ -210,7 +211,7 @@ def contar_inscricoes_validas(thread_id: int):
 
 
 async def criar_embed_inscricao_pendente(ctx, nome: str, expira_em: datetime):
-    avatar_url = obter_avatar_url_jogador(ctx.guild, nome)
+    avatar_url = await obter_avatar_url_jogador(ctx.guild, nome)
 
     embed = discord.Embed(
         title=f"🎟️ Inscrição - {ctx.channel.name}",
@@ -228,7 +229,7 @@ async def criar_embed_inscricao_pendente(ctx, nome: str, expira_em: datetime):
 
 
 async def criar_embed_inscricao_paga(guild: discord.Guild, thread_name: str, nome: str, autor_inscricao_mention: str):
-    avatar_url = obter_avatar_url_jogador(guild, nome)
+    avatar_url = await obter_avatar_url_jogador(guild, nome)
 
     embed = discord.Embed(
         title=f"🎟️ Inscrição confirmada - {thread_name}",
@@ -244,7 +245,7 @@ async def criar_embed_inscricao_paga(guild: discord.Guild, thread_name: str, nom
 
 
 async def criar_embed_inscricao_expirada(guild: discord.Guild, thread_name: str, nome: str, autor_inscricao_mention: str):
-    avatar_url = obter_avatar_url_jogador(guild, nome)
+    avatar_url = await obter_avatar_url_jogador(guild, nome)
 
     embed = discord.Embed(
         title=f"🎟️ Inscrição cancelada - {thread_name}",
@@ -260,7 +261,7 @@ async def criar_embed_inscricao_expirada(guild: discord.Guild, thread_name: str,
 
 
 async def criar_embed_inscricao_cancelada(guild: discord.Guild, thread_name: str, nome: str, autor_inscricao_mention: str, cancelado_por=""):
-    avatar_url = obter_avatar_url_jogador(guild, nome)
+    avatar_url = await obter_avatar_url_jogador(guild, nome)
 
     embed = discord.Embed(
         title=f"🎟️ Inscrição cancelada - {thread_name}",
