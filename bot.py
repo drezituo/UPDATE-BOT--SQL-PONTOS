@@ -1393,7 +1393,7 @@ async def status(ctx, membro: discord.Member = None):
     )
 
     embed.add_field(
-        name="👥 TEAM REBIRTH",
+        name="👥 TEAM WIN",
         value=(
             f"**Tier {tier_team} • {nome_tier_team}**\n"
             f"{barra_team}\n"
