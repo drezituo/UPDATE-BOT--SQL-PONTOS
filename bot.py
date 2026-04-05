@@ -1059,7 +1059,7 @@ async def addteam(ctx, membro: discord.Member, quantidade: int):
     cursor.close()
     conn.close()
 
-    await ctx.send(f"👥 {membro.display_name} agora tem **{total} vitórias no Team Rebirth**")
+    await ctx.send(f"👥 {membro.display_name} agora tem **{total} vitórias no TeamWin**")
 
 
 @bot.command()
@@ -1086,7 +1086,7 @@ async def removeteam(ctx, membro: discord.Member, quantidade: int):
     cursor.close()
     conn.close()
 
-    await ctx.send(f"❌ {membro.display_name} agora tem **{total} vitórias no Team Rebirth**")
+    await ctx.send(f"❌ {membro.display_name} agora tem **{total} vitórias no TeamWin**")
 
 
 @bot.command()
@@ -1106,7 +1106,7 @@ async def pontosteam(ctx, membro: discord.Member = None):
     cursor.close()
     conn.close()
 
-    await ctx.send(f"👥 {membro.display_name} tem **{total} vitórias no Team Rebirth!**")
+    await ctx.send(f"👥 {membro.display_name} tem **{total} vitórias no TeamWin!**")
 
 
 @bot.command()
@@ -1119,7 +1119,7 @@ async def rankingteam(ctx):
     cursor.execute("SELECT user_id, pontos FROM pontos_team ORDER BY pontos DESC")
     dados = cursor.fetchall()
 
-    msg = "**🏆 Ranking Team Rebirth:**\n"
+    msg = "**🏆 Ranking TeamWin:**\n"
 
     for i, (uid, pts) in enumerate(dados, 1):
         m = ctx.guild.get_member(uid)
