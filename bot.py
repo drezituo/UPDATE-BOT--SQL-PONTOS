@@ -252,6 +252,95 @@ def contar_inscricoes_validas(thread_id: int):
     return total
 
 
+# ---------- EQUIPAS HELPERS ----------
+def calcular_pontos_jogador_sync(user_id: int):
+    conn = get_connection()
+    if not conn:
+        return None
+
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT pontos FROM pontos WHERE user_id = %s", (user_id,))
+    r = cursor.fetchone()
+    presencas = r[0] if r else 0
+
+    cursor.execute("SELECT pontos FROM pontos_solo WHERE user_id = %s", (user_id,))
+    r = cursor.fetchone()
+    solo = r[0] if r else 0
+
+    cursor.execute("SELECT pontos FROM pontos_team WHERE user_id = %s", (user_id,))
+    r = cursor.fetchone()
+    team = r[0] if r else 0
+
+    cursor.execute("SELECT pontos FROM pontos_tempo WHERE user_id = %s", (user_id,))
+    r = cursor.fetchone()
+    tempo = r[0] if r else 0
+
+    cursor.close()
+    conn.close()
+
+    total = presencas + solo + team + tempo
+
+    return {
+        "presencas": presencas,
+        "solo": solo,
+        "team": team,
+        "tempo": tempo,
+        "total": total,
+    }
+
+
+def calcular_pontos_equipa_sync(equipa_id: int):
+    conn = get_connection()
+    if not conn:
+        return None
+
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT user_id
+        FROM equipas_membros
+        WHERE equipa_id = %s
+    """, (equipa_id,))
+    membros = cursor.fetchall()
+
+    totais = {
+        "presencas": 0,
+        "solo": 0,
+        "team": 0,
+        "tempo": 0,
+        "total": 0,
+        "membros": len(membros),
+    }
+
+    for (user_id,) in membros:
+        cursor.execute("SELECT pontos FROM pontos WHERE user_id = %s", (user_id,))
+        r = cursor.fetchone()
+        presencas = r[0] if r else 0
+
+        cursor.execute("SELECT pontos FROM pontos_solo WHERE user_id = %s", (user_id,))
+        r = cursor.fetchone()
+        solo = r[0] if r else 0
+
+        cursor.execute("SELECT pontos FROM pontos_team WHERE user_id = %s", (user_id,))
+        r = cursor.fetchone()
+        team = r[0] if r else 0
+
+        cursor.execute("SELECT pontos FROM pontos_tempo WHERE user_id = %s", (user_id,))
+        r = cursor.fetchone()
+        tempo = r[0] if r else 0
+
+        totais["presencas"] += presencas
+        totais["solo"] += solo
+        totais["team"] += team
+        totais["tempo"] += tempo
+        totais["total"] += presencas + solo + team + tempo
+
+    cursor.close()
+    conn.close()
+    return totais
+
+
+# ---------- EMBEDS INSCRIÇÕES ----------
 async def criar_embed_inscricao_pendente(ctx, nome: str, expira_em: datetime, membro_jogador: discord.Member = None):
     avatar_url = await obter_avatar_url_jogador(ctx.guild, nome, membro_jogador)
     jogador_valor = await obter_valor_jogador_embed(ctx.guild, nome, membro_jogador)
@@ -462,6 +551,24 @@ if conn:
         DROP CONSTRAINT IF EXISTS inscricoes_jogos_thread_id_user_id_key
         """)
 
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS equipas (
+            id BIGSERIAL PRIMARY KEY,
+            nome TEXT NOT NULL UNIQUE,
+            logo_url TEXT,
+            criado_por BIGINT NOT NULL,
+            criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS equipas_membros (
+            equipa_id BIGINT NOT NULL REFERENCES equipas(id) ON DELETE CASCADE,
+            user_id BIGINT NOT NULL,
+            PRIMARY KEY (equipa_id, user_id)
+        )
+        """)
+
         conn.commit()
         print("✅ Tabelas verificadas/criadas com sucesso.")
 
@@ -507,8 +614,11 @@ async def on_command_error(ctx, error):
         return
 
     if isinstance(error, commands.MissingRequiredArgument):
-        if ctx.command and ctx.command.name in ("inscrever", "cancelarinscricao"):
-            await ctx.send("⚠️ Usa o comando com o nome do jogador.", delete_after=10)
+        if ctx.command and ctx.command.name in (
+            "inscrever", "cancelarinscricao", "criarequipa", "adicionarmembroequipa",
+            "removermembroequipa", "equipa", "apagarequipa", "mudarlogoequipa"
+        ):
+            await ctx.send("⚠️ Faltam argumentos no comando.", delete_after=10)
             return
 
     print(f"Erro completo: {repr(error)}")
@@ -799,6 +909,337 @@ async def cancelarinscricao(ctx, *, nome: str):
 
 
 # =========================
+# 🛡️ SISTEMA DE EQUIPAS
+# =========================
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def criarequipa(ctx, nome: str, logo_url: str = None):
+    conn = get_connection()
+    if not conn:
+        return await ctx.send(DB_ERROR_MSG)
+
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("""
+            INSERT INTO equipas (nome, logo_url, criado_por)
+            VALUES (%s, %s, %s)
+        """, (nome, logo_url, ctx.author.id))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        cursor.close()
+        conn.close()
+        print(f"Erro ao criar equipa: {e}")
+        return await ctx.send("⚠️ Já existe uma equipa com esse nome ou ocorreu um erro.")
+
+    cursor.close()
+    conn.close()
+
+    embed = discord.Embed(
+        title="🛡️ Nova Equipa Criada",
+        description=f"A equipa **{nome}** foi criada com sucesso!",
+        color=discord.Color.green(),
+        timestamp=discord.utils.utcnow()
+    )
+    if logo_url:
+        embed.set_thumbnail(url=logo_url)
+    embed.add_field(name="👑 Criada por", value=ctx.author.mention, inline=True)
+    embed.add_field(name="👥 Membros", value="Nenhum membro ainda", inline=True)
+    embed.set_footer(text="Sistema competitivo de equipas ativo")
+
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def adicionarmembroequipa(ctx, nome_equipa: str, membro: discord.Member):
+    conn = get_connection()
+    if not conn:
+        return await ctx.send(DB_ERROR_MSG)
+
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, nome
+        FROM equipas
+        WHERE LOWER(nome) = LOWER(%s)
+    """, (nome_equipa,))
+    equipa = cursor.fetchone()
+
+    if not equipa:
+        cursor.close()
+        conn.close()
+        return await ctx.send("⚠️ Essa equipa não existe.")
+
+    equipa_id, nome = equipa
+
+    try:
+        cursor.execute("""
+            INSERT INTO equipas_membros (equipa_id, user_id)
+            VALUES (%s, %s)
+            ON CONFLICT DO NOTHING
+        """, (equipa_id, membro.id))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        cursor.close()
+        conn.close()
+        print(f"Erro ao adicionar membro à equipa: {e}")
+        return await ctx.send("⚠️ Erro ao adicionar membro à equipa.")
+
+    cursor.close()
+    conn.close()
+
+    await ctx.send(f"✅ {membro.mention} foi adicionado à equipa **{nome}**.")
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def removermembroequipa(ctx, nome_equipa: str, membro: discord.Member):
+    conn = get_connection()
+    if not conn:
+        return await ctx.send(DB_ERROR_MSG)
+
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, nome
+        FROM equipas
+        WHERE LOWER(nome) = LOWER(%s)
+    """, (nome_equipa,))
+    equipa = cursor.fetchone()
+
+    if not equipa:
+        cursor.close()
+        conn.close()
+        return await ctx.send("⚠️ Essa equipa não existe.")
+
+    equipa_id, nome = equipa
+
+    cursor.execute("""
+        DELETE FROM equipas_membros
+        WHERE equipa_id = %s AND user_id = %s
+    """, (equipa_id, membro.id))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    await ctx.send(f"❌ {membro.mention} foi removido da equipa **{nome}**.")
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def mudarlogoequipa(ctx, nome_equipa: str, logo_url: str):
+    conn = get_connection()
+    if not conn:
+        return await ctx.send(DB_ERROR_MSG)
+
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE equipas
+        SET logo_url = %s
+        WHERE LOWER(nome) = LOWER(%s)
+    """, (logo_url, nome_equipa))
+    alteradas = cursor.rowcount
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    if alteradas == 0:
+        return await ctx.send("⚠️ Essa equipa não existe.")
+
+    await ctx.send(f"✅ Logo da equipa **{nome_equipa}** atualizado.")
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def apagarequipa(ctx, *, nome_equipa: str):
+    conn = get_connection()
+    if not conn:
+        return await ctx.send(DB_ERROR_MSG)
+
+    cursor = conn.cursor()
+    cursor.execute("""
+        DELETE FROM equipas
+        WHERE LOWER(nome) = LOWER(%s)
+    """, (nome_equipa,))
+    alteradas = cursor.rowcount
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    if alteradas == 0:
+        return await ctx.send("⚠️ Essa equipa não existe.")
+
+    await ctx.send(f"🗑️ A equipa **{nome_equipa}** foi apagada.")
+
+
+@bot.command()
+async def equipa(ctx, *, nome_equipa: str):
+    conn = get_connection()
+    if not conn:
+        return await ctx.send(DB_ERROR_MSG)
+
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, nome, logo_url
+        FROM equipas
+        WHERE LOWER(nome) = LOWER(%s)
+    """, (nome_equipa,))
+    equipa_row = cursor.fetchone()
+
+    if not equipa_row:
+        cursor.close()
+        conn.close()
+        return await ctx.send("⚠️ Essa equipa não existe.")
+
+    equipa_id, nome, logo_url = equipa_row
+
+    cursor.execute("""
+        SELECT user_id
+        FROM equipas_membros
+        WHERE equipa_id = %s
+    """, (equipa_id,))
+    membros = cursor.fetchall()
+
+    cursor.close()
+    conn.close()
+
+    pontos = calcular_pontos_equipa_sync(equipa_id)
+    if pontos is None:
+        return await ctx.send(DB_ERROR_MSG)
+
+    lista_membros = ""
+    for (uid,) in membros:
+        membro = ctx.guild.get_member(uid)
+        nome_membro = membro.mention if membro else f"<@{uid}>"
+        dados = calcular_pontos_jogador_sync(uid)
+        total_membro = dados["total"] if dados else 0
+        lista_membros += f"• {nome_membro} — **{total_membro} pts**\n"
+
+    if not lista_membros:
+        lista_membros = "Nenhum membro nesta equipa."
+
+    embed = discord.Embed(
+        title=f"🛡️ Equipa {nome}",
+        description="Perfil competitivo da equipa",
+        color=discord.Color.blurple(),
+        timestamp=discord.utils.utcnow()
+    )
+
+    if logo_url:
+        embed.set_thumbnail(url=logo_url)
+
+    embed.add_field(name="👥 Membros", value=lista_membros[:1024], inline=False)
+    embed.add_field(
+        name="📊 Pontos da Equipa",
+        value=(
+            f"⭐ Presenças: **{pontos['presencas']}**\n"
+            f"🔥 Solo Rebirth: **{pontos['solo']}**\n"
+            f"👥 Team Wins: **{pontos['team']}**\n"
+            f"⏱️ Tempo em pista: **{pontos['tempo']}**\n\n"
+            f"🏆 Total: **{pontos['total']} pontos**"
+        ),
+        inline=False
+    )
+    embed.set_footer(text=f"{pontos['membros']} membro(s) na equipa")
+
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+async def rankingequipas(ctx):
+    conn = get_connection()
+    if not conn:
+        return await ctx.send(DB_ERROR_MSG)
+
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, nome, logo_url
+        FROM equipas
+    """)
+    equipas = cursor.fetchall()
+    cursor.close()
+    conn.close()
+
+    if not equipas:
+        return await ctx.send("⚠️ Ainda não existem equipas criadas.")
+
+    ranking = []
+
+    for equipa_id, nome, logo_url in equipas:
+        pontos = calcular_pontos_equipa_sync(equipa_id)
+        if pontos:
+            ranking.append({
+                "nome": nome,
+                "logo_url": logo_url,
+                "total": pontos["total"],
+                "presencas": pontos["presencas"],
+                "solo": pontos["solo"],
+                "team": pontos["team"],
+                "tempo": pontos["tempo"],
+                "membros": pontos["membros"],
+            })
+
+    ranking.sort(key=lambda x: x["total"], reverse=True)
+
+    embed = discord.Embed(
+        title="🏆 Ranking de Equipas",
+        description="Classificação geral pela soma dos pontos dos membros.",
+        color=discord.Color.gold(),
+        timestamp=discord.utils.utcnow()
+    )
+
+    if ranking and ranking[0].get("logo_url"):
+        embed.set_thumbnail(url=ranking[0]["logo_url"])
+
+    for i, equipa_info in enumerate(ranking[:10], 1):
+        medalha = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"#{i}"
+
+        embed.add_field(
+            name=f"{medalha} {equipa_info['nome']}",
+            value=(
+                f"🏆 Total: **{equipa_info['total']} pontos**\n"
+                f"⭐ Presenças: `{equipa_info['presencas']}` • "
+                f"🔥 Solo: `{equipa_info['solo']}` • "
+                f"👥 Team: `{equipa_info['team']}` • "
+                f"⏱️ Tempo: `{equipa_info['tempo']}`\n"
+                f"👤 Membros: `{equipa_info['membros']}`"
+            ),
+            inline=False
+        )
+
+    embed.set_footer(text="Sistema competitivo de equipas")
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+async def listarequipas(ctx):
+    conn = get_connection()
+    if not conn:
+        return await ctx.send(DB_ERROR_MSG)
+
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, nome FROM equipas ORDER BY nome ASC")
+    equipas = cursor.fetchall()
+    cursor.close()
+    conn.close()
+
+    if not equipas:
+        return await ctx.send("⚠️ Ainda não existem equipas criadas.")
+
+    msg = "**🛡️ Equipas criadas:**\n"
+    for _, nome in equipas:
+        linha = f"• {nome}\n"
+        if len(msg) + len(linha) > 2000:
+            await ctx.send(msg)
+            msg = ""
+        msg += linha
+
+    if msg:
+        await ctx.send(msg)
+
+
+# =========================
 # 🔥 SISTEMA ANTIGO
 # =========================
 @bot.command()
@@ -854,7 +1295,7 @@ async def removepontos(ctx, membro: discord.Member, quantidade: int):
         return await ctx.send("⚠️ Esse usuário não tem pontos.")
 
     novo_total = max(resultado[0] - quantidade, 0)
-    cursor.execute("UPDATE pontos SET pontos = %s WHERE user_id = %s", (novo_total, membro.id))
+    cursor.execute("UPDATE pontos SET pontos = %s, ultima_atividade = NOW() WHERE user_id = %s", (novo_total, membro.id))
 
     conn.commit()
     cursor.close()
@@ -888,9 +1329,6 @@ async def pontos(ctx, membro: discord.Member = None):
     await ctx.send(f"⭐ {membro.display_name} tem **{total} pontos**")
 
 
-# =========================
-# 🆕 RANKING PONTOS NORMAL
-# =========================
 @bot.command()
 async def ranking(ctx):
     conn = get_connection()
