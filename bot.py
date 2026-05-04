@@ -260,10 +260,6 @@ def calcular_pontos_jogador_sync(user_id: int):
 
     cursor = conn.cursor()
 
-    cursor.execute("SELECT pontos FROM pontos WHERE user_id = %s", (user_id,))
-    r = cursor.fetchone()
-    presencas = r[0] if r else 0
-
     cursor.execute("SELECT pontos FROM pontos_solo WHERE user_id = %s", (user_id,))
     r = cursor.fetchone()
     solo = r[0] if r else 0
@@ -272,20 +268,14 @@ def calcular_pontos_jogador_sync(user_id: int):
     r = cursor.fetchone()
     team = r[0] if r else 0
 
-    cursor.execute("SELECT pontos FROM pontos_tempo WHERE user_id = %s", (user_id,))
-    r = cursor.fetchone()
-    tempo = r[0] if r else 0
-
     cursor.close()
     conn.close()
 
-    total = presencas + solo + team + tempo
+    total = solo + team
 
     return {
-        "presencas": presencas,
         "solo": solo,
         "team": team,
-        "tempo": tempo,
         "total": total,
     }
 
@@ -304,19 +294,13 @@ def calcular_pontos_equipa_sync(equipa_id: int):
     membros = cursor.fetchall()
 
     totais = {
-        "presencas": 0,
         "solo": 0,
         "team": 0,
-        "tempo": 0,
         "total": 0,
         "membros": len(membros),
     }
 
     for (user_id,) in membros:
-        cursor.execute("SELECT pontos FROM pontos WHERE user_id = %s", (user_id,))
-        r = cursor.fetchone()
-        presencas = r[0] if r else 0
-
         cursor.execute("SELECT pontos FROM pontos_solo WHERE user_id = %s", (user_id,))
         r = cursor.fetchone()
         solo = r[0] if r else 0
@@ -325,15 +309,9 @@ def calcular_pontos_equipa_sync(equipa_id: int):
         r = cursor.fetchone()
         team = r[0] if r else 0
 
-        cursor.execute("SELECT pontos FROM pontos_tempo WHERE user_id = %s", (user_id,))
-        r = cursor.fetchone()
-        tempo = r[0] if r else 0
-
-        totais["presencas"] += presencas
         totais["solo"] += solo
         totais["team"] += team
-        totais["tempo"] += tempo
-        totais["total"] += presencas + solo + team + tempo
+        totais["total"] += solo + team
 
     cursor.close()
     conn.close()
@@ -1239,10 +1217,8 @@ async def equipa(ctx, *, nome_equipa: str):
     embed.add_field(
         name="📊 Pontos da Equipa",
         value=(
-            f"⭐ Presenças: **{pontos['presencas']}**\n"
             f"🔥 Solo Rebirth: **{pontos['solo']}**\n"
-            f"👥 Team Wins: **{pontos['team']}**\n"
-            f"⏱️ Tempo em pista: **{pontos['tempo']}**\n\n"
+            f"👥 Team Wins: **{pontos['team']}**\n\n"
             f"🏆 Total: **{pontos['total']} pontos**"
         ),
         inline=False
@@ -1279,10 +1255,8 @@ async def rankingequipas(ctx):
                 "nome": nome,
                 "logo_url": logo_url,
                 "total": pontos["total"],
-                "presencas": pontos["presencas"],
                 "solo": pontos["solo"],
                 "team": pontos["team"],
-                "tempo": pontos["tempo"],
                 "membros": pontos["membros"],
             })
 
@@ -1290,7 +1264,7 @@ async def rankingequipas(ctx):
 
     embed = discord.Embed(
         title="🏆 Ranking de Equipas",
-        description="Classificação geral pela soma dos pontos dos membros.",
+        description="Classificação geral pela soma de Solo Rebirth + Team Wins.",
         color=discord.Color.gold(),
         timestamp=discord.utils.utcnow()
     )
@@ -1305,10 +1279,8 @@ async def rankingequipas(ctx):
             name=f"{medalha} {equipa_info['nome']}",
             value=(
                 f"🏆 Total: **{equipa_info['total']} pontos**\n"
-                f"⭐ Presenças: `{equipa_info['presencas']}` • "
                 f"🔥 Solo: `{equipa_info['solo']}` • "
-                f"👥 Team: `{equipa_info['team']}` • "
-                f"⏱️ Tempo: `{equipa_info['tempo']}`\n"
+                f"👥 Team: `{equipa_info['team']}`\n"
                 f"👤 Membros: `{equipa_info['membros']}`"
             ),
             inline=False
