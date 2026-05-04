@@ -908,6 +908,112 @@ async def cancelarinscricao(ctx, *, nome: str):
     await atualizar_embed_estado(ctx.channel)
 
 
+
+
+# =========================
+# 📜 LISTA DE COMANDOS
+# =========================
+@bot.command()
+async def comandos(ctx):
+    embed = discord.Embed(
+        title="📜 Lista de Comandos",
+        description="Aqui estão todos os comandos disponíveis no bot:",
+        color=discord.Color.blurple(),
+        timestamp=discord.utils.utcnow()
+    )
+
+    embed.add_field(
+        name="🎟️ Inscrições",
+        value=(
+            "`!abrir_inscricoes [limite]`\n"
+            "`!fechar_inscricoes`\n"
+            "`!estado_inscricoes`\n"
+            "`!inscrever nome`\n"
+            "`!cancelarinscricao nome`"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="⭐ Pontos / Presenças",
+        value=(
+            "`!addpontos @user quantidade`\n"
+            "`!removepontos @user quantidade`\n"
+            "`!pontos [@user]`\n"
+            "`!ranking`"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🔥 Solo Rebirth",
+        value=(
+            "`!addsolo @user quantidade`\n"
+            "`!removesolo @user quantidade`\n"
+            "`!pontossolo [@user]`\n"
+            "`!rankingsolo`"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="👥 Team Win",
+        value=(
+            "`!addteam @user quantidade`\n"
+            "`!removeteam @user quantidade`\n"
+            "`!pontosteam [@user]`\n"
+            "`!rankingteam`"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="⏱️ Tempo em Pista",
+        value=(
+            "`!addtempo @user quantidade`\n"
+            "`!removetempo @user quantidade`\n"
+            "`!tempopista [@user]`\n"
+            "`!rankingtempo`"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🛡️ Equipas",
+        value=(
+            "`!criarequipa nome [logo_url]`\n"
+            "`!adicionarmembroequipa nome @user`\n"
+            "`!removermembroequipa nome @user`\n"
+            "`!mudarlogoequipa nome url`\n"
+            "`!apagarequipa nome`\n"
+            "`!equipa nome`\n"
+            "`!rankingequipas`\n"
+            "`!listarequipas`"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🎮 Perfil / Utilidades",
+        value=(
+            "`!status [@user]`\n"
+            "`!ping`\n"
+            "`!comandos`"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🔐 Nota",
+        value="Comandos de adicionar/remover pontos, inscrições admin e gestão de equipas precisam de permissão de administrador.",
+        inline=False
+    )
+
+    embed.set_footer(text="⚡ Prefixo do bot: !")
+
+    await ctx.send(embed=embed)
+
+
 # =========================
 # 🛡️ SISTEMA DE EQUIPAS
 # =========================
