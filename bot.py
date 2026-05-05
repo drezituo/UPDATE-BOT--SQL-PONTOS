@@ -317,7 +317,6 @@ def calcular_pontos_equipa_sync(equipa_id: int):
     conn.close()
     return totais
 
-
 # ---------- EMBEDS INSCRIÇÕES ----------
 async def criar_embed_inscricao_pendente(ctx, nome: str, expira_em: datetime, membro_jogador: discord.Member = None):
     avatar_url = await obter_avatar_url_jogador(ctx.guild, nome, membro_jogador)
@@ -1257,38 +1256,45 @@ async def rankingequipas(ctx):
                 "total": pontos["total"],
                 "solo": pontos["solo"],
                 "team": pontos["team"],
-                "membros": pontos["membros"],
             })
 
     ranking.sort(key=lambda x: x["total"], reverse=True)
 
-    embed = discord.Embed(
-        title="🏆 Ranking de Equipas",
-        description="Classificação geral pela soma de Solo Rebirth + Team Wins.",
-        color=discord.Color.gold(),
-        timestamp=discord.utils.utcnow()
-    )
+    if not ranking:
+        return await ctx.send("⚠️ Ainda não existem equipas com pontos.")
 
-    if ranking and ranking[0].get("logo_url"):
-        embed.set_thumbnail(url=ranking[0]["logo_url"])
+    medalhas = [
+        ("🥇 1.º Lugar", discord.Color.gold()),
+        ("🥈 2.º Lugar", discord.Color.light_grey()),
+        ("🥉 3.º Lugar", discord.Color.orange()),
+    ]
 
-    for i, equipa_info in enumerate(ranking[:10], 1):
-        medalha = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"#{i}"
+    for i, equipa_info in enumerate(ranking[:3]):
+        titulo, cor = medalhas[i]
+
+        embed = discord.Embed(
+            title=titulo,
+            description=f"🛡️ **{equipa_info['nome']}**",
+            color=cor,
+            timestamp=discord.utils.utcnow()
+        )
+
+        if equipa_info["logo_url"]:
+            embed.set_thumbnail(url=equipa_info["logo_url"])
 
         embed.add_field(
-            name=f"{medalha} {equipa_info['nome']}",
+            name="🏆 Pontos",
             value=(
-                f"🏆 Total: **{equipa_info['total']} pontos**\n"
-                f"🔥 Solo: `{equipa_info['solo']}` • "
-                f"👥 Team: `{equipa_info['team']}`\n"
-                f"👤 Membros: `{equipa_info['membros']}`"
+                f"**Total:** {equipa_info['total']} pontos\n"
+                f"🔥 Solo Rebirth: {equipa_info['solo']}\n"
+                f"👥 Team Wins: {equipa_info['team']}"
             ),
             inline=False
         )
 
-    embed.set_footer(text="Sistema competitivo de equipas")
-    await ctx.send(embed=embed)
+        embed.set_footer(text="💡 Para ver mais equipas usa !listarequipas")
 
+        await ctx.send(embed=embed)
 
 @bot.command()
 async def listarequipas(ctx):
