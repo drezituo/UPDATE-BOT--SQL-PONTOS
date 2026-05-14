@@ -2113,5 +2113,137 @@ async def verificar_inscricoes():
     conn.close()
 
 
+
+
+# =========================
+# 🪖 MILSIM SYSTEM
+# =========================
+
+COMANDO_CHANNEL_ID=1504600088289214474
+AZUL_CHANNEL_ID=1504600244015599746
+VERMELHO_CHANNEL_ID=1504600284935094404
+LOGS_CHANNEL_ID=1504600337544122448
+GM_CHANNEL_ID=1504600378988171495
+
+AZUL_ROLE_ID=1504599233137868961
+VERMELHO_ROLE_ID=1504599117488455832
+GM_ROLE_ID=1504602388496121928
+
+MISSOES = {
+    "azul_1": {
+        "codigo": "ALFA-227",
+        "texto": "🪖 OPERAÇÃO SHADOW VEIL\n\n📍 Objetivo:\nRecuperar o disco rígido escondido no setor industrial.\n\n⚠️ Inteligência indica presença inimiga no quadrante norte.\n\n🔐 Após recuperar o objetivo usar:\n!codigo ALFA-227"
+    },
+    "vermelho_1": {
+        "codigo": "BRAVO-913",
+        "texto": "🪖 OPERAÇÃO RED FANG\n\n📍 Objetivo:\nInterceptar transmissão inimiga e capturar operador.\n\n⚠️ Unidade azul movimenta-se pelo setor central.\n\n🔐 Após concluir usar:\n!codigo BRAVO-913"
+    }
+}
+
+estado_milsim = {
+    "azul": 1,
+    "vermelho": 1
+}
+
+codigos_jogadores = {}
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def iniciarmilsim(ctx):
+
+    azul_channel = bot.get_channel(AZUL_CHANNEL_ID)
+    vermelho_channel = bot.get_channel(VERMELHO_CHANNEL_ID)
+
+    embed = discord.Embed(
+        title="🪖 OPERAÇÃO INICIADA",
+        description="O teatro de operações foi ativado.\n\nAguardem ordens do comando.",
+        color=discord.Color.dark_green()
+    )
+
+    await azul_channel.send(embed=embed)
+    await vermelho_channel.send(embed=embed)
+
+    await azul_channel.send(MISSOES["azul_1"]["texto"])
+    await vermelho_channel.send(MISSOES["vermelho_1"]["texto"])
+
+    await ctx.send("✅ Milsim iniciado.")
+
+@bot.command()
+async def codigo(ctx, code: str):
+
+    logs = bot.get_channel(LOGS_CHANNEL_ID)
+
+    if ctx.channel.id == AZUL_CHANNEL_ID:
+
+        if code.upper() == MISSOES["azul_1"]["codigo"]:
+            embed = discord.Embed(
+                title="✅ OBJETIVO COMPLETADO",
+                description="A equipa Azul concluiu a missão inicial.\n\n📍 Regressem ao comando para reorganização.",
+                color=discord.Color.blue()
+            )
+
+            await ctx.send(embed=embed)
+
+            await logs.send(f"📘 Azul completou missão com código {code}")
+
+        else:
+            await ctx.send("❌ Código inválido.")
+
+    elif ctx.channel.id == VERMELHO_CHANNEL_ID:
+
+        if code.upper() == MISSOES["vermelho_1"]["codigo"]:
+            embed = discord.Embed(
+                title="✅ OBJETIVO COMPLETADO",
+                description="A equipa Vermelha concluiu a missão inicial.\n\n📍 Regressem ao comando para reorganização.",
+                color=discord.Color.red()
+            )
+
+            await ctx.send(embed=embed)
+
+            await logs.send(f"📕 Vermelho completou missão com código {code}")
+
+        else:
+            await ctx.send("❌ Código inválido.")
+
+@bot.command()
+async def registarcodigo(ctx, codigo: str):
+
+    codigos_jogadores[ctx.author.id] = codigo.upper()
+
+    embed = discord.Embed(
+        title="🪖 IDENTIFICAÇÃO REGISTADA",
+        description=f"Código operacional associado: `{codigo.upper()}`",
+        color=discord.Color.green()
+    )
+
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def capturar(ctx, codigo: str):
+
+    alvo = None
+
+    for uid, cod in codigos_jogadores.items():
+        if cod == codigo.upper():
+            alvo = uid
+            break
+
+    if not alvo:
+        return await ctx.send("❌ Código não encontrado.")
+
+    membro = ctx.guild.get_member(alvo)
+
+    embed = discord.Embed(
+        title="⛓️ OPERADOR CAPTURADO",
+        description=f"O operador {membro.mention if membro else codigo} foi capturado.",
+        color=discord.Color.dark_red()
+    )
+
+    await ctx.send(embed=embed)
+
+    logs = bot.get_channel(LOGS_CHANNEL_ID)
+    await logs.send(f"🚨 {ctx.author} capturou {membro}")
+
+
 # ---------- START ----------
 bot.run(TOKEN)
