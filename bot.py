@@ -2223,13 +2223,19 @@ async def update_team_status_panel(team: str):
     channel = milsim_channel_for_team(team)
     message_id = milsim_state.get("team_status_panel_message_ids", {}).get(team)
 
-    if not channel or not message_id:
+    if not channel:
+        return
+
+    if not message_id:
+        await create_team_status_panel(team)
         return
 
     try:
         msg = await channel.fetch_message(message_id)
         await msg.edit(embed=build_team_status_embed(team))
-    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+    except discord.NotFound:
+        await create_team_status_panel(team)
+    except (discord.Forbidden, discord.HTTPException):
         pass
 
 
@@ -2253,6 +2259,17 @@ async def delete_team_status_panel(team: str):
         pass
 
     milsim_state["team_status_panel_message_ids"][team] = None
+
+async def refresh_team_status_panel(team: str):
+    await delete_team_status_panel(team)
+    await create_team_status_panel(team)
+
+
+async def send_team_embed_with_status_last(team: str, embed):
+    await delete_team_status_panel(team)
+    await milsim_send_to_team(team, embed=embed)
+    await create_team_status_panel(team)
+
 
 async def update_status_panel():
     channel = milsim_get_channel(COMANDO_CHANNEL_ID)
@@ -2293,9 +2310,9 @@ async def mission_timer(team: str, mission_name: str):
     if current != mission_name:
         return
 
-    await milsim_send_to_team(
+    await send_team_embed_with_status_last(
         team,
-        embed=tactical_embed(
+        tactical_embed(
             "⏰ TEMPO OPERACIONAL ESGOTADO",
             f"O tempo limite da {mission_name.upper()} terminou.",
             discord.Color.orange(),
@@ -2695,9 +2712,9 @@ async def milsim_start_decryption(team: str):
     team_state["phase"] = "regroup"
     team_state["regrouped"] = False
 
-    await milsim_send_to_team(
+    await send_team_embed_with_status_last(
         team,
-        embed=tactical_embed(
+        tactical_embed(
             "✅ DESENCRIPTAÇÃO CONCLUÍDA",
             "+10 pontos atribuídos.",
             discord.Color.green(),
@@ -2815,11 +2832,14 @@ async def codigo(ctx, codigo: str):
     team_state["completed_codes"].append(codigo)
     milsim_state["scores"][team] += data["points"]
 
+    await delete_team_status_panel(team)
     await ctx.send(embed=data["embed"]())
+    await create_team_status_panel(team)
 
     enemy_alert = data.get("enemy_alert_embed")
     if enemy_alert:
-        await milsim_send_to_team(milsim_enemy(team), embed=enemy_alert())
+        enemy = milsim_enemy(team)
+        await send_team_embed_with_status_last(enemy, enemy_alert())
 
     await milsim_log(f"🔐 Código `{codigo}` validado por **{team.upper()}**. +{data['points']} pontos.")
     await update_status_panel()
@@ -2854,11 +2874,13 @@ async def reagrupado(ctx):
 
     team_state["regrouped"] = True
 
+    await delete_team_status_panel(team)
     await ctx.send(embed=tactical_embed(
         "✅ REAGRUPAMENTO CONFIRMADO",
         "Aguardem nova janela operacional.",
         discord.Color.green()
     ))
+    await create_team_status_panel(team)
 
     await milsim_log(f"✅ **{team.upper()}** confirmou reagrupamento.")
     await update_status_panel()
@@ -2915,6 +2937,7 @@ async def capturar(ctx, player_id: str, setor: str):
     milsim_state["captured_players"].append(player_id)
     milsim_state["scores"][team] += 5
 
+    await delete_team_status_panel(team)
     await ctx.send(embed=tactical_embed(
         "🪪 OPERADOR CAPTURADO",
         f"ID confirmado: **{player_id}**\nSetor: **{setor}**",
@@ -2924,6 +2947,7 @@ async def capturar(ctx, player_id: str, setor: str):
             {"name": "PONTOS", "value": "**+5 pontos atribuídos**"}
         ]
     ))
+    await create_team_status_panel(team)
 
     await milsim_log(f"🪪 **{team.upper()}** capturou `{player_id}` no setor `{setor}`. +5 pontos.")
     await update_status_panel()
@@ -2987,8 +3011,8 @@ async def gm_blackout(ctx):
     if comando:
         await comando.send(embed=embed)
 
-    await milsim_send_to_team("azul", embed=embed)
-    await milsim_send_to_team("vermelho", embed=embed)
+    await send_team_embed_with_status_last("azul", embed)
+    await send_team_embed_with_status_last("vermelho", embed)
     await milsim_log("⚫ Blackout ativado pelo Game Master.")
     await ctx.send("✅ Blackout enviado.")
 
