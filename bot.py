@@ -3169,5 +3169,30 @@ async def gm_end(ctx):
     await update_status_panel()
     await ctx.send("✅ Operação terminada.")
 
+
+
+# =========================
+# 🧹 LIMPAR CHAT
+# =========================
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def limparchat(ctx, quantidade: int = 100):
+    try:
+        await ctx.channel.purge(limit=quantidade + 1)
+
+        aviso = await ctx.send(
+            f"🧹 Canal limpo com sucesso. ({quantidade} mensagens removidas)"
+        )
+
+        await asyncio.sleep(3)
+        await aviso.delete()
+
+    except discord.Forbidden:
+        await ctx.send("❌ Não tenho permissões para apagar mensagens.", delete_after=10)
+
+    except Exception as e:
+        await ctx.send(f"⚠️ Erro ao limpar chat: {e}", delete_after=10)
+
+
 # ---------- START ----------
 bot.run(TOKEN)
