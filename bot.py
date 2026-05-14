@@ -2346,6 +2346,7 @@ milsim_state = {
     "status_panel_message_id": None,
     "team_status_panel_message_ids": {"azul": None, "vermelho": None},
     "decryption": {"active": False, "cancelled": False, "team": None, "mission": None},
+    "mission3_route": {"vermelho_step": 0},
     "teams": {
         "azul": {
             "current": "mission_1",
@@ -2473,42 +2474,47 @@ MISSION_CODES = {
     "GHOST-802": {
         "team": "azul",
         "mission": "mission_3",
-        "points": 20,
+        "points": 25,
         "type": "complete",
         "embed": lambda: tactical_embed(
-            "🎯 HVT CAPTURADO",
-            "Operador inimigo confirmado sob custódia.",
+            "📦 CARGA DEPOSITADA NO BUNKER",
+            "Material inimigo roubado e depositado com sucesso.",
             discord.Color.blue(),
             [
-                {"name": "OBJETIVOS", "value": "▸ Escoltar HVT até SAFEZONE\n▸ Proteger alvo vivo\n▸ Regressar ao COMANDO após extração"},
-                {"name": "🏆 PONTOS", "value": "**+20 pontos atribuídos**"}
+                {"name": "🎯 OBJETIVO CONCLUÍDO", "value": "▸ Carga intercetada\n▸ Transporte inimigo comprometido\n▸ Depósito no BUNKER confirmado"},
+                {"name": "📍 ORDEM", "value": "Regressem ao COMANDO para reorganização."},
+                {"name": "🏆 PONTOS", "value": "**+25 pontos atribuídos**"}
             ]
         ),
         "enemy_alert_embed": lambda: tactical_embed(
-            "🚨 ALERTA HVT",
-            "O vosso operador prioritário foi capturado.\nRecuperem o alvo antes da extração.",
-            discord.Color.red()
+            "🚨 CARGA ROUBADA E DEPOSITADA",
+            "A Task Force Azul depositou o material no BUNKER.",
+            discord.Color.red(),
+            [{"name": "📍 ORDEM", "value": "Regressem ao COMANDO e aguardem nova janela operacional."}]
         )
     },
 
     "EXFIL-337": {
         "team": "vermelho",
         "mission": "mission_3",
-        "points": 20,
+        "points": 25,
         "type": "complete",
+        "requires_step": 4,
         "embed": lambda: tactical_embed(
-            "✅ EXTRAÇÃO CONFIRMADA",
-            "VIP protegido com sucesso.\nEvacuação concluída.",
+            "✅ TRANSPORTE CONCLUÍDO",
+            "A carga completou a rota obrigatória e foi entregue no ponto final.",
             discord.Color.red(),
             [
-                {"name": "📍 ORDEM", "value": "Regressem ao **COMANDO** para nova janela operacional."},
-                {"name": "🏆 PONTOS", "value": "**+20 pontos atribuídos**"}
+                {"name": "🎯 OBJETIVO CONCLUÍDO", "value": "▸ Rota validada\n▸ Carga protegida\n▸ Depósito final confirmado"},
+                {"name": "📍 ORDEM", "value": "Regressem ao COMANDO para nova janela operacional."},
+                {"name": "🏆 PONTOS", "value": "**+25 pontos atribuídos**"}
             ]
         ),
         "enemy_alert_embed": lambda: tactical_embed(
-            "⚠️ ALVO PERDIDO",
-            "O VIP inimigo concluiu extração.\nPreparem nova fase operacional.",
-            discord.Color.blue()
+            "⚠️ TRANSPORTE INIMIGO CONCLUÍDO",
+            "O Vermelho completou a rota da carga.",
+            discord.Color.blue(),
+            [{"name": "📍 ORDEM", "value": "Regressem ao COMANDO e aguardem nova janela operacional."}]
         )
     },
 
@@ -2605,23 +2611,25 @@ NEXT_MISSIONS = {
     },
     "mission_2": {
         "azul": lambda: tactical_embed(
-            "🔵 MISSÃO 03 — HVT CAPTURE",
-            "〔 TASK FORCE AZUL 〕\n\nUm operador inimigo de elevado valor tenta escapar pelos setores oeste.",
+            "🔵 MISSÃO 03 — INTERCETAR TRANSPORTE",
+            "〔 TASK FORCE AZUL 〕\n\nO Vermelho está a transportar material sensível por uma rota obrigatória.",
             discord.Color.blue(),
             [
-                {"name": "🎯 OBJETIVOS PRINCIPAIS", "value": "▸ Capturar HVT vivo\n▸ Escoltar alvo até SAFEZONE\n▸ Garantir extração da intel"},
-                {"name": "🔐 CÓDIGO FÍSICO", "value": "O código operacional encontra-se com o **HVT físico**."},
-                {"name": "⌨️ COMO VALIDAR", "value": VALIDACAO_CODIGO_TEXTO}
+                {"name": "🎯 OBJETIVOS PRINCIPAIS", "value": "▸ Intercetar o transporte inimigo\n▸ Roubar a carga física\n▸ Levar a carga até ao BUNKER\n▸ Depositar o material no ponto indicado"},
+                {"name": "🔐 CÓDIGO FÍSICO", "value": "O código de depósito encontra-se no **BUNKER físico**."},
+                {"name": "⌨️ COMO VALIDAR", "value": VALIDACAO_CODIGO_TEXTO},
+                {"name": "⚠️ REGRA DA CARGA", "value": "O operador com a carga não pode correr. Se for eliminado, larga a carga no local."}
             ]
         ),
         "vermelho": lambda: tactical_embed(
-            "🔴 MISSÃO 03 — VIPER ESCORT",
-            "〔 TASK FORCE VERMELHA 〕\n\nProtejam o operador prioritário e garantam evacuação segura.",
+            "🔴 MISSÃO 03 — ROTA DE TRANSPORTE",
+            "〔 TASK FORCE VERMELHA 〕\n\nTransportem a carga sensível por uma rota obrigatória com validações físicas.",
             discord.Color.red(),
             [
-                {"name": "🎯 OBJETIVOS PRINCIPAIS", "value": "▸ Impedir captura\n▸ Manter movimentação\n▸ Concluir extração"},
-                {"name": "🔐 CÓDIGO FÍSICO", "value": "O código operacional encontra-se na **SAFEZONE física**."},
-                {"name": "⌨️ COMO VALIDAR", "value": VALIDACAO_CODIGO_TEXTO}
+                {"name": "🎯 OBJETIVOS PRINCIPAIS", "value": "▸ Proteger a carga física\n▸ Validar os 4 checkpoints por ordem\n▸ Recuperar a carga caso seja roubada\n▸ Concluir depósito final"},
+                {"name": "🔐 CÓDIGOS FÍSICOS", "value": "Cada checkpoint tem um código próprio escondido no local."},
+                {"name": "⌨️ COMO VALIDAR", "value": VALIDACAO_CODIGO_TEXTO},
+                {"name": "⚠️ REGRA DA CARGA", "value": "Mesmo que a carga seja roubada, se for recuperada devem continuar a rota no checkpoint seguinte."}
             ]
         )
     },
@@ -2788,6 +2796,7 @@ async def start_op(ctx):
     milsim_state["status_panel_message_id"] = None
     milsim_state["team_status_panel_message_ids"] = {"azul": None, "vermelho": None}
     milsim_state["decryption"] = {"active": False, "cancelled": False, "team": None, "mission": None}
+    milsim_state["mission3_route"] = {"vermelho_step": 0}
     milsim_state["captured_players"] = []
 
     for team in ["azul", "vermelho"]:
@@ -2910,6 +2919,22 @@ async def codigo(ctx, codigo: str):
     if team_state["current"] != data["mission"]:
         return await ctx.send("⚠️ Código correto, mas fora da fase operacional atual.", delete_after=10)
 
+    if data.get("type") == "checkpoint":
+        expected_step = milsim_state["mission3_route"]["vermelho_step"] + 1
+        if data.get("step") != expected_step:
+            return await ctx.send(
+                f"⚠️ Checkpoint fora de ordem. Próximo checkpoint esperado: `{expected_step}`.",
+                delete_after=10
+            )
+
+    if codigo == "EXFIL-337":
+        required = data.get("requires_step", 0)
+        if milsim_state["mission3_route"]["vermelho_step"] < required:
+            return await ctx.send(
+                "⚠️ Ainda faltam checkpoints obrigatórios antes do código final.",
+                delete_after=10
+            )
+
     team_state["completed_codes"].append(codigo)
     milsim_state["scores"][team] += data["points"]
 
@@ -2927,6 +2952,11 @@ async def codigo(ctx, codigo: str):
 
     await milsim_log(f"🔐 Código `{codigo}` validado por **{team.upper()}**. +{data['points']} pontos.")
     await update_status_panel()
+
+    if data["type"] == "checkpoint":
+        milsim_state["mission3_route"]["vermelho_step"] = data["step"]
+        await update_status_panel()
+        return
 
     if data["type"] == "decryption":
         asyncio.create_task(milsim_start_decryption(team))
@@ -2986,6 +3016,9 @@ async def reagrupado(ctx):
             else:
                 next_number = int(old_mission.split("_")[1]) + 1
                 milsim_state["teams"][t]["current"] = f"mission_{next_number}"
+
+            if milsim_state["teams"][t]["current"] == "mission_3":
+                milsim_state["mission3_route"]["vermelho_step"] = 0
 
             await delete_team_status_panel(t)
             await milsim_send_to_team(t, embed=NEXT_MISSIONS[old_mission][t]())
