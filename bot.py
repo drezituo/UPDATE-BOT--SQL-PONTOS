@@ -2334,12 +2334,18 @@ MILSPEED = {
     "blackout_seconds": 600
 }
 
+VALIDACAO_CODIGO_TEXTO = (
+    "Quando encontrarem o código físico no terreno, validem no canal da equipa com:\n"
+    "`!codigo CÓDIGO-ENCONTRADO`"
+)
+
 milsim_state = {
     "active": False,
     "scores": {"azul": 0, "vermelho": 0},
     "mission_end_times": {"azul": None, "vermelho": None},
     "status_panel_message_id": None,
     "team_status_panel_message_ids": {"azul": None, "vermelho": None},
+    "decryption": {"active": False, "cancelled": False, "team": None, "mission": None},
     "teams": {
         "azul": {
             "current": "mission_1",
@@ -2387,9 +2393,9 @@ MISSION_CODES = {
             "〔 TASK FORCE AZUL 〕\n\nHard drive recuperada com sucesso.",
             discord.Color.blue(),
             [
-                {"name": "ORDEM", "value": "Regressem imediatamente ao **COMANDO** para reorganização operacional."},
-                {"name": "ALERTA", "value": "Elevada probabilidade de interceção inimiga durante retirada."},
-                {"name": "PRÓXIMO PASSO", "value": "Utilizem `!reagrupado` assim que toda a unidade estiver pronta."}
+                {"name": "📍 ORDEM", "value": "Regressem imediatamente ao **COMANDO** para reorganização operacional."},
+                {"name": "⚠️ ALERTA", "value": "Elevada probabilidade de interceção inimiga durante retirada."},
+                {"name": "➡️ PRÓXIMO PASSO", "value": "Utilizem `!reagrupado` assim que toda a unidade estiver pronta."}
             ]
         ),
         "enemy_alert_embed": lambda: tactical_embed(
@@ -2409,9 +2415,9 @@ MISSION_CODES = {
             "〔 TASK FORCE VERMELHA 〕\n\nProtocolo de destruição parcialmente ativado.",
             discord.Color.red(),
             [
-                {"name": "ORDEM", "value": "Regressem imediatamente ao **COMANDO CENTRAL**."},
-                {"name": "ESTADO", "value": "Aguardem nova janela operacional."},
-                {"name": "PRÓXIMO PASSO", "value": "Utilizem `!reagrupado` assim que toda a unidade estiver pronta."}
+                {"name": "📍 ORDEM", "value": "Regressem imediatamente ao **COMANDO CENTRAL**."},
+                {"name": "📊 ESTADO", "value": "Aguardem nova janela operacional."},
+                {"name": "➡️ PRÓXIMO PASSO", "value": "Utilizem `!reagrupado` assim que toda a unidade estiver pronta."}
             ]
         ),
         "enemy_alert_embed": lambda: tactical_embed(
@@ -2431,8 +2437,8 @@ MISSION_CODES = {
             "SEQUÊNCIA DE DESENCRIPTAÇÃO INICIADA",
             discord.Color.blue(),
             [
-                {"name": "TEMPO ESTIMADO", "value": "**10 MINUTOS**"},
-                {"name": "ORDEM", "value": "Defendam o perímetro do **BUNKER** a todo o custo."}
+                {"name": "⏱️ TEMPO ESTIMADO", "value": "**10 MINUTOS**"},
+                {"name": "📍 ORDEM", "value": "Defendam o perímetro do **BUNKER** a todo o custo."}
             ]
         ),
         "enemy_alert_embed": lambda: tactical_embed(
@@ -2440,8 +2446,8 @@ MISSION_CODES = {
             "Atividade inimiga detetada no BUNKER.\nDesencriptação iniciada.",
             discord.Color.red(),
             [
-                {"name": "TEMPO ESTIMADO", "value": "**10 MINUTOS**"},
-                {"name": "OBJETIVO PRIORITÁRIO", "value": "Interromper terminal."}
+                {"name": "⏱️ TEMPO ESTIMADO", "value": "**10 MINUTOS**"},
+                {"name": "🎯 OBJETIVO PRIORITÁRIO", "value": "Interromper terminal."}
             ]
         )
     },
@@ -2455,7 +2461,7 @@ MISSION_CODES = {
             "💥 SABOTAGEM CONFIRMADA",
             "FALHA NO UPLINK\n\nTransmissão inimiga interrompida.\nTerminal temporariamente comprometido.",
             discord.Color.red(),
-            [{"name": "ORDEM", "value": "Regressem ao **COMANDO** para reorganização."}]
+            [{"name": "📍 ORDEM", "value": "Regressem ao **COMANDO** para reorganização."}]
         ),
         "enemy_alert_embed": lambda: tactical_embed(
             "🚨 FALHA NO TERMINAL",
@@ -2475,7 +2481,7 @@ MISSION_CODES = {
             discord.Color.blue(),
             [
                 {"name": "OBJETIVOS", "value": "▸ Escoltar HVT até SAFEZONE\n▸ Proteger alvo vivo\n▸ Regressar ao COMANDO após extração"},
-                {"name": "PONTOS", "value": "**+20 pontos atribuídos**"}
+                {"name": "🏆 PONTOS", "value": "**+20 pontos atribuídos**"}
             ]
         ),
         "enemy_alert_embed": lambda: tactical_embed(
@@ -2495,8 +2501,8 @@ MISSION_CODES = {
             "VIP protegido com sucesso.\nEvacuação concluída.",
             discord.Color.red(),
             [
-                {"name": "ORDEM", "value": "Regressem ao **COMANDO** para nova janela operacional."},
-                {"name": "PONTOS", "value": "**+20 pontos atribuídos**"}
+                {"name": "📍 ORDEM", "value": "Regressem ao **COMANDO** para nova janela operacional."},
+                {"name": "🏆 PONTOS", "value": "**+20 pontos atribuídos**"}
             ]
         ),
         "enemy_alert_embed": lambda: tactical_embed(
@@ -2516,8 +2522,8 @@ MISSION_CODES = {
             "Uplink operacional no BUNKER.",
             discord.Color.blue(),
             [
-                {"name": "ORDEM", "value": "Preparem defesa para fase final."},
-                {"name": "PONTOS", "value": "**+20 pontos atribuídos**"}
+                {"name": "📍 ORDEM", "value": "Preparem defesa para fase final."},
+                {"name": "🏆 PONTOS", "value": "**+20 pontos atribuídos**"}
             ]
         ),
         "enemy_alert_embed": lambda: tactical_embed(
@@ -2537,8 +2543,8 @@ MISSION_CODES = {
             "Transmissão inimiga comprometida.",
             discord.Color.red(),
             [
-                {"name": "ORDEM", "value": "Preparem assalto final ao BUNKER."},
-                {"name": "PONTOS", "value": "**+20 pontos atribuídos**"}
+                {"name": "📍 ORDEM", "value": "Preparem assalto final ao BUNKER."},
+                {"name": "🏆 PONTOS", "value": "**+20 pontos atribuídos**"}
             ]
         ),
         "enemy_alert_embed": lambda: tactical_embed(
@@ -2581,8 +2587,9 @@ NEXT_MISSIONS = {
             "〔 TASK FORCE AZUL 〕\n\nOs dados recuperados devem ser desencriptados na estação **BUNKER**.",
             discord.Color.blue(),
             [
-                {"name": "OBJETIVOS PRINCIPAIS", "value": "▸ Transportar dispositivo\n▸ Ativar terminal\n▸ Defender transmissão"},
-                {"name": "AUTENTICAÇÃO", "value": "O código operacional encontra-se no **terminal físico do BUNKER**."}
+                {"name": "🎯 OBJETIVOS PRINCIPAIS", "value": "▸ Transportar dispositivo\n▸ Ativar terminal\n▸ Defender transmissão"},
+                {"name": "🔐 CÓDIGO FÍSICO", "value": "O código operacional encontra-se no **terminal físico do BUNKER**."},
+                {"name": "⌨️ COMO VALIDAR", "value": VALIDACAO_CODIGO_TEXTO}
             ]
         ),
         "vermelho": lambda: tactical_embed(
@@ -2590,8 +2597,9 @@ NEXT_MISSIONS = {
             "〔 TASK FORCE VERMELHA 〕\n\nMovimentação inimiga detetada em direção ao **BUNKER**.",
             discord.Color.red(),
             [
-                {"name": "OBJETIVOS PRINCIPAIS", "value": "▸ Intercetar transporte\n▸ Sabotar uplink\n▸ Impedir desencriptação"},
-                {"name": "AUTENTICAÇÃO", "value": "O código operacional encontra-se no **dispositivo de sabotagem físico**."}
+                {"name": "🎯 OBJETIVOS PRINCIPAIS", "value": "▸ Intercetar transporte\n▸ Sabotar uplink\n▸ Impedir desencriptação"},
+                {"name": "🔐 CÓDIGO FÍSICO", "value": "O código operacional encontra-se no **dispositivo de sabotagem físico**."},
+                {"name": "⌨️ COMO VALIDAR", "value": VALIDACAO_CODIGO_TEXTO}
             ]
         )
     },
@@ -2601,8 +2609,9 @@ NEXT_MISSIONS = {
             "〔 TASK FORCE AZUL 〕\n\nUm operador inimigo de elevado valor tenta escapar pelos setores oeste.",
             discord.Color.blue(),
             [
-                {"name": "OBJETIVOS PRINCIPAIS", "value": "▸ Capturar HVT vivo\n▸ Escoltar alvo até SAFEZONE\n▸ Garantir extração da intel"},
-                {"name": "AUTENTICAÇÃO", "value": "O código operacional encontra-se com o **HVT físico**."}
+                {"name": "🎯 OBJETIVOS PRINCIPAIS", "value": "▸ Capturar HVT vivo\n▸ Escoltar alvo até SAFEZONE\n▸ Garantir extração da intel"},
+                {"name": "🔐 CÓDIGO FÍSICO", "value": "O código operacional encontra-se com o **HVT físico**."},
+                {"name": "⌨️ COMO VALIDAR", "value": VALIDACAO_CODIGO_TEXTO}
             ]
         ),
         "vermelho": lambda: tactical_embed(
@@ -2610,8 +2619,9 @@ NEXT_MISSIONS = {
             "〔 TASK FORCE VERMELHA 〕\n\nProtejam o operador prioritário e garantam evacuação segura.",
             discord.Color.red(),
             [
-                {"name": "OBJETIVOS PRINCIPAIS", "value": "▸ Impedir captura\n▸ Manter movimentação\n▸ Concluir extração"},
-                {"name": "AUTENTICAÇÃO", "value": "O código operacional encontra-se na **SAFEZONE física**."}
+                {"name": "🎯 OBJETIVOS PRINCIPAIS", "value": "▸ Impedir captura\n▸ Manter movimentação\n▸ Concluir extração"},
+                {"name": "🔐 CÓDIGO FÍSICO", "value": "O código operacional encontra-se na **SAFEZONE física**."},
+                {"name": "⌨️ COMO VALIDAR", "value": VALIDACAO_CODIGO_TEXTO}
             ]
         )
     },
@@ -2621,8 +2631,9 @@ NEXT_MISSIONS = {
             "〔 TASK FORCE AZUL 〕\n\nAtivem transmissão no BUNKER durante falha de comunicações.",
             discord.Color.blue(),
             [
-                {"name": "OBJETIVOS", "value": "▸ Controlar BUNKER\n▸ Ativar uplink\n▸ Preparar defesa final"},
-                {"name": "AUTENTICAÇÃO", "value": "O código operacional encontra-se no **uplink físico**."}
+                {"name": "🎯 OBJETIVOS", "value": "▸ Controlar BUNKER\n▸ Ativar uplink\n▸ Preparar defesa final"},
+                {"name": "🔐 CÓDIGO FÍSICO", "value": "O código operacional encontra-se no **uplink físico**."},
+                {"name": "⌨️ COMO VALIDAR", "value": VALIDACAO_CODIGO_TEXTO}
             ]
         ),
         "vermelho": lambda: tactical_embed(
@@ -2630,8 +2641,9 @@ NEXT_MISSIONS = {
             "〔 TASK FORCE VERMELHA 〕\n\nCortem a transmissão inimiga e destruam o relay.",
             discord.Color.red(),
             [
-                {"name": "OBJETIVOS", "value": "▸ Infiltrar BUNKER\n▸ Destruir relay\n▸ Impedir uplink inimigo"},
-                {"name": "AUTENTICAÇÃO", "value": "O código operacional encontra-se no **relay físico**."}
+                {"name": "🎯 OBJETIVOS", "value": "▸ Infiltrar BUNKER\n▸ Destruir relay\n▸ Impedir uplink inimigo"},
+                {"name": "🔐 CÓDIGO FÍSICO", "value": "O código operacional encontra-se no **relay físico**."},
+                {"name": "⌨️ COMO VALIDAR", "value": VALIDACAO_CODIGO_TEXTO}
             ]
         )
     },
@@ -2641,8 +2653,9 @@ NEXT_MISSIONS = {
             "〔 TASK FORCE AZUL 〕\n\nControlem o BUNKER e concluam transmissão final.",
             discord.Color.blue(),
             [
-                {"name": "OBJETIVOS FINAIS", "value": "▸ Controlar bunker\n▸ Defender terminal\n▸ Concluir upload final"},
-                {"name": "AUTENTICAÇÃO FINAL", "value": "O código final encontra-se no **terminal físico final**."}
+                {"name": "🎯 OBJETIVOS FINAIS", "value": "▸ Controlar bunker\n▸ Defender terminal\n▸ Concluir upload final"},
+                {"name": "🔐 CÓDIGO FÍSICO FINAL", "value": "O código final encontra-se no **terminal físico final**."},
+                {"name": "⌨️ COMO VALIDAR", "value": VALIDACAO_CODIGO_TEXTO}
             ]
         ),
         "vermelho": lambda: tactical_embed(
@@ -2650,8 +2663,9 @@ NEXT_MISSIONS = {
             "〔 TASK FORCE VERMELHA 〕\n\nImpeçam transmissão inimiga e controlem o BUNKER.",
             discord.Color.red(),
             [
-                {"name": "OBJETIVOS FINAIS", "value": "▸ Destruir relay\n▸ Eliminar operadores de transmissão\n▸ Controlar bunker"},
-                {"name": "AUTENTICAÇÃO FINAL", "value": "O código final encontra-se no **relay físico final**."}
+                {"name": "🎯 OBJETIVOS FINAIS", "value": "▸ Destruir relay\n▸ Eliminar operadores de transmissão\n▸ Controlar bunker"},
+                {"name": "🔐 CÓDIGO FÍSICO FINAL", "value": "O código final encontra-se no **relay físico final**."},
+                {"name": "⌨️ COMO VALIDAR", "value": VALIDACAO_CODIGO_TEXTO}
             ]
         )
     }
@@ -2698,9 +2712,27 @@ def milsim_is_gm(ctx):
 
 
 async def milsim_start_decryption(team: str):
+    milsim_state["decryption"] = {
+        "active": True,
+        "cancelled": False,
+        "team": team,
+        "mission": "mission_2"
+    }
+
     await asyncio.sleep(MILSPEED["decryption_seconds"])
 
     if not milsim_state["active"]:
+        return
+
+    decryption = milsim_state.get("decryption", {})
+
+    if not decryption.get("active"):
+        return
+
+    if decryption.get("cancelled"):
+        return
+
+    if decryption.get("team") != team:
         return
 
     team_state = milsim_state["teams"][team]
@@ -2712,17 +2744,34 @@ async def milsim_start_decryption(team: str):
     team_state["phase"] = "regroup"
     team_state["regrouped"] = False
 
+    milsim_state["decryption"]["active"] = False
+
     await send_team_embed_with_status_last(
         team,
         tactical_embed(
             "✅ DESENCRIPTAÇÃO CONCLUÍDA",
-            "+10 pontos atribuídos.",
+            "A sequência foi concluída com sucesso.\n\n+10 pontos atribuídos.",
             discord.Color.green(),
-            [{"name": "ORDEM", "value": "Regressem ao COMANDO e usem `!reagrupado`."}]
+            [{"name": "📍 ORDEM", "value": "Regressem ao COMANDO e usem `!reagrupado`."}]
         )
     )
 
+    enemy = milsim_enemy(team)
+    await send_team_embed_with_status_last(
+        enemy,
+        tactical_embed(
+            "⚠️ DESENCRIPTAÇÃO INIMIGA CONCLUÍDA",
+            "O inimigo concluiu a sequência no BUNKER.",
+            discord.Color.orange(),
+            [{"name": "📍 ORDEM", "value": "Regressem ao COMANDO e aguardem nova janela operacional."}]
+        )
+    )
+
+    milsim_state["teams"][enemy]["phase"] = "regroup"
+    milsim_state["teams"][enemy]["regrouped"] = False
+
     await milsim_log(f"✅ Desencriptação concluída para **{team.upper()}**. +10 pontos.")
+    await update_status_panel()
 
 
 @bot.command()
@@ -2738,6 +2787,7 @@ async def start_op(ctx):
     milsim_state["mission_end_times"] = {"azul": None, "vermelho": None}
     milsim_state["status_panel_message_id"] = None
     milsim_state["team_status_panel_message_ids"] = {"azul": None, "vermelho": None}
+    milsim_state["decryption"] = {"active": False, "cancelled": False, "team": None, "mission": None}
     milsim_state["captured_players"] = []
 
     for team in ["azul", "vermelho"]:
@@ -2769,9 +2819,10 @@ async def start_op(ctx):
             "〔 TASK FORCE AZUL 〕\n\nReconhecimento aéreo confirma a existência de uma hard drive escondida no edifício CQB.",
             discord.Color.blue(),
             [
-                {"name": "OBJETIVOS PRINCIPAIS", "value": "▸ Infiltrar estrutura\n▸ Recuperar dispositivo\n▸ Extrair dados em segurança"},
-                {"name": "AUTENTICAÇÃO", "value": "O código operacional encontra-se **junto ao dispositivo físico**."},
-                {"name": "CONDIÇÃO ESPECIAL", "value": "O operador que transportar o dispositivo:\n▸ Não pode correr\n▸ Apenas pistola autorizada"}
+                {"name": "🎯 OBJETIVOS PRINCIPAIS", "value": "▸ Infiltrar estrutura\n▸ Recuperar dispositivo\n▸ Extrair dados em segurança"},
+                {"name": "🔐 CÓDIGO FÍSICO", "value": "O código operacional encontra-se **junto ao dispositivo físico**."},
+                {"name": "⌨️ COMO VALIDAR", "value": VALIDACAO_CODIGO_TEXTO},
+                {"name": "⚠️ CONDIÇÃO ESPECIAL", "value": "O operador que transportar o dispositivo:\n▸ Não pode correr\n▸ Apenas pistola autorizada"}
             ]
         )
     )
@@ -2783,9 +2834,10 @@ async def start_op(ctx):
             "〔 TASK FORCE VERMELHA 〕\n\nForças inimigas tentam recuperar informação crítica dentro do CQB.",
             discord.Color.red(),
             [
-                {"name": "OBJETIVOS PRINCIPAIS", "value": "▸ Localizar protocolo de destruição\n▸ Impedir extração inimiga\n▸ Garantir controlo interno do edifício"},
-                {"name": "AUTENTICAÇÃO", "value": "O código operacional encontra-se **junto ao protocolo físico**."},
-                {"name": "INTEL", "value": "Possível infiltração inimiga pelo flanco oeste."}
+                {"name": "🎯 OBJETIVOS PRINCIPAIS", "value": "▸ Localizar protocolo de destruição\n▸ Impedir extração inimiga\n▸ Garantir controlo interno do edifício"},
+                {"name": "🔐 CÓDIGO FÍSICO", "value": "O código operacional encontra-se **junto ao protocolo físico**."},
+                {"name": "⌨️ COMO VALIDAR", "value": VALIDACAO_CODIGO_TEXTO},
+                {"name": "📡 INTEL", "value": "Possível infiltração inimiga pelo flanco oeste."}
             ]
         )
     )
@@ -2799,6 +2851,35 @@ async def start_op(ctx):
 
     await milsim_log("🎖️ Operação DUALITY iniciada.")
     await ctx.send("✅ Operação iniciada.")
+
+
+
+async def milsim_resolve_sabotage_by_red():
+    decryption = milsim_state.get("decryption", {})
+
+    if decryption.get("active") and decryption.get("team") == "azul":
+        milsim_state["decryption"]["cancelled"] = True
+        milsim_state["decryption"]["active"] = False
+
+    # Azul falha a desencriptação e também entra em reagrupamento
+    milsim_state["teams"]["azul"]["phase"] = "regroup"
+    milsim_state["teams"]["azul"]["regrouped"] = False
+
+    await send_team_embed_with_status_last(
+        "azul",
+        tactical_embed(
+            "❌ MISSÃO FALHADA — SIGNAL KEY",
+            "A desencriptação foi interrompida por sabotagem inimiga.",
+            discord.Color.red(),
+            [
+                {"name": "📡 ESTADO DO TERMINAL", "value": "UPLINK comprometido."},
+                {"name": "📍 ORDEM", "value": "Regressem ao COMANDO e usem `!reagrupado`."}
+            ]
+        )
+    )
+
+    await milsim_log("💥 Sabotagem vermelha cancelou a desencriptação azul. Missão 2 do Azul marcada como falhada.")
+    await update_status_panel()
 
 
 @bot.command()
@@ -2840,6 +2921,9 @@ async def codigo(ctx, codigo: str):
     if enemy_alert:
         enemy = milsim_enemy(team)
         await send_team_embed_with_status_last(enemy, enemy_alert())
+
+    if codigo == "RAVEN-119":
+        await milsim_resolve_sabotage_by_red()
 
     await milsim_log(f"🔐 Código `{codigo}` validado por **{team.upper()}**. +{data['points']} pontos.")
     await update_status_panel()
@@ -2943,8 +3027,8 @@ async def capturar(ctx, player_id: str, setor: str):
         f"ID confirmado: **{player_id}**\nSetor: **{setor}**",
         discord.Color.dark_red(),
         [
-            {"name": "INTEL RECUPERADA", "value": "▸ Atividade rádio parcial\n▸ Possível movimentação inimiga no setor indicado"},
-            {"name": "PONTOS", "value": "**+5 pontos atribuídos**"}
+            {"name": "📡 INTEL RECUPERADA", "value": "▸ Atividade rádio parcial\n▸ Possível movimentação inimiga no setor indicado"},
+            {"name": "🏆 PONTOS", "value": "**+5 pontos atribuídos**"}
         ]
     ))
     await create_team_status_panel(team)
@@ -3003,7 +3087,7 @@ async def gm_blackout(ctx):
         discord.Color.dark_grey(),
         [
             {"name": "CONDIÇÕES NO TERRENO", "value": "▸ Lanternas proibidas\n▸ Comunicações limitadas\n▸ Apenas squad leaders autorizados em rádio\n▸ Duração estimada: 10 minutos"},
-            {"name": "ORDEM", "value": "Mantenham eficácia operacional."}
+            {"name": "📍 ORDEM", "value": "Mantenham eficácia operacional."}
         ]
     )
 
