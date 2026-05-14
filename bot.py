@@ -2130,6 +2130,188 @@ AZUL_ROLE_ID = 1504599233137868961
 VERMELHO_ROLE_ID = 1504599117488455832
 GM_ROLE_ID = 1504602388496121928
 
+
+
+MISSION_TIME_LIMITS = {
+    "mission_1": 1800,
+    "mission_2": 2400,
+    "mission_3": 2100,
+    "mission_4": 1800,
+    "final": 1500
+}
+
+def format_time_remaining(team: str):
+    end_time = milsim_state.get("mission_end_times", {}).get(team)
+
+    if not end_time:
+        return "Sem timer ativo"
+
+    now = datetime.now(timezone.utc)
+    remaining = end_time - now
+
+    if remaining.total_seconds() <= 0:
+        return "00:00 — tempo esgotado"
+
+    total_seconds = int(remaining.total_seconds())
+    minutes = total_seconds // 60
+    seconds = total_seconds % 60
+
+    return f"{minutes:02d}:{seconds:02d}"
+
+
+def build_operation_status_embed():
+    embed = tactical_embed(
+        "📡 PAINEL OPERACIONAL — DUALITY",
+        "Estado em tempo real da operação.",
+        discord.Color.dark_gold(),
+        [
+            {"name": "Estado", "value": "Ativa" if milsim_state["active"] else "Inativa", "inline": True},
+            {"name": "🔵 Score Azul", "value": str(milsim_state["scores"]["azul"]), "inline": True},
+            {"name": "🔴 Score Vermelho", "value": str(milsim_state["scores"]["vermelho"]), "inline": True},
+        ]
+    )
+
+    for team in ["azul", "vermelho"]:
+        st = milsim_state["teams"][team]
+        emoji = "🔵" if team == "azul" else "🔴"
+        embed.add_field(
+            name=f"{emoji} {team.upper()}",
+            value=(
+                f"Missão: `{st['current']}`\n"
+                f"Fase: `{st['phase']}`\n"
+                f"Reagrupado: `{st['regrouped']}`\n"
+                f"Tempo restante: **{format_time_remaining(team)}**"
+            ),
+            inline=False
+        )
+
+    return embed
+
+
+
+
+def build_team_status_embed(team: str):
+    st = milsim_state["teams"][team]
+    emoji = "🔵" if team == "azul" else "🔴"
+    color = discord.Color.blue() if team == "azul" else discord.Color.red()
+
+    return tactical_embed(
+        f"{emoji} STATUS OPERACIONAL — {team.upper()}",
+        "Painel automático da missão atual.",
+        color,
+        [
+            {"name": "Missão Atual", "value": f"`{st['current']}`", "inline": True},
+            {"name": "Fase", "value": f"`{st['phase']}`", "inline": True},
+            {"name": "Reagrupado", "value": f"`{st['regrouped']}`", "inline": True},
+            {"name": "Tempo Restante", "value": f"**{format_time_remaining(team)}**", "inline": False},
+            {"name": "Score", "value": f"**{milsim_state['scores'][team]} pts**", "inline": True},
+        ],
+        footer="COMANDO CENTRAL • PAINEL AUTOMÁTICO"
+    )
+
+
+async def create_team_status_panel(team: str):
+    channel = milsim_channel_for_team(team)
+    if not channel:
+        return
+
+    msg = await channel.send(embed=build_team_status_embed(team))
+    milsim_state["team_status_panel_message_ids"][team] = msg.id
+
+
+async def update_team_status_panel(team: str):
+    channel = milsim_channel_for_team(team)
+    message_id = milsim_state.get("team_status_panel_message_ids", {}).get(team)
+
+    if not channel or not message_id:
+        return
+
+    try:
+        msg = await channel.fetch_message(message_id)
+        await msg.edit(embed=build_team_status_embed(team))
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        pass
+
+
+async def update_all_team_status_panels():
+    await update_team_status_panel("azul")
+    await update_team_status_panel("vermelho")
+
+
+
+async def delete_team_status_panel(team: str):
+    channel = milsim_channel_for_team(team)
+    message_id = milsim_state.get("team_status_panel_message_ids", {}).get(team)
+
+    if not channel or not message_id:
+        return
+
+    try:
+        msg = await channel.fetch_message(message_id)
+        await msg.delete()
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        pass
+
+    milsim_state["team_status_panel_message_ids"][team] = None
+
+async def update_status_panel():
+    channel = milsim_get_channel(COMANDO_CHANNEL_ID)
+    message_id = milsim_state.get("status_panel_message_id")
+
+    if channel and message_id:
+        try:
+            msg = await channel.fetch_message(message_id)
+            await msg.edit(embed=build_operation_status_embed())
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            pass
+
+    await update_all_team_status_panels()
+
+
+async def mission_timer(team: str, mission_name: str):
+    seconds = MISSION_TIME_LIMITS[mission_name]
+    milsim_state["mission_end_times"][team] = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+
+    while seconds > 0:
+        await asyncio.sleep(30)
+        seconds -= 30
+
+        if not milsim_state["active"]:
+            return
+
+        current = milsim_state["teams"][team]["current"]
+        if current != mission_name:
+            return
+
+        await update_status_panel()
+
+    if not milsim_state["active"]:
+        return
+
+    current = milsim_state["teams"][team]["current"]
+
+    if current != mission_name:
+        return
+
+    await milsim_send_to_team(
+        team,
+        embed=tactical_embed(
+            "⏰ TEMPO OPERACIONAL ESGOTADO",
+            f"O tempo limite da {mission_name.upper()} terminou.",
+            discord.Color.orange(),
+            [
+                {
+                    "name": "ORDEM",
+                    "value": "Regressem imediatamente ao COMANDO e aguardem novas instruções."
+                }
+            ]
+        )
+    )
+
+    await milsim_log(f"⏰ Tempo da {mission_name} terminou para {team.upper()}.")
+    await update_status_panel()
+
+
 MILSPEED = {
     "decryption_seconds": 600,
     "blackout_seconds": 600
@@ -2138,6 +2320,9 @@ MILSPEED = {
 milsim_state = {
     "active": False,
     "scores": {"azul": 0, "vermelho": 0},
+    "mission_end_times": {"azul": None, "vermelho": None},
+    "status_panel_message_id": None,
+    "team_status_panel_message_ids": {"azul": None, "vermelho": None},
     "teams": {
         "azul": {
             "current": "mission_1",
@@ -2533,6 +2718,9 @@ async def start_op(ctx):
 
     milsim_state["active"] = True
     milsim_state["scores"] = {"azul": 0, "vermelho": 0}
+    milsim_state["mission_end_times"] = {"azul": None, "vermelho": None}
+    milsim_state["status_panel_message_id"] = None
+    milsim_state["team_status_panel_message_ids"] = {"azul": None, "vermelho": None}
     milsim_state["captured_players"] = []
 
     for team in ["azul", "vermelho"]:
@@ -2585,6 +2773,13 @@ async def start_op(ctx):
         )
     )
 
+    await create_team_status_panel("azul")
+    await create_team_status_panel("vermelho")
+
+    asyncio.create_task(mission_timer("azul", "mission_1"))
+    asyncio.create_task(mission_timer("vermelho", "mission_1"))
+    await update_status_panel()
+
     await milsim_log("🎖️ Operação DUALITY iniciada.")
     await ctx.send("✅ Operação iniciada.")
 
@@ -2627,6 +2822,7 @@ async def codigo(ctx, codigo: str):
         await milsim_send_to_team(milsim_enemy(team), embed=enemy_alert())
 
     await milsim_log(f"🔐 Código `{codigo}` validado por **{team.upper()}**. +{data['points']} pontos.")
+    await update_status_panel()
 
     if data["type"] == "decryption":
         asyncio.create_task(milsim_start_decryption(team))
@@ -2665,6 +2861,7 @@ async def reagrupado(ctx):
     ))
 
     await milsim_log(f"✅ **{team.upper()}** confirmou reagrupamento.")
+    await update_status_panel()
 
     other = milsim_enemy(team)
 
@@ -2684,7 +2881,12 @@ async def reagrupado(ctx):
                 next_number = int(old_mission.split("_")[1]) + 1
                 milsim_state["teams"][t]["current"] = f"mission_{next_number}"
 
+            await delete_team_status_panel(t)
             await milsim_send_to_team(t, embed=NEXT_MISSIONS[old_mission][t]())
+            await create_team_status_panel(t)
+
+        for t in ["azul", "vermelho"]:
+            asyncio.create_task(mission_timer(t, milsim_state["teams"][t]["current"]))
 
         await milsim_log("📡 Nova fase operacional transmitida às duas equipas.")
 
@@ -2724,37 +2926,34 @@ async def capturar(ctx, player_id: str, setor: str):
     ))
 
     await milsim_log(f"🪪 **{team.upper()}** capturou `{player_id}` no setor `{setor}`. +5 pontos.")
+    await update_status_panel()
 
 
 @bot.command()
 async def opstatus(ctx):
-    if ctx.channel.id not in [AZUL_CHANNEL_ID, VERMELHO_CHANNEL_ID, GM_CHANNEL_ID]:
+    if ctx.channel.id not in [AZUL_CHANNEL_ID, VERMELHO_CHANNEL_ID, GM_CHANNEL_ID, COMANDO_CHANNEL_ID]:
         return await ctx.send("⚠️ Comando disponível apenas em canais operacionais.", delete_after=10)
 
-    embed = tactical_embed(
-        "📡 ESTADO DA OPERAÇÃO DUALITY",
-        "Relatório operacional atualizado.",
-        discord.Color.dark_gold(),
-        [
-            {"name": "Estado", "value": "Ativa" if milsim_state["active"] else "Inativa", "inline": True},
-            {"name": "Score Azul", "value": str(milsim_state["scores"]["azul"]), "inline": True},
-            {"name": "Score Vermelho", "value": str(milsim_state["scores"]["vermelho"]), "inline": True},
-        ]
-    )
+    await ctx.send(embed=build_operation_status_embed())
 
-    for team in ["azul", "vermelho"]:
-        st = milsim_state["teams"][team]
-        embed.add_field(
-            name=f"Equipa {team.upper()}",
-            value=(
-                f"Missão: `{st['current']}`\n"
-                f"Fase: `{st['phase']}`\n"
-                f"Reagrupado: `{st['regrouped']}`"
-            ),
-            inline=False
-        )
 
-    await ctx.send(embed=embed)
+@bot.command()
+async def painel_op(ctx):
+    if ctx.channel.id != GM_CHANNEL_ID:
+        return await ctx.send("⚠️ Este comando só pode ser usado no canal GM.", delete_after=10)
+
+    if not milsim_is_gm(ctx):
+        return await ctx.send("❌ Apenas Game Masters podem usar este comando.", delete_after=10)
+
+    comando = milsim_get_channel(COMANDO_CHANNEL_ID)
+
+    if not comando:
+        return await ctx.send("⚠️ Canal de comando não encontrado.", delete_after=10)
+
+    msg = await comando.send(embed=build_operation_status_embed())
+    milsim_state["status_panel_message_id"] = msg.id
+
+    await ctx.send("✅ Painel operacional criado no canal de comando.")
 
 
 @bot.command()
@@ -2817,7 +3016,12 @@ async def gm_next(ctx):
             next_number = int(old_mission.split("_")[1]) + 1
             milsim_state["teams"][t]["current"] = f"mission_{next_number}"
 
+        await delete_team_status_panel(t)
         await milsim_send_to_team(t, embed=NEXT_MISSIONS[old_mission][t]())
+        await create_team_status_panel(t)
+
+    for t in ["azul", "vermelho"]:
+        asyncio.create_task(mission_timer(t, milsim_state["teams"][t]["current"]))
 
     await milsim_log("⏭️ Game Master forçou próxima fase operacional.")
     await ctx.send("✅ Próxima fase enviada.")
@@ -2854,6 +3058,7 @@ async def gm_end(ctx):
         await comando.send(embed=embed)
 
     await milsim_log("🏁 Operação terminada manualmente.")
+    await update_status_panel()
     await ctx.send("✅ Operação terminada.")
 
 # ---------- START ----------
