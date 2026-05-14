@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands, tasks
+import asyncio
 import psycopg2
 import os
 from datetime import datetime, timezone, timedelta
@@ -2116,134 +2117,791 @@ async def verificar_inscricoes():
 
 
 # =========================
-# 🪖 MILSIM SYSTEM
+# 🎖️ MILSIM — OPERAÇÃO DUALITY
 # =========================
 
-COMANDO_CHANNEL_ID=1504600088289214474
-AZUL_CHANNEL_ID=1504600244015599746
-VERMELHO_CHANNEL_ID=1504600284935094404
-LOGS_CHANNEL_ID=1504600337544122448
-GM_CHANNEL_ID=1504600378988171495
+COMANDO_CHANNEL_ID = 1504600088289214474
+AZUL_CHANNEL_ID = 1504600244015599746
+VERMELHO_CHANNEL_ID = 1504600284935094404
+LOGS_CHANNEL_ID = 1504600337544122448
+GM_CHANNEL_ID = 1504600378988171495
 
-AZUL_ROLE_ID=1504599233137868961
-VERMELHO_ROLE_ID=1504599117488455832
-GM_ROLE_ID=1504602388496121928
+AZUL_ROLE_ID = 1504599233137868961
+VERMELHO_ROLE_ID = 1504599117488455832
+GM_ROLE_ID = 1504602388496121928
 
-MISSOES = {
-    "azul_1": {
-        "codigo": "ALFA-227",
-        "texto": "🪖 OPERAÇÃO SHADOW VEIL\n\n📍 Objetivo:\nRecuperar o disco rígido escondido no setor industrial.\n\n⚠️ Inteligência indica presença inimiga no quadrante norte.\n\n🔐 Após recuperar o objetivo usar:\n!codigo ALFA-227"
+MILSPEED = {
+    "decryption_seconds": 600,
+    "blackout_seconds": 600
+}
+
+milsim_state = {
+    "active": False,
+    "scores": {"azul": 0, "vermelho": 0},
+    "teams": {
+        "azul": {
+            "current": "mission_1",
+            "phase": "mission",
+            "regrouped": False,
+            "completed_codes": []
+        },
+        "vermelho": {
+            "current": "mission_1",
+            "phase": "mission",
+            "regrouped": False,
+            "completed_codes": []
+        }
     },
-    "vermelho_1": {
-        "codigo": "BRAVO-913",
-        "texto": "🪖 OPERAÇÃO RED FANG\n\n📍 Objetivo:\nInterceptar transmissão inimiga e capturar operador.\n\n⚠️ Unidade azul movimenta-se pelo setor central.\n\n🔐 Após concluir usar:\n!codigo BRAVO-913"
+    "captured_players": []
+}
+
+
+MISSION_CODES = {
+    "SHADOW-214": {
+        "team": "azul",
+        "mission": "mission_1",
+        "points": 10,
+        "type": "complete",
+        "message": (
+            "╔══════════════════════════════╗\n"
+            "        ATUALIZAÇÃO TÁTICA\n"
+            "╚══════════════════════════════╝\n\n"
+            "〔 TASK FORCE AZUL 〕\n\n"
+            "AUTORIZAÇÃO VALIDADA\n"
+            "CÓDIGO: SHADOW-214\n\n"
+            "Hard drive recuperada com sucesso.\n\n"
+            "Regressem imediatamente ao COMANDO para reorganização operacional.\n\n"
+            "ATENÇÃO:\n"
+            "Elevada probabilidade de interceção inimiga durante retirada.\n\n"
+            "Utilizem:\n"
+            "`!reagrupado`\n\n"
+            "assim que toda a unidade estiver pronta."
+        ),
+        "enemy_alert": (
+            "⚠️ **ALERTA DE COMBATE**\n\n"
+            "Movimentação inimiga confirmada no setor CQB.\n"
+            "Possível extração de dados em progresso."
+        )
+    },
+
+    "VIPER-771": {
+        "team": "vermelho",
+        "mission": "mission_1",
+        "points": 10,
+        "type": "complete",
+        "message": (
+            "╔══════════════════════════════╗\n"
+            "        ATUALIZAÇÃO TÁTICA\n"
+            "╚══════════════════════════════╝\n\n"
+            "〔 TASK FORCE VERMELHA 〕\n\n"
+            "AUTORIZAÇÃO VALIDADA\n"
+            "CÓDIGO: VIPER-771\n\n"
+            "Protocolo de destruição parcialmente ativado.\n\n"
+            "Regressem imediatamente ao COMANDO CENTRAL.\n\n"
+            "Aguardem nova janela operacional.\n\n"
+            "Utilizem:\n"
+            "`!reagrupado`\n\n"
+            "assim que toda a unidade estiver pronta."
+        ),
+        "enemy_alert": (
+            "⚠️ **ALERTA DE COMBATE**\n\n"
+            "Protocolo inimigo detetado no CQB.\n"
+            "Dados comprometidos parcialmente."
+        )
+    },
+
+    "BUNKER-551": {
+        "team": "azul",
+        "mission": "mission_2",
+        "points": 15,
+        "type": "decryption",
+        "message": (
+            "╔══════════════════════════════╗\n"
+            "          TERMINAL ONLINE\n"
+            "╚══════════════════════════════╝\n\n"
+            "SEQUÊNCIA DE DESENCRIPTAÇÃO INICIADA\n\n"
+            "TEMPO ESTIMADO:\n"
+            "**10 MINUTOS**\n\n"
+            "Defendam o perímetro do BUNKER a todo o custo."
+        ),
+        "enemy_alert": (
+            "🚨 **ALERTA — BUNKER**\n\n"
+            "Atividade inimiga detetada no BUNKER.\n"
+            "Desencriptação iniciada.\n\n"
+            "Tempo estimado: **10 minutos**.\n\n"
+            "Objetivo prioritário: interromper terminal."
+        )
+    },
+
+    "RAVEN-119": {
+        "team": "vermelho",
+        "mission": "mission_2",
+        "points": 15,
+        "type": "complete",
+        "message": (
+            "╔══════════════════════════════╗\n"
+            "        SABOTAGEM CONFIRMADA\n"
+            "╚══════════════════════════════╝\n\n"
+            "FALHA NO UPLINK\n\n"
+            "Transmissão inimiga interrompida.\n"
+            "Terminal temporariamente comprometido.\n\n"
+            "Regressem ao COMANDO para reorganização."
+        ),
+        "enemy_alert": (
+            "🚨 **FALHA NO TERMINAL**\n\n"
+            "A desencriptação foi interrompida.\n"
+            "Recuperem controlo do BUNKER imediatamente."
+        )
+    },
+
+    "GHOST-802": {
+        "team": "azul",
+        "mission": "mission_3",
+        "points": 20,
+        "type": "complete",
+        "message": (
+            "╔══════════════════════════════╗\n"
+            "          HVT CAPTURADO\n"
+            "╚══════════════════════════════╝\n\n"
+            "Operador inimigo confirmado sob custódia.\n\n"
+            "OBJETIVO:\n"
+            "▸ escoltar HVT até SAFEZONE\n"
+            "▸ proteger alvo vivo\n"
+            "▸ regressar ao COMANDO após extração\n\n"
+            "**+20 pontos atribuídos**"
+        ),
+        "enemy_alert": (
+            "🚨 **ALERTA HVT**\n\n"
+            "O vosso operador prioritário foi capturado.\n"
+            "Recuperem o alvo antes da extração."
+        )
+    },
+
+    "EXFIL-337": {
+        "team": "vermelho",
+        "mission": "mission_3",
+        "points": 20,
+        "type": "complete",
+        "message": (
+            "╔══════════════════════════════╗\n"
+            "        EXTRAÇÃO CONFIRMADA\n"
+            "╚══════════════════════════════╝\n\n"
+            "VIP protegido com sucesso.\n"
+            "Evacuação concluída.\n\n"
+            "Regressem ao COMANDO para nova janela operacional.\n\n"
+            "**+20 pontos atribuídos**"
+        ),
+        "enemy_alert": (
+            "⚠️ **ALVO PERDIDO**\n\n"
+            "O VIP inimigo concluiu extração.\n"
+            "Preparem nova fase operacional."
+        )
+    },
+
+    "OMEGA-440": {
+        "team": "azul",
+        "mission": "mission_4",
+        "points": 20,
+        "type": "complete",
+        "message": (
+            "╔══════════════════════════════╗\n"
+            "        TRANSMISSÃO ATIVADA\n"
+            "╚══════════════════════════════╝\n\n"
+            "Uplink operacional no BUNKER.\n"
+            "Preparem defesa para fase final.\n\n"
+            "**+20 pontos atribuídos**"
+        ),
+        "enemy_alert": (
+            "📡 **TRANSMISSÃO INIMIGA ATIVA**\n\n"
+            "O inimigo ativou uplink no BUNKER.\n"
+            "Preparem corte de transmissão."
+        )
+    },
+
+    "BLACK-916": {
+        "team": "vermelho",
+        "mission": "mission_4",
+        "points": 20,
+        "type": "complete",
+        "message": (
+            "╔══════════════════════════════╗\n"
+            "          RELAY DESTRUÍDO\n"
+            "╚══════════════════════════════╝\n\n"
+            "Transmissão inimiga comprometida.\n"
+            "Preparem assalto final ao BUNKER.\n\n"
+            "**+20 pontos atribuídos**"
+        ),
+        "enemy_alert": (
+            "💥 **RELAY COMPROMETIDO**\n\n"
+            "A vossa transmissão foi cortada.\n"
+            "Recuperem controlo antes da fase final."
+        )
+    },
+
+    "NOVA-999": {
+        "team": "azul",
+        "mission": "final",
+        "points": 30,
+        "type": "end",
+        "message": (
+            "🏆 **TRANSMISSÃO FINAL CONCLUÍDA**\n\n"
+            "Vitória operacional da TASK FORCE AZUL."
+        )
+    },
+
+    "IRON-666": {
+        "team": "vermelho",
+        "mission": "final",
+        "points": 30,
+        "type": "end",
+        "message": (
+            "🏆 **TRANSMISSÃO INIMIGA IMPEDIDA**\n\n"
+            "Vitória operacional da TASK FORCE VERMELHA."
+        )
     }
 }
 
-estado_milsim = {
-    "azul": 1,
-    "vermelho": 1
+
+NEXT_MISSIONS = {
+    "mission_1": {
+        "azul": (
+            "━━━━━━━━━━━━━━━━━━\n"
+            "〔 TASK FORCE AZUL 〕\n"
+            "MISSÃO 02 — SIGNAL KEY\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+            "Os dados recuperados devem ser desencriptados na estação BUNKER.\n\n"
+            "OBJETIVOS PRINCIPAIS:\n"
+            "▸ transportar dispositivo\n"
+            "▸ ativar terminal\n"
+            "▸ defender transmissão\n\n"
+            "CÓDIGO DO TERMINAL:\n"
+            "**BUNKER-551**"
+        ),
+        "vermelho": (
+            "━━━━━━━━━━━━━━━━━━\n"
+            "〔 TASK FORCE VERMELHA 〕\n"
+            "MISSÃO 02 — SIGNAL KEY\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+            "Movimentação inimiga detetada em direção ao BUNKER.\n\n"
+            "OBJETIVOS PRINCIPAIS:\n"
+            "▸ intercetar transporte\n"
+            "▸ sabotar uplink\n"
+            "▸ impedir desencriptação\n\n"
+            "CÓDIGO DE SABOTAGEM:\n"
+            "**RAVEN-119**"
+        )
+    },
+    "mission_2": {
+        "azul": (
+            "━━━━━━━━━━━━━━━━━━\n"
+            "〔 TASK FORCE AZUL 〕\n"
+            "MISSÃO 03 — HVT CAPTURE\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+            "Um operador inimigo de elevado valor tenta escapar pelos setores oeste.\n\n"
+            "OBJETIVOS PRINCIPAIS:\n"
+            "▸ capturar HVT vivo\n"
+            "▸ escoltar alvo até SAFEZONE\n"
+            "▸ garantir extração da intel\n\n"
+            "CÓDIGO HVT:\n"
+            "**GHOST-802**"
+        ),
+        "vermelho": (
+            "━━━━━━━━━━━━━━━━━━\n"
+            "〔 TASK FORCE VERMELHA 〕\n"
+            "MISSÃO 03 — VIPER ESCORT\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+            "Protejam o operador prioritário e garantam evacuação segura.\n\n"
+            "OBJETIVOS PRINCIPAIS:\n"
+            "▸ impedir captura\n"
+            "▸ manter movimentação\n"
+            "▸ concluir extração\n\n"
+            "CÓDIGO SAFEZONE:\n"
+            "**EXFIL-337**"
+        )
+    },
+    "mission_3": {
+        "azul": (
+            "━━━━━━━━━━━━━━━━━━\n"
+            "〔 TASK FORCE AZUL 〕\n"
+            "MISSÃO 04 — BLACKOUT\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+            "Ativem transmissão no BUNKER durante falha de comunicações.\n\n"
+            "OBJETIVOS:\n"
+            "▸ controlar BUNKER\n"
+            "▸ ativar uplink\n"
+            "▸ preparar defesa final\n\n"
+            "CÓDIGO:\n"
+            "**OMEGA-440**"
+        ),
+        "vermelho": (
+            "━━━━━━━━━━━━━━━━━━\n"
+            "〔 TASK FORCE VERMELHA 〕\n"
+            "MISSÃO 04 — BLACKOUT\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+            "Cortem a transmissão inimiga e destruam o relay.\n\n"
+            "OBJETIVOS:\n"
+            "▸ infiltrar BUNKER\n"
+            "▸ destruir relay\n"
+            "▸ impedir uplink inimigo\n\n"
+            "CÓDIGO:\n"
+            "**BLACK-916**"
+        )
+    },
+    "mission_4": {
+        "azul": (
+            "━━━━━━━━━━━━━━━━━━\n"
+            "〔 TASK FORCE AZUL 〕\n"
+            "MISSÃO FINAL — LAST TRANSMISSION\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+            "Controlem o BUNKER e concluam transmissão final.\n\n"
+            "OBJETIVOS FINAIS:\n"
+            "▸ controlar bunker\n"
+            "▸ defender terminal\n"
+            "▸ concluir upload final\n\n"
+            "CÓDIGO FINAL:\n"
+            "**NOVA-999**"
+        ),
+        "vermelho": (
+            "━━━━━━━━━━━━━━━━━━\n"
+            "〔 TASK FORCE VERMELHA 〕\n"
+            "MISSÃO FINAL — LAST TRANSMISSION\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+            "Impeçam transmissão inimiga e controlem o BUNKER.\n\n"
+            "OBJETIVOS FINAIS:\n"
+            "▸ destruir relay\n"
+            "▸ eliminar operadores de transmissão\n"
+            "▸ controlar bunker\n\n"
+            "CÓDIGO FINAL:\n"
+            "**IRON-666**"
+        )
+    }
 }
 
-codigos_jogadores = {}
 
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def iniciarmilsim(ctx):
+def milsim_get_channel(channel_id: int):
+    return bot.get_channel(channel_id)
 
-    azul_channel = bot.get_channel(AZUL_CHANNEL_ID)
-    vermelho_channel = bot.get_channel(VERMELHO_CHANNEL_ID)
 
-    embed = discord.Embed(
-        title="🪖 OPERAÇÃO INICIADA",
-        description="O teatro de operações foi ativado.\n\nAguardem ordens do comando.",
-        color=discord.Color.dark_green()
+def milsim_team_from_channel(channel_id: int):
+    if channel_id == AZUL_CHANNEL_ID:
+        return "azul"
+    if channel_id == VERMELHO_CHANNEL_ID:
+        return "vermelho"
+    return None
+
+
+def milsim_enemy(team: str):
+    return "vermelho" if team == "azul" else "azul"
+
+
+def milsim_channel_for_team(team: str):
+    return milsim_get_channel(AZUL_CHANNEL_ID if team == "azul" else VERMELHO_CHANNEL_ID)
+
+
+async def milsim_log(texto: str):
+    logs = milsim_get_channel(LOGS_CHANNEL_ID)
+    if logs:
+        await logs.send(texto)
+
+
+async def milsim_send_to_team(team: str, texto: str):
+    canal = milsim_channel_for_team(team)
+    if canal:
+        await canal.send(texto)
+
+
+def milsim_is_gm(ctx):
+    return any(role.id == GM_ROLE_ID for role in ctx.author.roles) or ctx.author.guild_permissions.administrator
+
+
+async def milsim_start_decryption(team: str):
+    await asyncio.sleep(MILSPEED["decryption_seconds"])
+
+    if not milsim_state["active"]:
+        return
+
+    team_state = milsim_state["teams"][team]
+
+    if team_state["current"] != "mission_2":
+        return
+
+    milsim_state["scores"][team] += 10
+    team_state["phase"] = "regroup"
+    team_state["regrouped"] = False
+
+    await milsim_send_to_team(
+        team,
+        "✅ **DESENCRIPTAÇÃO CONCLUÍDA**\n\n"
+        "+10 pontos atribuídos.\n\n"
+        "Regressem ao COMANDO e usem `!reagrupado`."
     )
 
-    await azul_channel.send(embed=embed)
-    await vermelho_channel.send(embed=embed)
+    await milsim_log(f"✅ Desencriptação concluída para **{team.upper()}**. +10 pontos.")
 
-    await azul_channel.send(MISSOES["azul_1"]["texto"])
-    await vermelho_channel.send(MISSOES["vermelho_1"]["texto"])
-
-    await ctx.send("✅ Milsim iniciado.")
 
 @bot.command()
-async def codigo(ctx, code: str):
+async def start_op(ctx):
+    if ctx.channel.id != GM_CHANNEL_ID:
+        return await ctx.send("⚠️ Este comando só pode ser usado no canal GM.", delete_after=10)
 
-    logs = bot.get_channel(LOGS_CHANNEL_ID)
+    if not milsim_is_gm(ctx):
+        return await ctx.send("❌ Apenas Game Masters podem iniciar a operação.", delete_after=10)
 
-    if ctx.channel.id == AZUL_CHANNEL_ID:
+    milsim_state["active"] = True
+    milsim_state["scores"] = {"azul": 0, "vermelho": 0}
+    milsim_state["captured_players"] = []
 
-        if code.upper() == MISSOES["azul_1"]["codigo"]:
-            embed = discord.Embed(
-                title="✅ OBJETIVO COMPLETADO",
-                description="A equipa Azul concluiu a missão inicial.\n\n📍 Regressem ao comando para reorganização.",
-                color=discord.Color.blue()
-            )
+    for team in ["azul", "vermelho"]:
+        milsim_state["teams"][team] = {
+            "current": "mission_1",
+            "phase": "mission",
+            "regrouped": False,
+            "completed_codes": []
+        }
 
-            await ctx.send(embed=embed)
+    comando = milsim_get_channel(COMANDO_CHANNEL_ID)
 
-            await logs.send(f"📘 Azul completou missão com código {code}")
+    if comando:
+        await comando.send(
+            "╔══════════════════════════════╗\n"
+            "        COMANDO CENTRAL\n"
+            "       OPERAÇÃO: DUALITY\n"
+            "╚══════════════════════════════╝\n\n"
+            "〔 TRANSMISSÃO GLOBAL 〕\n\n"
+            "Foi intercetada atividade militar dentro do complexo industrial abandonado.\n\n"
+            "Duas forças hostis disputam controlo sobre:\n"
+            "▸ inteligência classificada\n"
+            "▸ sistemas de transmissão\n"
+            "▸ operadores inimigos\n"
+            "▸ corredores de extração\n\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "REGRAS OPERACIONAIS\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+            "▸ Códigos físicos desbloqueiam operações\n"
+            "▸ Operadores capturados podem conter intel\n"
+            "▸ HVTs devem ser capturados vivos\n"
+            "▸ Todas as unidades DEVEM regressar ao HQ após cada missão\n"
+            "▸ Aguardem novas ordens após reorganização\n\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "INÍCIO DA OPERAÇÃO:\n"
+            "T-60 SEGUNDOS\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+            "Boa caça, operadores."
+        )
 
-        else:
-            await ctx.send("❌ Código inválido.")
+    await milsim_send_to_team(
+        "azul",
+        "━━━━━━━━━━━━━━━━━━\n"
+        "〔 TASK FORCE AZUL 〕\n"
+        "MISSÃO 01 — DEAD DROP\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "Reconhecimento aéreo confirma a existência de uma hard drive escondida no edifício CQB.\n\n"
+        "OBJETIVOS PRINCIPAIS:\n"
+        "▸ infiltrar estrutura\n"
+        "▸ recuperar dispositivo\n"
+        "▸ extrair dados em segurança\n\n"
+        "CÓDIGO DE AUTORIZAÇÃO:\n"
+        "**SHADOW-214**\n\n"
+        "CONDIÇÃO ESPECIAL:\n"
+        "O operador que transportar o dispositivo:\n"
+        "▸ não pode correr\n"
+        "▸ apenas pistola autorizada"
+    )
 
-    elif ctx.channel.id == VERMELHO_CHANNEL_ID:
+    await milsim_send_to_team(
+        "vermelho",
+        "━━━━━━━━━━━━━━━━━━\n"
+        "〔 TASK FORCE VERMELHA 〕\n"
+        "MISSÃO 01 — DEAD DROP\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "Forças inimigas tentam recuperar informação crítica dentro do CQB.\n\n"
+        "OBJETIVOS PRINCIPAIS:\n"
+        "▸ localizar protocolo de destruição\n"
+        "▸ impedir extração inimiga\n"
+        "▸ garantir controlo interno do edifício\n\n"
+        "CÓDIGO DE AUTORIZAÇÃO:\n"
+        "**VIPER-771**"
+    )
 
-        if code.upper() == MISSOES["vermelho_1"]["codigo"]:
-            embed = discord.Embed(
-                title="✅ OBJETIVO COMPLETADO",
-                description="A equipa Vermelha concluiu a missão inicial.\n\n📍 Regressem ao comando para reorganização.",
-                color=discord.Color.red()
-            )
+    await milsim_log("🎖️ Operação DUALITY iniciada.")
+    await ctx.send("✅ Operação iniciada.")
 
-            await ctx.send(embed=embed)
-
-            await logs.send(f"📕 Vermelho completou missão com código {code}")
-
-        else:
-            await ctx.send("❌ Código inválido.")
 
 @bot.command()
-async def registarcodigo(ctx, codigo: str):
+async def codigo(ctx, codigo: str):
+    team = milsim_team_from_channel(ctx.channel.id)
 
-    codigos_jogadores[ctx.author.id] = codigo.upper()
+    if not team:
+        return await ctx.send("⚠️ Este comando só pode ser usado no canal da tua equipa.", delete_after=10)
+
+    if not milsim_state["active"]:
+        return await ctx.send("⚠️ A operação ainda não está ativa.", delete_after=10)
+
+    codigo = codigo.upper().strip()
+
+    if codigo not in MISSION_CODES:
+        return await ctx.send("❌ Código inválido ou intel comprometida.", delete_after=10)
+
+    data = MISSION_CODES[codigo]
+
+    if data["team"] != team:
+        return await ctx.send("❌ Este código não pertence à tua cadeia operacional.", delete_after=10)
+
+    team_state = milsim_state["teams"][team]
+
+    if codigo in team_state["completed_codes"]:
+        return await ctx.send("⚠️ Este código já foi utilizado.", delete_after=10)
+
+    if team_state["current"] != data["mission"]:
+        return await ctx.send("⚠️ Código correto, mas fora da fase operacional atual.", delete_after=10)
+
+    team_state["completed_codes"].append(codigo)
+    milsim_state["scores"][team] += data["points"]
+
+    await ctx.send(data["message"])
+
+    enemy_alert = data.get("enemy_alert")
+    if enemy_alert:
+        await milsim_send_to_team(milsim_enemy(team), enemy_alert)
+
+    await milsim_log(f"🔐 Código `{codigo}` validado por **{team.upper()}**. +{data['points']} pontos.")
+
+    if data["type"] == "decryption":
+        asyncio.create_task(milsim_start_decryption(team))
+        return
+
+    if data["type"] == "end":
+        milsim_state["active"] = False
+        await milsim_log("🏁 Operação terminada por código final.")
+        return
+
+    team_state["phase"] = "regroup"
+    team_state["regrouped"] = False
+
+
+@bot.command()
+async def reagrupado(ctx):
+    team = milsim_team_from_channel(ctx.channel.id)
+
+    if not team:
+        return await ctx.send("⚠️ Este comando só pode ser usado no canal da tua equipa.", delete_after=10)
+
+    if not milsim_state["active"]:
+        return await ctx.send("⚠️ A operação não está ativa.", delete_after=10)
+
+    team_state = milsim_state["teams"][team]
+
+    if team_state["phase"] != "regroup":
+        return await ctx.send("⚠️ A tua equipa ainda não está em fase de reorganização.", delete_after=10)
+
+    team_state["regrouped"] = True
+
+    await ctx.send(
+        "✅ **REAGRUPAMENTO CONFIRMADO**\n\n"
+        "Aguardem nova janela operacional."
+    )
+
+    await milsim_log(f"✅ **{team.upper()}** confirmou reagrupamento.")
+
+    other = milsim_enemy(team)
+
+    if milsim_state["teams"][other]["regrouped"]:
+        old_mission = team_state["current"]
+
+        if old_mission not in NEXT_MISSIONS:
+            return
+
+        for t in ["azul", "vermelho"]:
+            milsim_state["teams"][t]["phase"] = "mission"
+            milsim_state["teams"][t]["regrouped"] = False
+
+            if old_mission == "mission_4":
+                milsim_state["teams"][t]["current"] = "final"
+            else:
+                next_number = int(old_mission.split("_")[1]) + 1
+                milsim_state["teams"][t]["current"] = f"mission_{next_number}"
+
+            await milsim_send_to_team(t, NEXT_MISSIONS[old_mission][t])
+
+        await milsim_log("📡 Nova fase operacional transmitida às duas equipas.")
+
+
+@bot.command()
+async def capturar(ctx, player_id: str, setor: str):
+    team = milsim_team_from_channel(ctx.channel.id)
+
+    if not team:
+        return await ctx.send("⚠️ Este comando só pode ser usado no canal da tua equipa.", delete_after=10)
+
+    if not milsim_state["active"]:
+        return await ctx.send("⚠️ A operação não está ativa.", delete_after=10)
+
+    player_id = player_id.upper().strip()
+    setor = setor.upper().strip()
+
+    valid_prefix = "IRON-" if team == "azul" else "NOVA-"
+
+    if not player_id.startswith(valid_prefix):
+        return await ctx.send("❌ Esse operador não pertence à equipa inimiga.", delete_after=10)
+
+    if player_id in milsim_state["captured_players"]:
+        return await ctx.send("⚠️ Esse operador já foi capturado anteriormente.", delete_after=10)
+
+    milsim_state["captured_players"].append(player_id)
+    milsim_state["scores"][team] += 5
+
+    await ctx.send(
+        "╔══════════════════════════════╗\n"
+        "        OPERADOR CAPTURADO\n"
+        "╚══════════════════════════════╝\n\n"
+        f"ID confirmado: **{player_id}**\n"
+        f"Setor: **{setor}**\n\n"
+        "INTEL RECUPERADA:\n"
+        "▸ atividade rádio parcial\n"
+        "▸ possível movimentação inimiga no setor indicado\n\n"
+        "**+5 pontos atribuídos**"
+    )
+
+    await milsim_log(f"🪪 **{team.upper()}** capturou `{player_id}` no setor `{setor}`. +5 pontos.")
+
+
+@bot.command()
+async def opstatus(ctx):
+    if ctx.channel.id not in [AZUL_CHANNEL_ID, VERMELHO_CHANNEL_ID, GM_CHANNEL_ID]:
+        return await ctx.send("⚠️ Comando disponível apenas em canais operacionais.", delete_after=10)
 
     embed = discord.Embed(
-        title="🪖 IDENTIFICAÇÃO REGISTADA",
-        description=f"Código operacional associado: `{codigo.upper()}`",
-        color=discord.Color.green()
+        title="📡 Estado da Operação DUALITY",
+        color=discord.Color.dark_gold(),
+        timestamp=discord.utils.utcnow()
     )
+
+    embed.add_field(name="Estado", value="Ativa" if milsim_state["active"] else "Inativa", inline=True)
+    embed.add_field(name="Score Azul", value=str(milsim_state["scores"]["azul"]), inline=True)
+    embed.add_field(name="Score Vermelho", value=str(milsim_state["scores"]["vermelho"]), inline=True)
+
+    for team in ["azul", "vermelho"]:
+        st = milsim_state["teams"][team]
+        embed.add_field(
+            name=f"Equipa {team.upper()}",
+            value=(
+                f"Missão: `{st['current']}`\n"
+                f"Fase: `{st['phase']}`\n"
+                f"Reagrupado: `{st['regrouped']}`"
+            ),
+            inline=False
+        )
 
     await ctx.send(embed=embed)
 
+
 @bot.command()
-async def capturar(ctx, codigo: str):
-
-    alvo = None
-
-    for uid, cod in codigos_jogadores.items():
-        if cod == codigo.upper():
-            alvo = uid
-            break
-
-    if not alvo:
-        return await ctx.send("❌ Código não encontrado.")
-
-    membro = ctx.guild.get_member(alvo)
-
-    embed = discord.Embed(
-        title="⛓️ OPERADOR CAPTURADO",
-        description=f"O operador {membro.mention if membro else codigo} foi capturado.",
-        color=discord.Color.dark_red()
+async def score(ctx):
+    await ctx.send(
+        "🏆 **SCORE OPERACIONAL**\n\n"
+        f"🔵 Azul: **{milsim_state['scores']['azul']} pts**\n"
+        f"🔴 Vermelho: **{milsim_state['scores']['vermelho']} pts**"
     )
 
-    await ctx.send(embed=embed)
 
-    logs = bot.get_channel(LOGS_CHANNEL_ID)
-    await logs.send(f"🚨 {ctx.author} capturou {membro}")
+@bot.command()
+async def gm_blackout(ctx):
+    if ctx.channel.id != GM_CHANNEL_ID:
+        return await ctx.send("⚠️ Este comando só pode ser usado no canal GM.", delete_after=10)
 
+    if not milsim_is_gm(ctx):
+        return await ctx.send("❌ Apenas Game Masters podem usar este comando.", delete_after=10)
+
+    msg = (
+        "━━━━━━━━━━━━━━━━━━\n"
+        "〔 ALERTA GLOBAL 〕\n"
+        "BLACKOUT\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "FALHA GENERALIZADA DE COMUNICAÇÕES\n\n"
+        "CONDIÇÕES NO TERRENO:\n"
+        "▸ lanternas proibidas\n"
+        "▸ comunicações limitadas\n"
+        "▸ apenas squad leaders autorizados em rádio\n"
+        "▸ duração estimada: 10 minutos\n\n"
+        "Mantenham eficácia operacional."
+    )
+
+    comando = milsim_get_channel(COMANDO_CHANNEL_ID)
+    if comando:
+        await comando.send(msg)
+
+    await milsim_send_to_team("azul", msg)
+    await milsim_send_to_team("vermelho", msg)
+    await milsim_log("⚫ Blackout ativado pelo Game Master.")
+    await ctx.send("✅ Blackout enviado.")
+
+
+@bot.command()
+async def gm_next(ctx):
+    if ctx.channel.id != GM_CHANNEL_ID:
+        return await ctx.send("⚠️ Este comando só pode ser usado no canal GM.", delete_after=10)
+
+    if not milsim_is_gm(ctx):
+        return await ctx.send("❌ Apenas Game Masters podem usar este comando.", delete_after=10)
+
+    old_mission = milsim_state["teams"]["azul"]["current"]
+
+    if old_mission not in NEXT_MISSIONS:
+        return await ctx.send("⚠️ Não existe próxima fase configurada.")
+
+    for t in ["azul", "vermelho"]:
+        milsim_state["teams"][t]["phase"] = "mission"
+        milsim_state["teams"][t]["regrouped"] = False
+
+        if old_mission == "mission_4":
+            milsim_state["teams"][t]["current"] = "final"
+        else:
+            next_number = int(old_mission.split("_")[1]) + 1
+            milsim_state["teams"][t]["current"] = f"mission_{next_number}"
+
+        await milsim_send_to_team(t, NEXT_MISSIONS[old_mission][t])
+
+    await milsim_log("⏭️ Game Master forçou próxima fase operacional.")
+    await ctx.send("✅ Próxima fase enviada.")
+
+
+@bot.command()
+async def gm_end(ctx):
+    if ctx.channel.id != GM_CHANNEL_ID:
+        return await ctx.send("⚠️ Este comando só pode ser usado no canal GM.", delete_after=10)
+
+    if not milsim_is_gm(ctx):
+        return await ctx.send("❌ Apenas Game Masters podem usar este comando.", delete_after=10)
+
+    milsim_state["active"] = False
+
+    azul = milsim_state["scores"]["azul"]
+    vermelho = milsim_state["scores"]["vermelho"]
+
+    if azul > vermelho:
+        vencedor = "🔵 TASK FORCE AZUL"
+    elif vermelho > azul:
+        vencedor = "🔴 TASK FORCE VERMELHA"
+    else:
+        vencedor = "EMPATE OPERACIONAL"
+
+    msg = (
+        "╔══════════════════════════════╗\n"
+        "        FIM DA OPERAÇÃO\n"
+        "╚══════════════════════════════╝\n\n"
+        f"🔵 Azul: **{azul} pts**\n"
+        f"🔴 Vermelho: **{vermelho} pts**\n\n"
+        f"VENCEDOR:\n"
+        f"**{vencedor}**\n\n"
+        "COMANDO CENTRAL TERMINA LIGAÇÃO."
+    )
+
+    comando = milsim_get_channel(COMANDO_CHANNEL_ID)
+    if comando:
+        await comando.send(msg)
+
+    await milsim_log("🏁 Operação terminada manualmente.")
+    await ctx.send("✅ Operação terminada.")
 
 # ---------- START ----------
 bot.run(TOKEN)
