@@ -983,6 +983,24 @@ async def comandos(ctx):
     )
 
     embed.add_field(
+        name="🎖️ Milsim — Operação Duality",
+        value=(
+            "`!start_op`\n"
+            "`!codigo CÓDIGO`\n"
+            "`!reagrupado`\n"
+            "`!capturar player_id setor`\n"
+            "`!opstatus`\n"
+            "`!score`\n"
+            "`!painel_op`\n"
+            "`!gm_blackout`\n"
+            "`!gm_next`\n"
+            "`!gm_end`"
+        ),
+        inline=False
+    )
+
+
+    embed.add_field(
         name="🔐 Nota",
         value="Comandos de adicionar/remover pontos, inscrições admin e gestão de equipas precisam de permissão de administrador.",
         inline=False
@@ -2192,22 +2210,18 @@ def build_operation_status_embed():
 
 
 def build_team_status_embed(team: str):
-    st = milsim_state["teams"][team]
     emoji = "🔵" if team == "azul" else "🔴"
     color = discord.Color.blue() if team == "azul" else discord.Color.red()
 
     return tactical_embed(
         f"{emoji} STATUS OPERACIONAL — {team.upper()}",
-        "Painel automático da missão atual.",
+        "Painel automático da operação.",
         color,
         [
-            {"name": "Missão Atual", "value": f"`{st['current']}`", "inline": True},
-            {"name": "Fase", "value": f"`{st['phase']}`", "inline": True},
-            {"name": "Reagrupado", "value": f"`{st['regrouped']}`", "inline": True},
-            {"name": "Tempo Restante", "value": f"**{format_time_remaining(team)}**", "inline": False},
-            {"name": "Score", "value": f"**{milsim_state['scores'][team]} pts**", "inline": True},
+            {"name": "⏱️ Tempo Restante", "value": f"**{format_time_remaining(team)}**", "inline": True},
+            {"name": "🏆 Score", "value": f"**{milsim_state['scores'][team]} pts**", "inline": True},
         ],
-        footer="COMANDO CENTRAL • PAINEL AUTOMÁTICO"
+        footer="COMANDO CENTRAL • STATUS TÁTICO"
     )
 
 
@@ -2260,6 +2274,41 @@ async def delete_team_status_panel(team: str):
         pass
 
     milsim_state["team_status_panel_message_ids"][team] = None
+
+async def purge_team_status_panels(team: str):
+    channel = milsim_channel_for_team(team)
+    tracked_message_id = milsim_state.get("team_status_panel_message_ids", {}).get(team)
+
+    if not channel:
+        return
+
+    deleted_tracked = False
+
+    if tracked_message_id:
+        try:
+            msg = await channel.fetch_message(tracked_message_id)
+            await msg.delete()
+            deleted_tracked = True
+        except discord.NotFound:
+            deleted_tracked = True
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+    # Remove painéis antigos duplicados, caso existam no fim do canal.
+    try:
+        async for msg in channel.history(limit=25):
+            if msg.author == bot.user and msg.embeds:
+                title = msg.embeds[0].title or ""
+                if "STATUS OPERACIONAL" in title:
+                    try:
+                        await msg.delete()
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        pass
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+
+    if deleted_tracked or tracked_message_id:
+        milsim_state["team_status_panel_message_ids"][team] = None
 
 async def refresh_team_status_panel(team: str):
     await purge_team_status_panels(team)
@@ -2495,25 +2544,95 @@ MISSION_CODES = {
         )
     },
 
+    "RED-CP1": {
+        "team": "vermelho",
+        "mission": "mission_3",
+        "points": 0,
+        "type": "checkpoint",
+        "step": 1,
+        "embed": lambda: tactical_embed(
+            "✅ CHECKPOINT 1 VALIDADO",
+            "A carga passou pelo checkpoint 1.",
+            discord.Color.red(),
+            [{"name": "➡️ PRÓXIMO PASSO", "value": "Avancem para o checkpoint 2."}]
+        )
+    },
+
+    "RED-CP2": {
+        "team": "vermelho",
+        "mission": "mission_3",
+        "points": 0,
+        "type": "checkpoint",
+        "step": 2,
+        "embed": lambda: tactical_embed(
+            "✅ CHECKPOINT 2 VALIDADO",
+            "A carga passou pelo checkpoint 2.",
+            discord.Color.red(),
+            [{"name": "➡️ PRÓXIMO PASSO", "value": "Avancem para o checkpoint 3."}]
+        )
+    },
+
+    "RED-CP3": {
+        "team": "vermelho",
+        "mission": "mission_3",
+        "points": 0,
+        "type": "checkpoint",
+        "step": 3,
+        "embed": lambda: tactical_embed(
+            "✅ CHECKPOINT 3 VALIDADO",
+            "A carga passou pelo checkpoint 3.",
+            discord.Color.red(),
+            [{"name": "➡️ PRÓXIMO PASSO", "value": "Avancem para o checkpoint 4."}]
+        )
+    },
+
+    "RED-CP4": {
+        "team": "vermelho",
+        "mission": "mission_3",
+        "points": 0,
+        "type": "checkpoint",
+        "step": 4,
+        "embed": lambda: tactical_embed(
+            "✅ CHECKPOINT 4 VALIDADO",
+            "A carga passou pelo checkpoint 4.",
+            discord.Color.red(),
+            [{"name": "➡️ PRÓXIMO PASSO", "value": "Avancem para o checkpoint 5."}]
+        )
+    },
+
+    "RED-CP5": {
+        "team": "vermelho",
+        "mission": "mission_3",
+        "points": 0,
+        "type": "checkpoint",
+        "step": 5,
+        "embed": lambda: tactical_embed(
+            "✅ CHECKPOINT 5 VALIDADO",
+            "A carga passou pelo checkpoint 5.",
+            discord.Color.red(),
+            [{"name": "➡️ PRÓXIMO PASSO", "value": "Validem o código final de extração."}]
+        )
+    },
+
     "EXFIL-337": {
         "team": "vermelho",
         "mission": "mission_3",
         "points": 25,
         "type": "complete",
-        "requires_step": 4,
+        "requires_step": 5,
         "embed": lambda: tactical_embed(
             "✅ TRANSPORTE CONCLUÍDO",
-            "A carga completou a rota obrigatória e foi entregue no ponto final.",
+            "A carga passou pelos 5 checkpoints obrigatórios e foi entregue no ponto final.",
             discord.Color.red(),
             [
-                {"name": "🎯 OBJETIVO CONCLUÍDO", "value": "▸ Rota validada\n▸ Carga protegida\n▸ Depósito final confirmado"},
+                {"name": "🎯 OBJETIVO CONCLUÍDO", "value": "▸ Rota validada\n▸ 5 checkpoints confirmados\n▸ Carga protegida\n▸ Depósito final confirmado"},
                 {"name": "📍 ORDEM", "value": "Regressem ao COMANDO para nova janela operacional."},
                 {"name": "🏆 PONTOS", "value": "**+25 pontos atribuídos**"}
             ]
         ),
         "enemy_alert_embed": lambda: tactical_embed(
             "⚠️ TRANSPORTE INIMIGO CONCLUÍDO",
-            "O Vermelho completou a rota da carga.",
+            "O Vermelho completou os 5 checkpoints e entregou a carga.",
             discord.Color.blue(),
             [{"name": "📍 ORDEM", "value": "Regressem ao COMANDO e aguardem nova janela operacional."}]
         )
@@ -2627,8 +2746,8 @@ NEXT_MISSIONS = {
             "〔 TASK FORCE VERMELHA 〕\n\nTransportem a carga sensível por uma rota obrigatória com validações físicas.",
             discord.Color.red(),
             [
-                {"name": "🎯 OBJETIVOS PRINCIPAIS", "value": "▸ Proteger a carga física\n▸ Validar os 4 checkpoints por ordem\n▸ Recuperar a carga caso seja roubada\n▸ Concluir depósito final"},
-                {"name": "🔐 CÓDIGOS FÍSICOS", "value": "Cada checkpoint tem um código próprio escondido no local."},
+                {"name": "🎯 OBJETIVOS PRINCIPAIS", "value": "▸ Proteger a carga física\n▸ Validar os 5 checkpoints por ordem\n▸ Recuperar a carga caso seja roubada\n▸ Concluir depósito final"},
+                {"name": "🔐 CÓDIGOS FÍSICOS", "value": "Cada um dos 5 checkpoints tem um código próprio escondido no local."},
                 {"name": "⌨️ COMO VALIDAR", "value": VALIDACAO_CODIGO_TEXTO},
                 {"name": "⚠️ REGRA DA CARGA", "value": "Mesmo que a carga seja roubada, se for recuperada devem continuar a rota no checkpoint seguinte."}
             ]
