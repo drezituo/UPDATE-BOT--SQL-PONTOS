@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands, tasks
 import asyncio
+import asyncio
 import psycopg2
 import os
 from datetime import datetime, timezone, timedelta
@@ -2227,14 +2228,14 @@ async def update_team_status_panel(team: str):
         return
 
     if not message_id:
-        await create_team_status_panel(team)
+        await refresh_team_status_panel(team)
         return
 
     try:
         msg = await channel.fetch_message(message_id)
         await msg.edit(embed=build_team_status_embed(team))
     except discord.NotFound:
-        await create_team_status_panel(team)
+        await refresh_team_status_panel(team)
     except (discord.Forbidden, discord.HTTPException):
         pass
 
@@ -2261,12 +2262,12 @@ async def delete_team_status_panel(team: str):
     milsim_state["team_status_panel_message_ids"][team] = None
 
 async def refresh_team_status_panel(team: str):
-    await delete_team_status_panel(team)
+    await purge_team_status_panels(team)
     await create_team_status_panel(team)
 
 
 async def send_team_embed_with_status_last(team: str, embed):
-    await delete_team_status_panel(team)
+    await purge_team_status_panels(team)
     await milsim_send_to_team(team, embed=embed)
     await create_team_status_panel(team)
 
@@ -2938,7 +2939,7 @@ async def codigo(ctx, codigo: str):
     team_state["completed_codes"].append(codigo)
     milsim_state["scores"][team] += data["points"]
 
-    await delete_team_status_panel(team)
+    await purge_team_status_panels(team)
     await ctx.send(embed=data["embed"]())
     await create_team_status_panel(team)
 
@@ -2988,7 +2989,7 @@ async def reagrupado(ctx):
 
     team_state["regrouped"] = True
 
-    await delete_team_status_panel(team)
+    await purge_team_status_panels(team)
     await ctx.send(embed=tactical_embed(
         "✅ REAGRUPAMENTO CONFIRMADO",
         "Aguardem nova janela operacional.",
@@ -3020,7 +3021,7 @@ async def reagrupado(ctx):
             if milsim_state["teams"][t]["current"] == "mission_3":
                 milsim_state["mission3_route"]["vermelho_step"] = 0
 
-            await delete_team_status_panel(t)
+            await purge_team_status_panels(t)
             await milsim_send_to_team(t, embed=NEXT_MISSIONS[old_mission][t]())
             await create_team_status_panel(t)
 
@@ -3054,7 +3055,7 @@ async def capturar(ctx, player_id: str, setor: str):
     milsim_state["captured_players"].append(player_id)
     milsim_state["scores"][team] += 5
 
-    await delete_team_status_panel(team)
+    await purge_team_status_panels(team)
     await ctx.send(embed=tactical_embed(
         "🪪 OPERADOR CAPTURADO",
         f"ID confirmado: **{player_id}**\nSetor: **{setor}**",
@@ -3157,7 +3158,7 @@ async def gm_next(ctx):
             next_number = int(old_mission.split("_")[1]) + 1
             milsim_state["teams"][t]["current"] = f"mission_{next_number}"
 
-        await delete_team_status_panel(t)
+        await purge_team_status_panels(t)
         await milsim_send_to_team(t, embed=NEXT_MISSIONS[old_mission][t]())
         await create_team_status_panel(t)
 
