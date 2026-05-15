@@ -2220,6 +2220,25 @@ async def create_team_status_panel(team: str):
     milsim_state["team_status_panel_message_ids"][team] = msg.id
 
 
+
+async def purge_team_status_panels(team: str):
+    channel = milsim_channel_for_team(team)
+    if not channel:
+        return
+
+    try:
+        async for msg in channel.history(limit=50):
+            if msg.author == bot.user and msg.embeds:
+                title = msg.embeds[0].title or ""
+                if "STATUS OPERACIONAL" in title:
+                    try:
+                        await msg.delete()
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+
 async def update_team_status_panel(team: str):
     channel = milsim_channel_for_team(team)
     message_id = milsim_state.get("team_status_panel_message_ids", {}).get(team)
