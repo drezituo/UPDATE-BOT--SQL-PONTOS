@@ -3151,7 +3151,7 @@ async def reagrupado(ctx):
 
 
 @bot.command()
-async def capturar(ctx, player_id: str, setor: str):
+async def capturar(ctx, player_id: str):
     team = milsim_team_from_channel(ctx.channel.id)
 
     if not team:
@@ -3161,7 +3161,6 @@ async def capturar(ctx, player_id: str, setor: str):
         return await ctx.send("⚠️ A operação não está ativa.", delete_after=10)
 
     player_id = player_id.upper().strip()
-    setor = setor.upper().strip()
 
     valid_prefix = "IRON-" if team == "azul" else "NOVA-"
 
@@ -3177,18 +3176,17 @@ async def capturar(ctx, player_id: str, setor: str):
     await purge_team_status_panels(team)
     await ctx.send(embed=tactical_embed(
         "🪪 OPERADOR CAPTURADO",
-        f"ID confirmado: **{player_id}**\nSetor: **{setor}**",
+        f"ID confirmado: **{player_id}**",
         discord.Color.dark_red(),
         [
-            {"name": "📡 INTEL RECUPERADA", "value": "▸ Atividade rádio parcial\n▸ Possível movimentação inimiga no setor indicado"},
+            {"name": "📡 INTEL RECUPERADA", "value": "▸ Informação operacional parcial obtida\n▸ Possível quebra de comunicações inimigas"},
             {"name": "🏆 PONTOS", "value": "**+5 pontos atribuídos**"}
         ]
     ))
     await create_team_status_panel(team)
 
-    await milsim_log(f"🪪 **{team.upper()}** capturou `{player_id}` no setor `{setor}`. +5 pontos.")
+    await milsim_log(f"🪪 **{team.upper()}** capturou `{player_id}`. +5 pontos.")
     await update_status_panel()
-
 
 @bot.command()
 async def opstatus(ctx):
