@@ -2214,6 +2214,7 @@ def _remove_mission_status_fields(embed: discord.Embed):
         "⏱️ Tempo Restante",
         "🏆 Score",
         "📌 Estado da Missão",
+        "🛌 Descanso Operacional",
     }
 
     kept_fields = []
@@ -2244,7 +2245,11 @@ def build_mission_embed_with_status(team: str, embed: discord.Embed, estado: str
         if team_state["phase"] == "failed":
             estado = "❌ MISSÃO FRACASSADA"
         elif team_state["phase"] == "regroup":
-            estado = "✅ Objetivo validado / Reagrupamento"
+            estado = "✅ Objetivo validado / A regressar à base"
+        elif team_state["phase"] == "rest":
+            estado = "🛌 Descanso operacional"
+        elif team_state["phase"] == "ready":
+            estado = "✅ Unidade pronta / Aguardando ambas as equipas"
         else:
             estado = "🟢 Em curso"
 
@@ -2263,6 +2268,14 @@ def build_mission_embed_with_status(team: str, embed: discord.Embed, estado: str
         value=f"**{milsim_state['scores'][team]} pts**",
         inline=True
     )
+
+    rest_until = milsim_state.get("rest_until", {}).get(team)
+    if rest_until and datetime.now(timezone.utc) < rest_until:
+        final_embed.add_field(
+            name="🛌 Descanso Operacional",
+            value=f"Novas ordens <t:{int(rest_until.timestamp())}:R>",
+            inline=False
+        )
 
     return final_embed
 
@@ -2379,10 +2392,197 @@ async def update_team_mission_embed(team: str, estado: str = None):
         pass
 
 
+def calculate_remaining_mission_seconds(team: str) -> int:
+    end_time = milsim_state.get("mission_end_times", {}).get(team)
+    if not end_time:
+        return 0
+    remaining = end_time - datetime.now(timezone.utc)
+    return max(0, int(remaining.total_seconds()))
+
+
+async def set_team_to_regroup_after_objective(team: str):
+    team_state = milsim_state["teams"][team]
+    remaining_seconds = calculate_remaining_mission_seconds(team)
+
+    team_state["phase"] = "regroup"
+    team_state["regrouped"] = False
+    milsim_state["rest_seconds"][team] = remaining_seconds
+    milsim_state["rest_until"][team] = None
+    milsim_state["rest_ready"][team] = False
+    milsim_state["rest_warned"][team] = False
+
+
+async def advance_both_teams_to_next_mission(old_mission: str):
+    if old_mission not in NEXT_MISSIONS:
+        return
+
+    for t in ["azul", "vermelho"]:
+        milsim_state["teams"][t]["phase"] = "mission"
+        milsim_state["teams"][t]["regrouped"] = False
+        milsim_state["rest_seconds"][t] = 0
+        milsim_state["rest_until"][t] = None
+        milsim_state["rest_ready"][t] = False
+        milsim_state["rest_warned"][t] = False
+
+        if old_mission == "mission_4":
+            milsim_state["teams"][t]["current"] = "final"
+        else:
+            next_number = int(old_mission.split("_")[1]) + 1
+            milsim_state["teams"][t]["current"] = f"mission_{next_number}"
+
+        if milsim_state["teams"][t]["current"] == "mission_3":
+            milsim_state["mission3_route"]["vermelho_step"] = 0
+
+        milsim_state["teams"][t]["completed_codes"] = []
+        milsim_state["mission_end_times"][t] = datetime.now(timezone.utc) + timedelta(
+            seconds=MISSION_TIME_LIMITS[milsim_state["teams"][t]["current"]]
+        )
+
+        await send_team_embed_with_status_last(t, NEXT_MISSIONS[old_mission][t]())
+
+    for t in ["azul", "vermelho"]:
+        asyncio.create_task(mission_timer(t, milsim_state["teams"][t]["current"]))
+
+    await milsim_log("📡 Nova fase operacional transmitida automaticamente às duas equipas.")
+    await update_status_panel()
+
+
+async def try_advance_after_rest():
+    if not milsim_state["active"]:
+        return
+
+    if not (milsim_state["rest_ready"].get("azul") and milsim_state["rest_ready"].get("vermelho")):
+        return
+
+    old_mission = milsim_state["teams"]["azul"]["current"]
+    if milsim_state["teams"]["vermelho"]["current"] != old_mission:
+        return
+
+    if old_mission not in NEXT_MISSIONS:
+        return
+
+    await advance_both_teams_to_next_mission(old_mission)
+
+
+async def rest_countdown(team: str, mission_name: str, rest_seconds: int):
+    try:
+        if rest_seconds > 60:
+            await asyncio.sleep(rest_seconds - 60)
+
+            if not milsim_state["active"]:
+                return
+            if milsim_state["teams"][team]["current"] != mission_name:
+                return
+            if milsim_state["teams"][team]["phase"] != "rest":
+                return
+
+            milsim_state["rest_warned"][team] = True
+            await milsim_send_to_team(
+                team,
+                embed=tactical_embed(
+                    "📡 NOVAS ORDENS EM 1 MINUTO",
+                    "Descanso operacional quase concluído.\n\nPreparem-se para receber nova janela de missão.",
+                    discord.Color.orange()
+                )
+            )
+            await update_team_mission_embed(team, "🛌 Descanso operacional — novas ordens em 1 minuto")
+            await asyncio.sleep(60)
+        else:
+            await asyncio.sleep(max(rest_seconds, 0))
+
+        if not milsim_state["active"]:
+            return
+        if milsim_state["teams"][team]["current"] != mission_name:
+            return
+        if milsim_state["teams"][team]["phase"] != "rest":
+            return
+
+        milsim_state["teams"][team]["phase"] = "ready"
+        milsim_state["rest_ready"][team] = True
+        milsim_state["rest_until"][team] = None
+
+        await milsim_send_to_team(
+            team,
+            embed=tactical_embed(
+                "✅ DESCANSO OPERACIONAL CONCLUÍDO",
+                "Unidade pronta. Aguardando sincronização operacional para novas ordens.",
+                discord.Color.green()
+            )
+        )
+        await update_team_mission_embed(team, "✅ Unidade pronta / Aguardando ambas as equipas")
+        await milsim_log(f"✅ Descanso operacional concluído para **{team.upper()}**.")
+        await update_status_panel()
+        await try_advance_after_rest()
+
+    except asyncio.CancelledError:
+        return
+
+
+async def start_team_rest_after_regroup(team: str):
+    team_state = milsim_state["teams"][team]
+    mission_name = team_state["current"]
+    rest_seconds = 0 if team_state["phase"] == "failed" else milsim_state.get("rest_seconds", {}).get(team, 0)
+    rest_seconds = max(0, int(rest_seconds or 0))
+
+    old_task = milsim_state.get("rest_tasks", {}).get(team)
+    if old_task and not old_task.done():
+        old_task.cancel()
+
+    team_state["regrouped"] = True
+
+    if rest_seconds <= 0:
+        team_state["phase"] = "ready"
+        milsim_state["rest_ready"][team] = True
+        milsim_state["rest_until"][team] = None
+
+        await milsim_send_to_team(
+            team,
+            embed=tactical_embed(
+                "✅ BASE ALCANÇADA",
+                "Unidade reagrupada no HQ. Sem descanso operacional restante.\n\nAguardando sincronização para novas ordens.",
+                discord.Color.green()
+            )
+        )
+        await update_team_mission_embed(team, "✅ Unidade pronta / Aguardando ambas as equipas")
+        await milsim_log(f"✅ **{team.upper()}** chegou à base e está pronta.")
+        await update_status_panel()
+        await try_advance_after_rest()
+        return
+
+    rest_until = datetime.now(timezone.utc) + timedelta(seconds=rest_seconds)
+    team_state["phase"] = "rest"
+    milsim_state["rest_until"][team] = rest_until
+    milsim_state["rest_ready"][team] = False
+    milsim_state["rest_warned"][team] = False
+
+    await milsim_send_to_team(
+        team,
+        embed=tactical_embed(
+            "🛌 BASE ALCANÇADA — DESCANSO OPERACIONAL",
+            "Unidade reagrupada no HQ. O tempo restante da missão foi convertido em descanso operacional.",
+            discord.Color.dark_gold(),
+            [
+                {"name": "⏱️ Descanso", "value": f"Novas ordens <t:{int(rest_until.timestamp())}:R>", "inline": False},
+                {"name": "📡 Aviso", "value": "Quando faltar 1 minuto, o Comando Central envia alerta automático.", "inline": False}
+            ]
+        )
+    )
+    await update_team_mission_embed(team, "🛌 Descanso operacional")
+    await milsim_log(f"🛌 **{team.upper()}** iniciou descanso operacional por {rest_seconds} segundo(s).")
+    await update_status_panel()
+
+    task = asyncio.create_task(rest_countdown(team, mission_name, rest_seconds))
+    milsim_state["rest_tasks"][team] = task
+
+
 async def mark_team_mission_failed(team: str, mission_name: str):
     team_state = milsim_state["teams"][team]
     team_state["phase"] = "failed"
     team_state["regrouped"] = False
+    milsim_state["rest_seconds"][team] = 0
+    milsim_state["rest_until"][team] = None
+    milsim_state["rest_ready"][team] = False
+    milsim_state["rest_warned"][team] = False
 
     channel = milsim_channel_for_team(team)
     message_id = milsim_state.get("mission_message_ids", {}).get(team)
@@ -2447,6 +2647,8 @@ async def mission_timer(team: str, mission_name: str):
         current = milsim_state["teams"][team]["current"]
         if current != mission_name:
             return
+        if milsim_state["teams"][team]["phase"] != "mission":
+            return
 
         await update_status_panel()
 
@@ -2456,6 +2658,8 @@ async def mission_timer(team: str, mission_name: str):
     current = milsim_state["teams"][team]["current"]
 
     if current != mission_name:
+        return
+    if milsim_state["teams"][team]["phase"] != "mission":
         return
 
     await mark_team_mission_failed(team, mission_name)
@@ -2481,6 +2685,11 @@ milsim_state = {
     "status_panel_message_id": None,
     "team_status_panel_message_ids": {"azul": None, "vermelho": None},
     "mission_message_ids": {"azul": None, "vermelho": None},
+    "rest_seconds": {"azul": 0, "vermelho": 0},
+    "rest_until": {"azul": None, "vermelho": None},
+    "rest_ready": {"azul": False, "vermelho": False},
+    "rest_warned": {"azul": False, "vermelho": False},
+    "rest_tasks": {"azul": None, "vermelho": None},
     "decryption": {"active": False, "cancelled": False, "team": None, "mission": None},
     "mission3_route": {"vermelho_step": 0},
     "teams": {
@@ -2955,8 +3164,7 @@ async def milsim_start_decryption(team: str):
         return
 
     milsim_state["scores"][team] += 10
-    team_state["phase"] = "regroup"
-    team_state["regrouped"] = False
+    await set_team_to_regroup_after_objective(team)
 
     milsim_state["decryption"]["active"] = False
 
@@ -2981,8 +3189,7 @@ async def milsim_start_decryption(team: str):
         )
     )
 
-    milsim_state["teams"][enemy]["phase"] = "regroup"
-    milsim_state["teams"][enemy]["regrouped"] = False
+    await set_team_to_regroup_after_objective(enemy)
 
     await milsim_log(f"✅ Desencriptação concluída para **{team.upper()}**. +10 pontos.")
     await update_status_panel()
@@ -3002,6 +3209,14 @@ async def start_op(ctx):
     milsim_state["status_panel_message_id"] = None
     milsim_state["team_status_panel_message_ids"] = {"azul": None, "vermelho": None}
     milsim_state["mission_message_ids"] = {"azul": None, "vermelho": None}
+    milsim_state["rest_seconds"] = {"azul": 0, "vermelho": 0}
+    milsim_state["rest_until"] = {"azul": None, "vermelho": None}
+    milsim_state["rest_ready"] = {"azul": False, "vermelho": False}
+    milsim_state["rest_warned"] = {"azul": False, "vermelho": False}
+    for task in milsim_state.get("rest_tasks", {}).values():
+        if task and not task.done():
+            task.cancel()
+    milsim_state["rest_tasks"] = {"azul": None, "vermelho": None}
     milsim_state["decryption"] = {"active": False, "cancelled": False, "team": None, "mission": None}
     milsim_state["mission3_route"] = {"vermelho_step": 0}
     milsim_state["captured_players"] = []
@@ -3083,8 +3298,7 @@ async def milsim_resolve_sabotage_by_red():
         milsim_state["decryption"]["active"] = False
 
     # Azul falha a desencriptação e também entra em reagrupamento
-    milsim_state["teams"]["azul"]["phase"] = "regroup"
-    milsim_state["teams"]["azul"]["regrouped"] = False
+    await set_team_to_regroup_after_objective("azul")
 
     await send_team_embed_with_status_last(
         "azul",
@@ -3122,6 +3336,11 @@ async def codigo(ctx, codigo: str):
 
     if data["team"] != team:
         return await ctx.send("❌ Este código não pertence à tua cadeia operacional.")
+
+    if codigo == "RAVEN-119":
+        decryption = milsim_state.get("decryption", {})
+        if not decryption.get("active") or decryption.get("team") != "azul":
+            return await ctx.send("⚠️ Não existe nenhuma desencriptação ativa para sabotar.")
 
     team_state = milsim_state["teams"][team]
 
@@ -3177,8 +3396,7 @@ async def codigo(ctx, codigo: str):
         await milsim_log("🏁 Operação terminada por código final.")
         return
 
-    team_state["phase"] = "regroup"
-    team_state["regrouped"] = False
+    await set_team_to_regroup_after_objective(team)
 
 
 @bot.command()
@@ -3194,52 +3412,15 @@ async def reagrupado(ctx):
     team_state = milsim_state["teams"][team]
 
     if team_state["phase"] not in ("regroup", "failed"):
-        return await ctx.send("⚠️ A tua equipa ainda não está em fase de reorganização.")
+        if team_state["phase"] == "rest":
+            rest_until = milsim_state.get("rest_until", {}).get(team)
+            if rest_until:
+                return await ctx.send(f"🛌 A unidade já está em descanso operacional. Novas ordens <t:{int(rest_until.timestamp())}:R>.")
+        if team_state["phase"] == "ready":
+            return await ctx.send("✅ A unidade já está pronta e aguarda a outra equipa.")
+        return await ctx.send("⚠️ A tua equipa ainda não está em fase de regresso à base.")
 
-    team_state["regrouped"] = True
-
-    await purge_team_status_panels(team)
-    await ctx.send(embed=tactical_embed(
-        "✅ REAGRUPAMENTO CONFIRMADO",
-        "Aguardem nova janela operacional.",
-        discord.Color.green()
-    ))
-    await create_team_status_panel(team)
-
-    await milsim_log(f"✅ **{team.upper()}** confirmou reagrupamento.")
-    await update_status_panel()
-
-    other = milsim_enemy(team)
-
-    if milsim_state["teams"][other]["regrouped"]:
-        old_mission = team_state["current"]
-
-        if old_mission not in NEXT_MISSIONS:
-            return
-
-        for t in ["azul", "vermelho"]:
-            milsim_state["teams"][t]["phase"] = "mission"
-            milsim_state["teams"][t]["regrouped"] = False
-
-            if old_mission == "mission_4":
-                milsim_state["teams"][t]["current"] = "final"
-            else:
-                next_number = int(old_mission.split("_")[1]) + 1
-                milsim_state["teams"][t]["current"] = f"mission_{next_number}"
-
-            if milsim_state["teams"][t]["current"] == "mission_3":
-                milsim_state["mission3_route"]["vermelho_step"] = 0
-
-            milsim_state["mission_end_times"][t] = datetime.now(timezone.utc) + timedelta(
-                seconds=MISSION_TIME_LIMITS[milsim_state["teams"][t]["current"]]
-            )
-
-            await send_team_embed_with_status_last(t, NEXT_MISSIONS[old_mission][t]())
-
-        for t in ["azul", "vermelho"]:
-            asyncio.create_task(mission_timer(t, milsim_state["teams"][t]["current"]))
-
-        await milsim_log("📡 Nova fase operacional transmitida às duas equipas.")
+    await start_team_rest_after_regroup(team)
 
 
 @bot.command()
