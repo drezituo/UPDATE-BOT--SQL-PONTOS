@@ -988,7 +988,7 @@ async def comandos(ctx):
             "`!start_op`\n"
             "`!codigo CÓDIGO`\n"
             "`!reagrupado`\n"
-            "`!capturar player_id setor`\n"
+            "`!capturar player_id`\n"
             "`!opstatus`\n"
             "`!score`\n"
             "`!painel_op`\n"
@@ -2209,7 +2209,66 @@ def build_operation_status_embed():
 
 
 
+def _remove_mission_status_fields(embed: discord.Embed):
+    status_field_names = {
+        "⏱️ Tempo Restante",
+        "🏆 Score",
+        "📌 Estado da Missão",
+    }
+
+    kept_fields = []
+    for field in embed.fields:
+        if field.name not in status_field_names:
+            kept_fields.append({
+                "name": field.name,
+                "value": field.value,
+                "inline": field.inline
+            })
+
+    embed.clear_fields()
+
+    for field in kept_fields:
+        embed.add_field(
+            name=field["name"],
+            value=field["value"],
+            inline=field["inline"]
+        )
+
+
+def build_mission_embed_with_status(team: str, embed: discord.Embed, estado: str = None):
+    final_embed = embed.copy()
+    _remove_mission_status_fields(final_embed)
+
+    team_state = milsim_state["teams"][team]
+    if estado is None:
+        if team_state["phase"] == "failed":
+            estado = "❌ MISSÃO FRACASSADA"
+        elif team_state["phase"] == "regroup":
+            estado = "✅ Objetivo validado / Reagrupamento"
+        else:
+            estado = "🟢 Em curso"
+
+    final_embed.add_field(
+        name="📌 Estado da Missão",
+        value=estado,
+        inline=False
+    )
+    final_embed.add_field(
+        name="⏱️ Tempo Restante",
+        value=f"**{format_time_remaining(team)}**",
+        inline=True
+    )
+    final_embed.add_field(
+        name="🏆 Score",
+        value=f"**{milsim_state['scores'][team]} pts**",
+        inline=True
+    )
+
+    return final_embed
+
+
 def build_team_status_embed(team: str):
+    # Mantido por compatibilidade com comandos/funções antigas.
     emoji = "🔵" if team == "azul" else "🔴"
     color = discord.Color.blue() if team == "azul" else discord.Color.red()
 
@@ -2226,38 +2285,18 @@ def build_team_status_embed(team: str):
 
 
 async def create_team_status_panel(team: str):
-    channel = milsim_channel_for_team(team)
-    if not channel:
-        return
-
-    msg = await channel.send(embed=build_team_status_embed(team))
-    milsim_state["team_status_panel_message_ids"][team] = msg.id
+    # Os painéis separados foram removidos.
+    # O tempo e o score ficam agora dentro do embed principal da missão.
+    return
 
 
 async def update_team_status_panel(team: str):
-    channel = milsim_channel_for_team(team)
-    message_id = milsim_state.get("team_status_panel_message_ids", {}).get(team)
-
-    if not channel:
-        return
-
-    if not message_id:
-        await refresh_team_status_panel(team)
-        return
-
-    try:
-        msg = await channel.fetch_message(message_id)
-        await msg.edit(embed=build_team_status_embed(team))
-    except discord.NotFound:
-        await refresh_team_status_panel(team)
-    except (discord.Forbidden, discord.HTTPException):
-        pass
+    await update_team_mission_embed(team)
 
 
 async def update_all_team_status_panels():
-    await update_team_status_panel("azul")
-    await update_team_status_panel("vermelho")
-
+    await update_team_mission_embed("azul")
+    await update_team_mission_embed("vermelho")
 
 
 async def delete_team_status_panel(team: str):
@@ -2275,6 +2314,7 @@ async def delete_team_status_panel(team: str):
 
     milsim_state["team_status_panel_message_ids"][team] = None
 
+
 async def purge_team_status_panels(team: str):
     channel = milsim_channel_for_team(team)
     tracked_message_id = milsim_state.get("team_status_panel_message_ids", {}).get(team)
@@ -2282,16 +2322,11 @@ async def purge_team_status_panels(team: str):
     if not channel:
         return
 
-    deleted_tracked = False
-
     if tracked_message_id:
         try:
             msg = await channel.fetch_message(tracked_message_id)
             await msg.delete()
-            deleted_tracked = True
-        except discord.NotFound:
-            deleted_tracked = True
-        except (discord.Forbidden, discord.HTTPException):
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             pass
 
     # Remove painéis antigos duplicados, caso existam no fim do canal.
@@ -2307,18 +2342,81 @@ async def purge_team_status_panels(team: str):
     except (discord.Forbidden, discord.HTTPException):
         pass
 
-    if deleted_tracked or tracked_message_id:
-        milsim_state["team_status_panel_message_ids"][team] = None
+    milsim_state["team_status_panel_message_ids"][team] = None
+
 
 async def refresh_team_status_panel(team: str):
     await purge_team_status_panels(team)
-    await create_team_status_panel(team)
 
 
-async def send_team_embed_with_status_last(team: str, embed):
+async def send_team_embed_with_status_last(team: str, embed: discord.Embed, estado: str = None):
     await purge_team_status_panels(team)
-    await milsim_send_to_team(team, embed=embed)
-    await create_team_status_panel(team)
+
+    channel = milsim_channel_for_team(team)
+    if not channel:
+        return None
+
+    msg = await channel.send(embed=build_mission_embed_with_status(team, embed, estado))
+    milsim_state["mission_message_ids"][team] = msg.id
+    return msg
+
+
+async def update_team_mission_embed(team: str, estado: str = None):
+    channel = milsim_channel_for_team(team)
+    message_id = milsim_state.get("mission_message_ids", {}).get(team)
+
+    if not channel or not message_id:
+        return
+
+    try:
+        msg = await channel.fetch_message(message_id)
+        if not msg.embeds:
+            return
+
+        base_embed = msg.embeds[0]
+        await msg.edit(embed=build_mission_embed_with_status(team, base_embed, estado))
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        pass
+
+
+async def mark_team_mission_failed(team: str, mission_name: str):
+    team_state = milsim_state["teams"][team]
+    team_state["phase"] = "failed"
+    team_state["regrouped"] = False
+
+    channel = milsim_channel_for_team(team)
+    message_id = milsim_state.get("mission_message_ids", {}).get(team)
+
+    if channel and message_id:
+        try:
+            msg = await channel.fetch_message(message_id)
+            if msg.embeds:
+                failed_embed = msg.embeds[0].copy()
+                failed_embed.title = f"❌ MISSÃO FRACASSADA — {mission_name.upper()}"
+                failed_embed.color = discord.Color.red()
+                failed_embed.add_field(
+                    name="📍 ORDEM",
+                    value="Regressem imediatamente ao **COMANDO CENTRAL** e usem `!reagrupado` quando toda a unidade estiver pronta.",
+                    inline=False
+                )
+                await msg.edit(embed=build_mission_embed_with_status(team, failed_embed, "❌ MISSÃO FRACASSADA"))
+                return
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            pass
+
+    await send_team_embed_with_status_last(
+        team,
+        tactical_embed(
+            "❌ MISSÃO FRACASSADA",
+            f"O tempo operacional da **{mission_name.upper()}** expirou.\n\nO objetivo principal não foi concluído.",
+            discord.Color.red(),
+            [
+                {"name": "📍 ORDEM", "value": "Regressem imediatamente ao **COMANDO CENTRAL**."},
+                {"name": "➡️ PRÓXIMO PASSO", "value": "Usem `!reagrupado` quando toda a unidade estiver pronta."}
+            ]
+        ),
+        "❌ MISSÃO FRACASSADA"
+    )
 
 
 async def update_status_panel():
@@ -2360,22 +2458,9 @@ async def mission_timer(team: str, mission_name: str):
     if current != mission_name:
         return
 
-    await send_team_embed_with_status_last(
-        team,
-        tactical_embed(
-            "⏰ TEMPO OPERACIONAL ESGOTADO",
-            f"O tempo limite da {mission_name.upper()} terminou.",
-            discord.Color.orange(),
-            [
-                {
-                    "name": "ORDEM",
-                    "value": "Regressem imediatamente ao COMANDO e aguardem novas instruções."
-                }
-            ]
-        )
-    )
+    await mark_team_mission_failed(team, mission_name)
 
-    await milsim_log(f"⏰ Tempo da {mission_name} terminou para {team.upper()}.")
+    await milsim_log(f"❌ `{mission_name}` fracassou para **{team.upper()}** por tempo esgotado.")
     await update_status_panel()
 
 
@@ -2395,6 +2480,7 @@ milsim_state = {
     "mission_end_times": {"azul": None, "vermelho": None},
     "status_panel_message_id": None,
     "team_status_panel_message_ids": {"azul": None, "vermelho": None},
+    "mission_message_ids": {"azul": None, "vermelho": None},
     "decryption": {"active": False, "cancelled": False, "team": None, "mission": None},
     "mission3_route": {"vermelho_step": 0},
     "teams": {
@@ -2915,6 +3001,7 @@ async def start_op(ctx):
     milsim_state["mission_end_times"] = {"azul": None, "vermelho": None}
     milsim_state["status_panel_message_id"] = None
     milsim_state["team_status_panel_message_ids"] = {"azul": None, "vermelho": None}
+    milsim_state["mission_message_ids"] = {"azul": None, "vermelho": None}
     milsim_state["decryption"] = {"active": False, "cancelled": False, "team": None, "mission": None}
     milsim_state["mission3_route"] = {"vermelho_step": 0}
     milsim_state["captured_players"] = []
@@ -2941,9 +3028,14 @@ async def start_op(ctx):
             ]
         ))
 
-    await milsim_send_to_team(
+    await asyncio.sleep(60)
+
+    for t in ["azul", "vermelho"]:
+        milsim_state["mission_end_times"][t] = datetime.now(timezone.utc) + timedelta(seconds=MISSION_TIME_LIMITS["mission_1"])
+
+    await send_team_embed_with_status_last(
         "azul",
-        embed=tactical_embed(
+        tactical_embed(
             "🔵 MISSÃO 01 — DEAD DROP",
             "〔 TASK FORCE AZUL 〕\n\nReconhecimento aéreo confirma a existência de uma hard drive escondida no edifício CQB.",
             discord.Color.blue(),
@@ -2956,9 +3048,9 @@ async def start_op(ctx):
         )
     )
 
-    await milsim_send_to_team(
+    await send_team_embed_with_status_last(
         "vermelho",
-        embed=tactical_embed(
+        tactical_embed(
             "🔴 MISSÃO 01 — DEAD DROP",
             "〔 TASK FORCE VERMELHA 〕\n\nForças inimigas tentam recuperar informação crítica dentro do CQB.",
             discord.Color.red(),
@@ -3043,24 +3135,22 @@ async def codigo(ctx, codigo: str):
         expected_step = milsim_state["mission3_route"]["vermelho_step"] + 1
         if data.get("step") != expected_step:
             return await ctx.send(
-                f"⚠️ Checkpoint fora de ordem. Próximo checkpoint esperado: `{expected_step}`.",
-                delete_after=10
+                f"⚠️ Checkpoint fora de ordem. Próximo checkpoint esperado: `{expected_step}`."
             )
 
     if codigo == "EXFIL-337":
         required = data.get("requires_step", 0)
         if milsim_state["mission3_route"]["vermelho_step"] < required:
             return await ctx.send(
-                "⚠️ Ainda faltam checkpoints obrigatórios antes do código final.",
-                delete_after=10
+                "⚠️ Ainda faltam checkpoints obrigatórios antes do código final."
             )
 
     team_state["completed_codes"].append(codigo)
     milsim_state["scores"][team] += data["points"]
 
     await purge_team_status_panels(team)
-    await ctx.send(embed=data["embed"]())
-    await create_team_status_panel(team)
+    msg = await ctx.send(embed=build_mission_embed_with_status(team, data["embed"](), "✅ Objetivo validado"))
+    milsim_state["mission_message_ids"][team] = msg.id
 
     enemy_alert = data.get("enemy_alert_embed")
     if enemy_alert:
@@ -3103,7 +3193,7 @@ async def reagrupado(ctx):
 
     team_state = milsim_state["teams"][team]
 
-    if team_state["phase"] != "regroup":
+    if team_state["phase"] not in ("regroup", "failed"):
         return await ctx.send("⚠️ A tua equipa ainda não está em fase de reorganização.")
 
     team_state["regrouped"] = True
@@ -3140,9 +3230,11 @@ async def reagrupado(ctx):
             if milsim_state["teams"][t]["current"] == "mission_3":
                 milsim_state["mission3_route"]["vermelho_step"] = 0
 
-            await purge_team_status_panels(t)
-            await milsim_send_to_team(t, embed=NEXT_MISSIONS[old_mission][t]())
-            await create_team_status_panel(t)
+            milsim_state["mission_end_times"][t] = datetime.now(timezone.utc) + timedelta(
+                seconds=MISSION_TIME_LIMITS[milsim_state["teams"][t]["current"]]
+            )
+
+            await send_team_embed_with_status_last(t, NEXT_MISSIONS[old_mission][t]())
 
         for t in ["azul", "vermelho"]:
             asyncio.create_task(mission_timer(t, milsim_state["teams"][t]["current"]))
@@ -3275,9 +3367,11 @@ async def gm_next(ctx):
             next_number = int(old_mission.split("_")[1]) + 1
             milsim_state["teams"][t]["current"] = f"mission_{next_number}"
 
-        await purge_team_status_panels(t)
-        await milsim_send_to_team(t, embed=NEXT_MISSIONS[old_mission][t]())
-        await create_team_status_panel(t)
+        milsim_state["mission_end_times"][t] = datetime.now(timezone.utc) + timedelta(
+            seconds=MISSION_TIME_LIMITS[milsim_state["teams"][t]["current"]]
+        )
+
+        await send_team_embed_with_status_last(t, NEXT_MISSIONS[old_mission][t]())
 
     for t in ["azul", "vermelho"]:
         asyncio.create_task(mission_timer(t, milsim_state["teams"][t]["current"]))
