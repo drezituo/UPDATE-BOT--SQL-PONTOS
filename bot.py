@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands, tasks
 import asyncio
 import asyncio
+import asyncio
 import psycopg2
 import os
 from datetime import datetime, timezone, timedelta
@@ -2228,6 +2229,32 @@ def build_team_status_embed(team: str):
 
     embed.set_footer(text="COMANDO CENTRAL")
     return embed
+
+
+milsim_state = {
+    "active": False,
+    "scores": {"azul": 0, "vermelho": 0},
+    "mission_end_times": {"azul": None, "vermelho": None},
+    "status_panel_message_id": None,
+    "team_status_panel_message_ids": {"azul": None, "vermelho": None},
+    "decryption": {"active": False, "cancelled": False, "team": None, "mission": None},
+    "mission3_route": {"vermelho_step": 0},
+    "captured_players": [],
+    "teams": {
+        "azul": {
+            "current": "mission_1",
+            "phase": "mission",
+            "regrouped": False,
+            "completed_codes": []
+        },
+        "vermelho": {
+            "current": "mission_1",
+            "phase": "mission",
+            "regrouped": False,
+            "completed_codes": []
+        }
+    }
+}
 
 
 MISSION_CODES = {
