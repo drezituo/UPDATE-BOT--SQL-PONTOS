@@ -3019,25 +3019,25 @@ async def codigo(ctx, codigo: str):
         return await ctx.send("⚠️ Este comando só pode ser usado no canal da tua equipa.", delete_after=10)
 
     if not milsim_state["active"]:
-        return await ctx.send("⚠️ A operação ainda não está ativa.", delete_after=10)
+        return await ctx.send("⚠️ A operação ainda não está ativa.")
 
     codigo = codigo.upper().strip()
 
     if codigo not in MISSION_CODES:
-        return await ctx.send("❌ Código inválido ou intel comprometida.", delete_after=10)
+        return await ctx.send("❌ Código inválido ou intel comprometida.")
 
     data = MISSION_CODES[codigo]
 
     if data["team"] != team:
-        return await ctx.send("❌ Este código não pertence à tua cadeia operacional.", delete_after=10)
+        return await ctx.send("❌ Este código não pertence à tua cadeia operacional.")
 
     team_state = milsim_state["teams"][team]
 
     if codigo in team_state["completed_codes"]:
-        return await ctx.send("⚠️ Este código já foi utilizado.", delete_after=10)
+        return await ctx.send("⚠️ Este código já foi utilizado.")
 
     if team_state["current"] != data["mission"]:
-        return await ctx.send("⚠️ Código correto, mas fora da fase operacional atual.", delete_after=10)
+        return await ctx.send("⚠️ Código correto, mas fora da fase operacional atual.")
 
     if data.get("type") == "checkpoint":
         expected_step = milsim_state["mission3_route"]["vermelho_step"] + 1
@@ -3099,12 +3099,12 @@ async def reagrupado(ctx):
         return await ctx.send("⚠️ Este comando só pode ser usado no canal da tua equipa.", delete_after=10)
 
     if not milsim_state["active"]:
-        return await ctx.send("⚠️ A operação não está ativa.", delete_after=10)
+        return await ctx.send("⚠️ A operação não está ativa.")
 
     team_state = milsim_state["teams"][team]
 
     if team_state["phase"] != "regroup":
-        return await ctx.send("⚠️ A tua equipa ainda não está em fase de reorganização.", delete_after=10)
+        return await ctx.send("⚠️ A tua equipa ainda não está em fase de reorganização.")
 
     team_state["regrouped"] = True
 
@@ -3158,17 +3158,17 @@ async def capturar(ctx, player_id: str):
         return await ctx.send("⚠️ Este comando só pode ser usado no canal da tua equipa.", delete_after=10)
 
     if not milsim_state["active"]:
-        return await ctx.send("⚠️ A operação não está ativa.", delete_after=10)
+        return await ctx.send("⚠️ A operação não está ativa.")
 
     player_id = player_id.upper().strip()
 
     valid_prefix = "IRON-" if team == "azul" else "NOVA-"
 
     if not player_id.startswith(valid_prefix):
-        return await ctx.send("❌ Esse operador não pertence à equipa inimiga.", delete_after=10)
+        return await ctx.send("❌ Esse operador não pertence à equipa inimiga.")
 
     if player_id in milsim_state["captured_players"]:
-        return await ctx.send("⚠️ Esse operador já foi capturado anteriormente.", delete_after=10)
+        return await ctx.send("⚠️ Esse operador já foi capturado anteriormente.")
 
     milsim_state["captured_players"].append(player_id)
     milsim_state["scores"][team] += 5
