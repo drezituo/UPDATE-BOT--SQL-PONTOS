@@ -2150,7 +2150,7 @@ VERMELHO_ROLE_ID = 1504599117488455832
 GM_ROLE_ID = 1504602388496121928
 
 RESPAWN_INTERVAL_SECONDS = 300  # 5 minutos
-RESPAWN_OPEN_SECONDS = 30       # janela visível de respawn
+RESPAWN_OPEN_SECONDS = 5        # janela verde de respawn
 
 
 
@@ -2262,8 +2262,10 @@ def build_mission_embed_with_status(team: str, embed: discord.Embed, estado: str
         value=estado,
         inline=False
     )
+    timer_label = "⏱️ Novas Ordens em" if team_state.get("phase") in ("regroup", "rest", "ready") else "⏱️ Tempo Restante"
+
     final_embed.add_field(
-        name="⏱️ Novas Ordens em",
+        name=timer_label,
         value=f"**{format_time_remaining(team)}**",
         inline=True
     )
@@ -2294,7 +2296,7 @@ def build_team_status_embed(team: str):
         "Painel automático da operação.",
         color,
         [
-            {"name": "⏱️ Novas Ordens em", "value": f"**{format_time_remaining(team)}**", "inline": True},
+            {"name": "⏱️ Novas Ordens em" if st.get("phase") in ("regroup", "rest", "ready") else "⏱️ Tempo Restante", "value": f"**{format_time_remaining(team)}**", "inline": True},
             {"name": "🏆 Score", "value": f"**{milsim_state['scores'][team]} pts**", "inline": True},
         ],
         footer="COMANDO CENTRAL • STATUS TÁTICO"
