@@ -2706,7 +2706,8 @@ milsim_state = {
             "completed_codes": []
         }
     },
-    "captured_players": []
+    "captured_players": [],
+    "mission_branch": None
 }
 
 
@@ -2734,19 +2735,19 @@ MISSION_CODES = {
         "mission": "mission_1",
         "points": 10,
         "type": "complete",
+        "branch": "standard",
         "embed": lambda: tactical_embed(
-            "✅ AUTORIZAÇÃO VALIDADA",
-            "〔 TASK FORCE AZUL 〕\n\nHard drive recuperada com sucesso.",
+            "✅ DISCO VERDADEIRO CONFIRMADO",
+            "A caixa segura regressou ao HQ e o disco verdadeiro foi identificado. A inteligência principal ainda está intacta.\n\nA operação avança para envio de dados através do BUNKER.",
             discord.Color.blue(),
             [
-                {"name": "📍 ORDEM", "value": "Regressem imediatamente ao **COMANDO** para reorganização operacional."},
-                {"name": "⚠️ ALERTA", "value": "Elevada probabilidade de interceção inimiga durante retirada."},
-                {"name": "➡️ PRÓXIMO PASSO", "value": "Utilizem `!reagrupado` assim que toda a unidade estiver pronta."}
+                {"name": "📍 ORDEM", "value": "Reorganizem a unidade e preparem transporte para o próximo objetivo.", "inline": False},
+                {"name": "🏆 PONTOS", "value": "**+10 pontos atribuídos**", "inline": False}
             ]
         ),
         "enemy_alert_embed": lambda: tactical_embed(
-            "⚠️ ALERTA DE COMBATE",
-            "Movimentação inimiga confirmada no setor CQB.\nPossível extração de dados em progresso.",
+            "⚠️ INTEL AZUL EXTRAÍDA",
+            "A Task Force Azul conseguiu retirar a caixa segura e identificar o disco verdadeiro.\n\nPreparem-se para impedir o envio dos dados.",
             discord.Color.red()
         )
     },
@@ -2756,20 +2757,20 @@ MISSION_CODES = {
         "mission": "mission_1",
         "points": 10,
         "type": "complete",
+        "branch": "compromised",
         "embed": lambda: tactical_embed(
-            "✅ AUTORIZAÇÃO VALIDADA",
-            "〔 TASK FORCE VERMELHA 〕\n\nProtocolo de destruição parcialmente ativado.",
+            "💥 CAIXA COMPROMETIDA",
+            "A caixa segura foi levada até à base Vermelha e o conteúdo foi comprometido com sucesso.\n\nA inteligência principal da Azul deixou de ser confiável.",
             discord.Color.red(),
             [
-                {"name": "📍 ORDEM", "value": "Regressem imediatamente ao **COMANDO CENTRAL**."},
-                {"name": "📊 ESTADO", "value": "Aguardem nova janela operacional."},
-                {"name": "➡️ PRÓXIMO PASSO", "value": "Utilizem `!reagrupado` assim que toda a unidade estiver pronta."}
+                {"name": "📍 ORDEM", "value": "Reagrupem e preparem bloqueio às tentativas de recuperação inimiga.", "inline": False},
+                {"name": "🏆 PONTOS", "value": "**+10 pontos atribuídos**", "inline": False}
             ]
         ),
         "enemy_alert_embed": lambda: tactical_embed(
-            "⚠️ ALERTA DE COMBATE",
-            "Protocolo inimigo detetado no CQB.\nDados comprometidos parcialmente.",
-            discord.Color.blue()
+            "🚨 CAIXA SEGURA COMPROMETIDA",
+            "A Task Force Vermelha comprometeu a caixa segura. O disco principal já não é confiável.\n\nAinda poderá existir uma hipótese de recuperar fragmentos de backup.",
+            discord.Color.orange()
         )
     },
 
@@ -2779,21 +2780,21 @@ MISSION_CODES = {
         "points": 15,
         "type": "decryption",
         "embed": lambda: tactical_embed(
-            "📡 TERMINAL ONLINE",
-            "SEQUÊNCIA DE DESENCRIPTAÇÃO INICIADA",
+            "📡 ENVIO DE DADOS INICIADO",
+            "A caixa segura foi posicionada junto ao terminal do BUNKER e o uplink militar foi ativado.\n\nA transmissão para a central começou. Defendam o terminal durante toda a sequência.",
             discord.Color.blue(),
             [
-                {"name": "⏱️ TEMPO ESTIMADO", "value": "**10 MINUTOS**"},
-                {"name": "📍 ORDEM", "value": "Defendam o perímetro do **BUNKER** a todo o custo."}
+                {"name": "⏱️ TEMPO ESTIMADO", "value": "**10 MINUTOS**", "inline": True},
+                {"name": "📍 ORDEM", "value": "Segurem o BUNKER. Todas as forças hostis irão convergir para esta posição.", "inline": False},
+                {"name": "🏆 PONTOS", "value": "**+15 pontos atribuídos**", "inline": False}
             ]
         ),
         "enemy_alert_embed": lambda: tactical_embed(
-            "🚨 ALERTA — BUNKER",
-            "Atividade inimiga detetada no BUNKER.\nDesencriptação iniciada.",
+            "🚨 TRANSMISSÃO AZUL DETETADA",
+            "A Task Force Azul iniciou envio de dados no BUNKER.\n\nSe a sequência for concluída, a rede operacional Vermelha ficará comprometida.",
             discord.Color.red(),
             [
-                {"name": "⏱️ TEMPO ESTIMADO", "value": "**10 MINUTOS**"},
-                {"name": "🎯 OBJETIVO PRIORITÁRIO", "value": "Interromper terminal."}
+                {"name": "🎯 OBJETIVO PRIORITÁRIO", "value": "Infiltrar o BUNKER e interromper a transmissão.", "inline": False}
             ]
         )
     },
@@ -2804,17 +2805,47 @@ MISSION_CODES = {
         "points": 15,
         "type": "complete",
         "embed": lambda: tactical_embed(
-            "💥 SABOTAGEM CONFIRMADA",
-            "FALHA NO UPLINK\n\nTransmissão inimiga interrompida.\nTerminal temporariamente comprometido.",
+            "💥 TRANSMISSÃO INTERROMPIDA",
+            "A sequência de envio foi sabotada. O uplink caiu antes da conclusão e os dados não chegaram à central.",
             discord.Color.red(),
-            [{"name": "📍 ORDEM", "value": "Regressem ao **COMANDO** para reorganização."}]
+            [
+                {"name": "📍 ORDEM", "value": "Regressem ao COMANDO para reorganização.", "inline": False},
+                {"name": "🏆 PONTOS", "value": "**+15 pontos atribuídos**", "inline": False}
+            ]
         ),
         "enemy_alert_embed": lambda: tactical_embed(
-            "🚨 FALHA NO TERMINAL",
-            "A desencriptação foi interrompida.\nRecuperem controlo do BUNKER imediatamente.",
-            discord.Color.blue()
+            "❌ ENVIO DE DADOS FALHADO",
+            "A transmissão foi interrompida por sabotagem inimiga.\n\nRegressem ao COMANDO e reorganizem a unidade.",
+            discord.Color.orange()
         )
     },
+
+    "FRAGMENT-404": {
+        "team": "azul",
+        "mission": "mission_2",
+        "points": 20,
+        "type": "complete",
+        "embed": lambda: tactical_embed(
+            "✅ FRAGMENTOS RECONSTRUÍDOS",
+            "Os três fragmentos de backup foram reunidos e a inteligência foi parcialmente restaurada.\n\nA operação sofreu danos, mas ainda existe informação suficiente para continuar.",
+            discord.Color.blue(),
+            [
+                {"name": "📍 ORDEM", "value": "Regressem ao COMANDO. Próxima fase operacional será recalculada com os dados recuperados.", "inline": False},
+                {"name": "🏆 PONTOS", "value": "**+20 pontos atribuídos**", "inline": False}
+            ]
+        ),
+        "enemy_alert_embed": lambda: tactical_embed(
+            "⚠️ DADOS PARCIALMENTE RECUPERADOS",
+            "A Task Force Azul conseguiu reconstruir fragmentos de backup. A inteligência não foi totalmente destruída.",
+            discord.Color.red()
+        )
+    },
+
+    "RED-CP1": {"team": "vermelho", "mission": "mission_3", "points": 0, "type": "checkpoint", "step": 1, "embed": lambda: tactical_embed("✅ CHECKPOINT 1 VALIDADO", "A carga passou pelo primeiro ponto da rota obrigatória.", discord.Color.red(), [{"name": "➡️ PRÓXIMO PASSO", "value": "Avancem para o checkpoint seguinte.", "inline": False}])},
+    "RED-CP2": {"team": "vermelho", "mission": "mission_3", "points": 0, "type": "checkpoint", "step": 2, "embed": lambda: tactical_embed("✅ CHECKPOINT 2 VALIDADO", "A carga continua em movimento. A pressão inimiga deverá aumentar.", discord.Color.red(), [{"name": "➡️ PRÓXIMO PASSO", "value": "Continuem a rota.", "inline": False}])},
+    "RED-CP3": {"team": "vermelho", "mission": "mission_3", "points": 0, "type": "checkpoint", "step": 3, "embed": lambda: tactical_embed("✅ CHECKPOINT 3 VALIDADO", "Metade crítica da rota foi ultrapassada. Mantenham escolta apertada.", discord.Color.red(), [{"name": "➡️ PRÓXIMO PASSO", "value": "Avancem para o próximo ponto.", "inline": False}])},
+    "RED-CP4": {"team": "vermelho", "mission": "mission_3", "points": 0, "type": "checkpoint", "step": 4, "embed": lambda: tactical_embed("✅ CHECKPOINT 4 VALIDADO", "A carga aproxima-se da extração final. Esperem tentativa de interceção máxima.", discord.Color.red(), [{"name": "➡️ PRÓXIMO PASSO", "value": "Último checkpoint antes da extração.", "inline": False}])},
+    "RED-CP5": {"team": "vermelho", "mission": "mission_3", "points": 0, "type": "checkpoint", "step": 5, "embed": lambda: tactical_embed("✅ CHECKPOINT 5 VALIDADO", "Rota completa. Procedam para extração final.", discord.Color.red(), [{"name": "➡️ PRÓXIMO PASSO", "value": "Validem a extração final no ponto indicado.", "inline": False}])},
 
     "GHOST-802": {
         "team": "azul",
@@ -2822,90 +2853,18 @@ MISSION_CODES = {
         "points": 25,
         "type": "complete",
         "embed": lambda: tactical_embed(
-            "📦 CARGA DEPOSITADA NO BUNKER",
-            "Material inimigo roubado e depositado com sucesso.",
+            "📦 CARGA INTERCETADA E DEPOSITADA",
+            "A carga Vermelha foi intercetada, capturada e depositada no ponto indicado.\n\nA linha logística inimiga foi comprometida.",
             discord.Color.blue(),
             [
-                {"name": "🎯 OBJETIVO CONCLUÍDO", "value": "▸ Carga intercetada\n▸ Transporte inimigo comprometido\n▸ Depósito no BUNKER confirmado"},
-                {"name": "📍 ORDEM", "value": "Regressem ao COMANDO para reorganização."},
-                {"name": "🏆 PONTOS", "value": "**+25 pontos atribuídos**"}
+                {"name": "📍 ORDEM", "value": "Regressem ao COMANDO para reorganização.", "inline": False},
+                {"name": "🏆 PONTOS", "value": "**+25 pontos atribuídos**", "inline": False}
             ]
         ),
         "enemy_alert_embed": lambda: tactical_embed(
-            "🚨 CARGA ROUBADA E DEPOSITADA",
-            "A Task Force Azul depositou o material no BUNKER.",
-            discord.Color.red(),
-            [{"name": "📍 ORDEM", "value": "Regressem ao COMANDO e aguardem nova janela operacional."}]
-        )
-    },
-
-    "RED-CP1": {
-        "team": "vermelho",
-        "mission": "mission_3",
-        "points": 0,
-        "type": "checkpoint",
-        "step": 1,
-        "embed": lambda: tactical_embed(
-            "✅ CHECKPOINT 1 VALIDADO",
-            "A carga passou pelo checkpoint 1.",
-            discord.Color.red(),
-            [{"name": "➡️ PRÓXIMO PASSO", "value": "Avancem para o checkpoint 2."}]
-        )
-    },
-
-    "RED-CP2": {
-        "team": "vermelho",
-        "mission": "mission_3",
-        "points": 0,
-        "type": "checkpoint",
-        "step": 2,
-        "embed": lambda: tactical_embed(
-            "✅ CHECKPOINT 2 VALIDADO",
-            "A carga passou pelo checkpoint 2.",
-            discord.Color.red(),
-            [{"name": "➡️ PRÓXIMO PASSO", "value": "Avancem para o checkpoint 3."}]
-        )
-    },
-
-    "RED-CP3": {
-        "team": "vermelho",
-        "mission": "mission_3",
-        "points": 0,
-        "type": "checkpoint",
-        "step": 3,
-        "embed": lambda: tactical_embed(
-            "✅ CHECKPOINT 3 VALIDADO",
-            "A carga passou pelo checkpoint 3.",
-            discord.Color.red(),
-            [{"name": "➡️ PRÓXIMO PASSO", "value": "Avancem para o checkpoint 4."}]
-        )
-    },
-
-    "RED-CP4": {
-        "team": "vermelho",
-        "mission": "mission_3",
-        "points": 0,
-        "type": "checkpoint",
-        "step": 4,
-        "embed": lambda: tactical_embed(
-            "✅ CHECKPOINT 4 VALIDADO",
-            "A carga passou pelo checkpoint 4.",
-            discord.Color.red(),
-            [{"name": "➡️ PRÓXIMO PASSO", "value": "Avancem para o checkpoint 5."}]
-        )
-    },
-
-    "RED-CP5": {
-        "team": "vermelho",
-        "mission": "mission_3",
-        "points": 0,
-        "type": "checkpoint",
-        "step": 5,
-        "embed": lambda: tactical_embed(
-            "✅ CHECKPOINT 5 VALIDADO",
-            "A carga passou pelo checkpoint 5.",
-            discord.Color.red(),
-            [{"name": "➡️ PRÓXIMO PASSO", "value": "Validem o código final de extração."}]
+            "🚨 CARGA PERDIDA",
+            "A Task Force Azul intercetou e depositou a carga. A rota logística Vermelha foi comprometida.",
+            discord.Color.red()
         )
     },
 
@@ -2916,41 +2875,18 @@ MISSION_CODES = {
         "type": "complete",
         "requires_step": 5,
         "embed": lambda: tactical_embed(
-            "✅ TRANSPORTE CONCLUÍDO",
-            "A carga passou pelos 5 checkpoints obrigatórios e foi entregue no ponto final.",
+            "✅ EXTRAÇÃO CONCLUÍDA",
+            "A carga atravessou os cinco checkpoints e chegou ao destino final.\n\nA rota foi mantida apesar da pressão inimiga.",
             discord.Color.red(),
             [
-                {"name": "🎯 OBJETIVO CONCLUÍDO", "value": "▸ Rota validada\n▸ 5 checkpoints confirmados\n▸ Carga protegida\n▸ Depósito final confirmado"},
-                {"name": "📍 ORDEM", "value": "Regressem ao COMANDO para nova janela operacional."},
-                {"name": "🏆 PONTOS", "value": "**+25 pontos atribuídos**"}
+                {"name": "📍 ORDEM", "value": "Regressem ao COMANDO para nova janela operacional.", "inline": False},
+                {"name": "🏆 PONTOS", "value": "**+25 pontos atribuídos**", "inline": False}
             ]
         ),
         "enemy_alert_embed": lambda: tactical_embed(
             "⚠️ TRANSPORTE INIMIGO CONCLUÍDO",
-            "O Vermelho completou os 5 checkpoints e entregou a carga.",
-            discord.Color.blue(),
-            [{"name": "📍 ORDEM", "value": "Regressem ao COMANDO e aguardem nova janela operacional."}]
-        )
-    },
-
-    "OMEGA-440": {
-        "team": "azul",
-        "mission": "mission_4",
-        "points": 20,
-        "type": "complete",
-        "embed": lambda: tactical_embed(
-            "📡 TRANSMISSÃO ATIVADA",
-            "Uplink operacional no BUNKER.",
-            discord.Color.blue(),
-            [
-                {"name": "📍 ORDEM", "value": "Preparem defesa para fase final."},
-                {"name": "🏆 PONTOS", "value": "**+20 pontos atribuídos**"}
-            ]
-        ),
-        "enemy_alert_embed": lambda: tactical_embed(
-            "📡 TRANSMISSÃO INIMIGA ATIVA",
-            "O inimigo ativou uplink no BUNKER.\nPreparem corte de transmissão.",
-            discord.Color.red()
+            "A Task Force Vermelha completou a rota de transporte e entregou a carga.",
+            discord.Color.blue()
         )
     },
 
@@ -2960,18 +2896,57 @@ MISSION_CODES = {
         "points": 20,
         "type": "complete",
         "embed": lambda: tactical_embed(
-            "💥 RELAY DESTRUÍDO",
-            "Transmissão inimiga comprometida.",
+            "📡 HACK SATCOM INICIADO",
+            "A estação SATCOM foi ativada e a sequência de intrusão começou.\n\nDefendam o terminal. A partir deste momento, a Azul irá tentar localizar a origem das interferências.",
             discord.Color.red(),
             [
-                {"name": "📍 ORDEM", "value": "Preparem assalto final ao BUNKER."},
-                {"name": "🏆 PONTOS", "value": "**+20 pontos atribuídos**"}
+                {"name": "📍 ORDEM", "value": "Manter posição e proteger o uplink até conclusão operacional.", "inline": False},
+                {"name": "🏆 PONTOS", "value": "**+20 pontos atribuídos**", "inline": False}
             ]
         ),
         "enemy_alert_embed": lambda: tactical_embed(
-            "💥 RELAY COMPROMETIDO",
-            "A vossa transmissão foi cortada.\nRecuperem controlo antes da fase final.",
-            discord.Color.blue()
+            "⚠️ ALERTA OPERACIONAL — SATCOM",
+            "〔 TASK FORCE AZUL 〕\n\nInterferências críticas foram detetadas na rede de comunicações da operação. As leituras indicam atividade hostil proveniente de uma estação SATCOM clandestina algures dentro do complexo.\n\nSe o inimigo concluir o hack, todas as comunicações Azul poderão ficar comprometidas, movimentações táticas poderão ser expostas e frequências rádio poderão ser intercetadas.",
+            discord.Color.blue(),
+            [
+                {"name": "👥 OPERADORES DESIGNADOS", "value": "▸ Player1\n▸ Player2\n▸ Player3\n▸ Player4\n▸ Player5", "inline": False},
+                {"name": "🎯 OBJETIVOS", "value": "▸ Localizar origem das interferências\n▸ Eliminar operadores hostis\n▸ Interromper hackeamento\n▸ Recuperar controlo das comunicações", "inline": False},
+                {"name": "📡 ORDEM", "value": "Cada minuto perdido aproxima o inimigo da vitória operacional. Encontrem-nos antes que seja tarde.", "inline": False}
+            ]
+        )
+    },
+
+    "OMEGA-440": {
+        "team": "azul",
+        "mission": "mission_4",
+        "points": 20,
+        "type": "complete",
+        "embed": lambda: tactical_embed(
+            "✅ HACK CANCELADO",
+            "A equipa de resposta localizou a estação SATCOM e interrompeu a sequência de intrusão.\n\nAs comunicações Azul foram preservadas.",
+            discord.Color.blue(),
+            [
+                {"name": "📍 ORDEM", "value": "Regressem ao COMANDO e preparem-se para a fase final.", "inline": False},
+                {"name": "🏆 PONTOS", "value": "**+20 pontos atribuídos**", "inline": False}
+            ]
+        ),
+        "enemy_alert_embed": lambda: tactical_embed(
+            "❌ HACK SATCOM INTERROMPIDO",
+            "A Task Force Azul localizou a estação e cancelou a sequência de intrusão.",
+            discord.Color.red()
+        )
+    },
+
+    "CACHE-777": {
+        "team": "azul",
+        "mission": "mission_4",
+        "points": 10,
+        "type": "complete",
+        "embed": lambda: tactical_embed(
+            "📦 SUPPLY CACHE RECUPERADA",
+            "A equipa Azul executou a emboscada e extraiu recursos do acampamento avançado inimigo.",
+            discord.Color.blue(),
+            [{"name": "🏆 PONTOS", "value": "**+10 pontos atribuídos**", "inline": False}]
         )
     },
 
@@ -2980,11 +2955,7 @@ MISSION_CODES = {
         "mission": "final",
         "points": 30,
         "type": "end",
-        "embed": lambda: tactical_embed(
-            "🏆 TRANSMISSÃO FINAL CONCLUÍDA",
-            "Vitória operacional da **TASK FORCE AZUL**.",
-            discord.Color.blue()
-        )
+        "embed": lambda: tactical_embed("🏆 DOMINAÇÃO AZUL", "A Task Force Azul dominou o CQB e assumiu controlo da operação.", discord.Color.blue())
     },
 
     "IRON-666": {
@@ -2992,103 +2963,116 @@ MISSION_CODES = {
         "mission": "final",
         "points": 30,
         "type": "end",
-        "embed": lambda: tactical_embed(
-            "🏆 TRANSMISSÃO INIMIGA IMPEDIDA",
-            "Vitória operacional da **TASK FORCE VERMELHA**.",
-            discord.Color.red()
-        )
+        "embed": lambda: tactical_embed("🏆 DOMINAÇÃO VERMELHA", "A Task Force Vermelha dominou o CQB e assumiu controlo da operação.", discord.Color.red())
     }
 }
-
 
 NEXT_MISSIONS = {
     "mission_1": {
         "azul": lambda: tactical_embed(
-            "🔵 MISSÃO 02 — SIGNAL KEY",
-            "〔 TASK FORCE AZUL 〕\n\nOs dados recuperados devem ser desencriptados na estação **BUNKER**.",
+            "🔵 MISSÃO 02 — DATA TRANSFER" if milsim_state.get("mission_branch") != "compromised" else "🔵 MISSÃO 02 — RECOVER FRAGMENTS",
+            (
+                "〔 TASK FORCE AZUL 〕\n\nO disco verdadeiro foi confirmado. A inteligência recuperada contém informação suficiente para comprometer operações inimigas em toda a região. Mas os dados ainda não estão seguros.\n\nMovimentação inimiga foi detetada perto do BUNKER. A partir do momento em que a transmissão começar, todas as forças hostis irão convergir para a vossa posição."
+                if milsim_state.get("mission_branch") != "compromised" else
+                "〔 TASK FORCE AZUL 〕\n\nA caixa segura foi comprometida. O disco principal já não é confiável.\n\nMas antes da operação falhar completamente, fragmentos de backup foram escondidos em diferentes zonas do complexo. Cada fragmento recuperado aumenta as hipóteses de restaurar os dados perdidos."
+            ),
             discord.Color.blue(),
-            [
-                {"name": "🎯 OBJETIVOS PRINCIPAIS", "value": "▸ Transportar dispositivo\n▸ Ativar terminal\n▸ Defender transmissão"},
-                {"name": "🔐 CÓDIGO FÍSICO", "value": "O código operacional encontra-se no **terminal físico do BUNKER**."},
-                {"name": "⌨️ COMO VALIDAR", "value": VALIDACAO_CODIGO_TEXTO}
-            ]
+            (
+                [
+                    {"name": "🎯 OBJETIVOS", "value": "▸ Transportar a caixa segura até ao BUNKER\n▸ Ativar uplink militar\n▸ Iniciar transmissão para a central\n▸ Defender o terminal durante toda a sequência", "inline": False},
+                    {"name": "⚠️ REGRAS OPERACIONAIS", "value": "▸ A caixa deve permanecer junto do terminal\n▸ O uplink demora 10 minutos até concluir\n▸ Se o terminal cair, a transmissão poderá falhar", "inline": False},
+                    {"name": "📡 ORDEM", "value": "Segurem o BUNKER. Defendam o terminal. E enviem os dados antes que seja tarde.", "inline": False}
+                ]
+                if milsim_state.get("mission_branch") != "compromised" else
+                [
+                    {"name": "🎯 OBJETIVOS", "value": "▸ Recuperar fragmento no BUNKER\n▸ Recuperar fragmento no CQB\n▸ Recuperar fragmento no ACAMPAMENTO\n▸ Reconstruir parcialmente a inteligência", "inline": False},
+                    {"name": "📡 ORDEM", "value": "Não deixem que esta operação termine aqui. Movam-se rápido e recuperem o que ainda resta.", "inline": False}
+                ]
+            )
         ),
         "vermelho": lambda: tactical_embed(
-            "🔴 MISSÃO 02 — SIGNAL KEY",
-            "〔 TASK FORCE VERMELHA 〕\n\nMovimentação inimiga detetada em direção ao **BUNKER**.",
+            "🔴 MISSÃO 02 — SIGNAL BREAK" if milsim_state.get("mission_branch") != "compromised" else "🔴 MISSÃO 02 — DENY RECOVERY",
+            (
+                "〔 TASK FORCE VERMELHA 〕\n\nA Task Force Azul conseguiu recuperar o disco principal e está agora a tentar transmitir os dados para a central através do BUNKER.\n\nSe conseguirem concluir a transmissão, toda a nossa rede operacional ficará comprometida, posições estratégicas serão expostas e a operação poderá ficar perdida."
+                if milsim_state.get("mission_branch") != "compromised" else
+                "〔 TASK FORCE VERMELHA 〕\n\nApesar da caixa Azul ter sido comprometida, existe possibilidade de tentarem restaurar parte da inteligência através de fragmentos escondidos no complexo.\n\nA Azul está fragilizada, mas ainda é perigosa. Neguem-lhes qualquer hipótese de recuperação."
+            ),
             discord.Color.red(),
-            [
-                {"name": "🎯 OBJETIVOS PRINCIPAIS", "value": "▸ Intercetar transporte\n▸ Sabotar uplink\n▸ Impedir desencriptação"},
-                {"name": "🔐 CÓDIGO FÍSICO", "value": "O código operacional encontra-se no **dispositivo de sabotagem físico**."},
-                {"name": "⌨️ COMO VALIDAR", "value": VALIDACAO_CODIGO_TEXTO}
-            ]
+            (
+                [
+                    {"name": "🎯 OBJETIVOS", "value": "▸ Infiltrar o BUNKER\n▸ Interromper a transmissão\n▸ Destruir ou recuperar a caixa segura\n▸ Impedir envio dos dados", "inline": False},
+                    {"name": "📡 INTEL", "value": "O uplink demora 10 minutos até concluir. Esse é o vosso tempo limite. Cada minuto perdido aproxima a Azul da vitória operacional.", "inline": False},
+                    {"name": "📍 ORDEM", "value": "Cortem a transmissão.", "inline": False}
+                ]
+                if milsim_state.get("mission_branch") != "compromised" else
+                [
+                    {"name": "🎯 OBJETIVOS", "value": "▸ Impedir recolha dos fragmentos\n▸ Defender zonas críticas\n▸ Atrasar recuperação da inteligência", "inline": False},
+                    {"name": "📍 ORDEM", "value": "Acabem com isto de vez.", "inline": False}
+                ]
+            )
         )
     },
     "mission_2": {
         "azul": lambda: tactical_embed(
-            "🔵 MISSÃO 03 — INTERCETAR TRANSPORTE",
-            "〔 TASK FORCE AZUL 〕\n\nO Vermelho está a transportar material sensível por uma rota obrigatória.",
+            "🔵 MISSÃO 03 — INTERCEPT CONVOY",
+            "〔 TASK FORCE AZUL 〕\n\nUma unidade Vermelha está a transportar material crítico através do complexo operacional. Acreditamos que a carga contém equipamento capaz de alterar o rumo da operação.\n\nA Vermelha irá defender a carga com tudo o que tem. Ataquem rápido, criem confusão e não deixem o comboio escapar.",
             discord.Color.blue(),
             [
-                {"name": "🎯 OBJETIVOS PRINCIPAIS", "value": "▸ Intercetar o transporte inimigo\n▸ Roubar a carga física\n▸ Levar a carga até ao BUNKER\n▸ Depositar o material no ponto indicado"},
-                {"name": "🔐 CÓDIGO FÍSICO", "value": "O código de depósito encontra-se no **BUNKER físico**."},
-                {"name": "⌨️ COMO VALIDAR", "value": VALIDACAO_CODIGO_TEXTO},
-                {"name": "⚠️ REGRA DA CARGA", "value": "O operador com a carga não pode correr. Se for eliminado, larga a carga no local."}
+                {"name": "🎯 OBJETIVOS", "value": "▸ Localizar o transporte inimigo\n▸ Intercetar a carga\n▸ Eliminar escoltas\n▸ Capturar o material\n▸ Levar a carga até ao BUNKER", "inline": False},
+                {"name": "⚠️ REGRAS OPERACIONAIS", "value": "▸ O operador da carga não pode correr\n▸ Se eliminado, a carga permanece no terreno", "inline": False}
             ]
         ),
         "vermelho": lambda: tactical_embed(
-            "🔴 MISSÃO 03 — ROTA DE TRANSPORTE",
-            "〔 TASK FORCE VERMELHA 〕\n\nTransportem a carga sensível por uma rota obrigatória com validações físicas.",
+            "🔴 MISSÃO 03 — CONVOY RUN",
+            "〔 TASK FORCE VERMELHA 〕\n\nMaterial operacional altamente sensível precisa de atravessar o complexo através de uma rota obrigatória. A rota foi comprometida. Interceção inimiga é esperada a qualquer momento.\n\nReconhecimento indica movimentação Azul nos flancos do percurso. Esperem emboscadas, ataques rápidos e combate constante até à extração final.",
             discord.Color.red(),
             [
-                {"name": "🎯 OBJETIVOS PRINCIPAIS", "value": "▸ Proteger a carga física\n▸ Validar os 5 checkpoints por ordem\n▸ Recuperar a carga caso seja roubada\n▸ Concluir depósito final"},
-                {"name": "🔐 CÓDIGOS FÍSICOS", "value": "Cada um dos 5 checkpoints tem um código próprio escondido no local."},
-                {"name": "⌨️ COMO VALIDAR", "value": VALIDACAO_CODIGO_TEXTO},
-                {"name": "⚠️ REGRA DA CARGA", "value": "Mesmo que a carga seja roubada, se for recuperada devem continuar a rota no checkpoint seguinte."}
+                {"name": "🎯 OBJETIVOS", "value": "▸ Proteger a carga\n▸ Validar checkpoints obrigatórios\n▸ Manter integridade do transporte\n▸ Concluir extração final", "inline": False},
+                {"name": "⚠️ REGRAS OPERACIONAIS", "value": "▸ O operador da carga não pode correr\n▸ Se eliminado, a carga permanece no local\n▸ A rota deve ser seguida por ordem", "inline": False},
+                {"name": "📍 ORDEM", "value": "Mantenham o comboio em movimento.", "inline": False}
             ]
         )
     },
     "mission_3": {
         "azul": lambda: tactical_embed(
-            "🔵 MISSÃO 04 — BLACKOUT",
-            "〔 TASK FORCE AZUL 〕\n\nAtivem transmissão no BUNKER durante falha de comunicações.",
+            "🔵 MISSÃO 04 — AGUARDAR ALERTA SATCOM",
+            "〔 TASK FORCE AZUL 〕\n\nA rede de comunicações está instável e o COMANDO mantém monitorização ativa.\n\nPermaneçam em prontidão. Se forem detetadas interferências críticas, uma unidade reduzida será destacada para resposta imediata.",
             discord.Color.blue(),
             [
-                {"name": "🎯 OBJETIVOS", "value": "▸ Controlar BUNKER\n▸ Ativar uplink\n▸ Preparar defesa final"},
-                {"name": "🔐 CÓDIGO FÍSICO", "value": "O código operacional encontra-se no **uplink físico**."},
-                {"name": "⌨️ COMO VALIDAR", "value": VALIDACAO_CODIGO_TEXTO}
+                {"name": "📡 ORDEM", "value": "Mantenham equipamento pronto e aguardem alerta operacional.", "inline": False}
             ]
         ),
         "vermelho": lambda: tactical_embed(
-            "🔴 MISSÃO 04 — BLACKOUT",
-            "〔 TASK FORCE VERMELHA 〕\n\nCortem a transmissão inimiga e destruam o relay.",
+            "🔴 MISSÃO 04 — SATCOM DOMINATION",
+            "〔 TASK FORCE VERMELHA 〕\n\nUma estação SATCOM militar abandonada foi localizada dentro do complexo operacional. Após análise dos sistemas encontrados no terreno, foi confirmado que a infraestrutura ainda se encontra parcialmente funcional.\n\nSe conseguirmos assumir controlo da estação, poderemos comprometer comunicações Azul, intercetar transmissões, localizar movimentações inimigas e controlar informação operacional em tempo real.",
             discord.Color.red(),
             [
-                {"name": "🎯 OBJETIVOS", "value": "▸ Infiltrar BUNKER\n▸ Destruir relay\n▸ Impedir uplink inimigo"},
-                {"name": "🔐 CÓDIGO FÍSICO", "value": "O código operacional encontra-se no **relay físico**."},
-                {"name": "⌨️ COMO VALIDAR", "value": VALIDACAO_CODIGO_TEXTO}
+                {"name": "👥 OPERADORES DESIGNADOS", "value": "▸ Player1\n▸ Player2\n▸ Player3\n▸ Player4\n▸ Player5", "inline": False},
+                {"name": "🎯 OBJETIVOS", "value": "▸ Infiltrar estação SATCOM\n▸ Iniciar hackeamento\n▸ Defender terminal até conclusão", "inline": False},
+                {"name": "⚠️ REGRAS OPERACIONAIS", "value": "▸ Apenas os operadores designados abandonam a base\n▸ Evitar deteção prematura\n▸ Manter silêncio rádio sempre que possível", "inline": False},
+                {"name": "📡 ORDEM", "value": "Movam-se sem serem vistos.", "inline": False}
             ]
         )
     },
     "mission_4": {
         "azul": lambda: tactical_embed(
-            "🔵 MISSÃO FINAL — LAST TRANSMISSION",
-            "〔 TASK FORCE AZUL 〕\n\nControlem o BUNKER e concluam transmissão final.",
-            discord.Color.blue(),
+            "⚫ MISSÃO FINAL — TOTAL DOMINATION",
+            "〔 TRANSMISSÃO PRIORITÁRIA • COMANDO CENTRAL 〕\n\nTudo o que aconteceu até agora conduziu-nos a este momento. Reconhecimento confirmou que o complexo CQB se tornou o último ponto estratégico ativo da operação.\n\nEsperem combate intenso, contra-ataques constantes e guerra total dentro da estrutura. Hoje não lutam apenas pela vitória. Lutam pelos operadores ao vosso lado e por cada missão sobrevivida até aqui.",
+            discord.Color.dark_gold(),
             [
-                {"name": "🎯 OBJETIVOS FINAIS", "value": "▸ Controlar bunker\n▸ Defender terminal\n▸ Concluir upload final"},
-                {"name": "🔐 CÓDIGO FÍSICO FINAL", "value": "O código final encontra-se no **terminal físico final**."},
-                {"name": "⌨️ COMO VALIDAR", "value": VALIDACAO_CODIGO_TEXTO}
+                {"name": "📍 TERMINAIS ELETRÓNICOS", "value": "▸ ALPHA — FLANCO ESQUERDO\n▸ BRAVO — CENTRO DO CQB\n▸ CHARLIE — FLANCO DIREITO", "inline": False},
+                {"name": "🎯 OBJETIVOS", "value": "▸ Ativar terminais para a vossa equipa\n▸ Manter os timers a contar a vosso favor\n▸ Parar os timers inimigos\n▸ Dominar o CQB até ao final da operação", "inline": False},
+                {"name": "⚙️ MECÂNICA", "value": "Cada terminal possui um dispositivo timer eletrónico. Os operadores devem ativar o timer da sua equipa e, sempre que possível, parar o timer inimigo.", "inline": False}
             ]
         ),
         "vermelho": lambda: tactical_embed(
-            "🔴 MISSÃO FINAL — LAST TRANSMISSION",
-            "〔 TASK FORCE VERMELHA 〕\n\nImpeçam transmissão inimiga e controlem o BUNKER.",
-            discord.Color.red(),
+            "⚫ MISSÃO FINAL — TOTAL DOMINATION",
+            "〔 TRANSMISSÃO PRIORITÁRIA • COMANDO CENTRAL 〕\n\nTudo o que aconteceu até agora conduziu-nos a este momento. Reconhecimento confirmou que o complexo CQB se tornou o último ponto estratégico ativo da operação.\n\nEsperem combate intenso, contra-ataques constantes e guerra total dentro da estrutura. Hoje não lutam apenas pela vitória. Lutam pelos operadores ao vosso lado e por cada missão sobrevivida até aqui.",
+            discord.Color.dark_gold(),
             [
-                {"name": "🎯 OBJETIVOS FINAIS", "value": "▸ Destruir relay\n▸ Eliminar operadores de transmissão\n▸ Controlar bunker"},
-                {"name": "🔐 CÓDIGO FÍSICO FINAL", "value": "O código final encontra-se no **relay físico final**."},
-                {"name": "⌨️ COMO VALIDAR", "value": VALIDACAO_CODIGO_TEXTO}
+                {"name": "📍 TERMINAIS ELETRÓNICOS", "value": "▸ ALPHA — FLANCO ESQUERDO\n▸ BRAVO — CENTRO DO CQB\n▸ CHARLIE — FLANCO DIREITO", "inline": False},
+                {"name": "🎯 OBJETIVOS", "value": "▸ Ativar terminais para a vossa equipa\n▸ Manter os timers a contar a vosso favor\n▸ Parar os timers inimigos\n▸ Dominar o CQB até ao final da operação", "inline": False},
+                {"name": "⚙️ MECÂNICA", "value": "Cada terminal possui um dispositivo timer eletrónico. Os operadores devem ativar o timer da sua equipa e, sempre que possível, parar o timer inimigo.", "inline": False}
             ]
         )
     }
@@ -3220,6 +3204,7 @@ async def start_op(ctx):
     milsim_state["decryption"] = {"active": False, "cancelled": False, "team": None, "mission": None}
     milsim_state["mission3_route"] = {"vermelho_step": 0}
     milsim_state["captured_players"] = []
+    milsim_state["mission_branch"] = None
 
     for team in ["azul", "vermelho"]:
         milsim_state["teams"][team] = {
@@ -3233,13 +3218,11 @@ async def start_op(ctx):
 
     if comando:
         await comando.send(embed=tactical_embed(
-            "🎖️ COMANDO CENTRAL — OPERAÇÃO DUALITY",
-            "〔 TRANSMISSÃO GLOBAL 〕\n\nFoi intercetada atividade militar dentro do complexo industrial abandonado.",
+            "📡 COMANDO CENTRAL — OPERAÇÃO DUALITY",
+            "〔 TRANSMISSÃO GLOBAL 〕\n\nEscutem com atenção operadores.\n\nNas últimas horas foi confirmada atividade militar clandestina dentro do complexo industrial abandonado no setor norte. Reconhecimento aéreo identificou movimentações relacionadas com inteligência militar, servidores SATCOM e armazenamento de dados classificados capazes de comprometer operações em larga escala.\n\nA partir deste momento, todas as equipas entram em prontidão máxima, todas as frequências entram em modo operacional e qualquer inteligência recuperada tem prioridade absoluta.\n\nHoje não existem reforços. Não existe evacuação. E não existe segunda oportunidade.\n\nO sucesso desta operação poderá decidir o controlo total da região.\n\nPreparem equipamento. Sincronizem rádios. Confirmem munições.",
             discord.Color.dark_gold(),
             [
-                {"name": "OBJETIVO ESTRATÉGICO", "value": "▸ Inteligência classificada\n▸ Sistemas de transmissão\n▸ Operadores inimigos\n▸ Corredores de extração"},
-                {"name": "REGRAS OPERACIONAIS", "value": "▸ Códigos físicos desbloqueiam operações\n▸ Operadores capturados podem conter intel\n▸ HVTs devem ser capturados vivos\n▸ Todas as unidades DEVEM regressar ao HQ após cada missão\n▸ Aguardem novas ordens após reorganização"},
-                {"name": "INÍCIO DA OPERAÇÃO", "value": "**T-60 SEGUNDOS**"}
+                {"name": "⏱️ INÍCIO DA OPERAÇÃO", "value": "**T-60 SEGUNDOS**", "inline": False}
             ]
         ))
 
@@ -3251,14 +3234,13 @@ async def start_op(ctx):
     await send_team_embed_with_status_last(
         "azul",
         tactical_embed(
-            "🔵 MISSÃO 01 — DEAD DROP",
-            "〔 TASK FORCE AZUL 〕\n\nReconhecimento aéreo confirma a existência de uma hard drive escondida no edifício CQB.",
+            "🔵 MISSÃO 01 — SECURE DRIVES",
+            "〔 TASK FORCE AZUL 〕\n\nReconhecimento de drones confirmou a existência de 5 discos rígidos escondidos no interior do complexo CQB. Apenas um contém a verdadeira inteligência operacional. Os restantes foram criados para atrasar qualquer tentativa de extração inimiga.\n\nCada corredor pode esconder uma emboscada. Cada porta pode conter contacto inimigo. O sucesso desta missão irá desbloquear acesso direto à inteligência principal da operação.",
             discord.Color.blue(),
             [
-                {"name": "🎯 OBJETIVOS PRINCIPAIS", "value": "▸ Infiltrar estrutura\n▸ Recuperar dispositivo\n▸ Extrair dados em segurança"},
-                {"name": "🔐 CÓDIGO FÍSICO", "value": "O código operacional encontra-se **junto ao dispositivo físico**."},
-                {"name": "⌨️ COMO VALIDAR", "value": VALIDACAO_CODIGO_TEXTO},
-                {"name": "⚠️ CONDIÇÃO ESPECIAL", "value": "O operador que transportar o dispositivo:\n▸ Não pode correr\n▸ Apenas pistola autorizada"}
+                {"name": "🎯 OBJETIVOS", "value": "▸ Localizar os 5 discos rígidos\n▸ Guardar todo o material na caixa segura\n▸ Regressar ao HQ com a caixa intacta\n▸ Identificar o disco verdadeiro", "inline": False},
+                {"name": "⚠️ REGRAS OPERACIONAIS", "value": "▸ O operador da caixa não pode correr\n▸ Caso seja eliminado, a caixa permanece no local\n▸ O conteúdo não pode cair nas mãos inimigas", "inline": False},
+                {"name": "📡 ORDEM", "value": "Movam-se rápido. Mantenham a caixa segura. E não deixem ninguém para trás.", "inline": False}
             ]
         )
     )
@@ -3266,14 +3248,13 @@ async def start_op(ctx):
     await send_team_embed_with_status_last(
         "vermelho",
         tactical_embed(
-            "🔴 MISSÃO 01 — DEAD DROP",
-            "〔 TASK FORCE VERMELHA 〕\n\nForças inimigas tentam recuperar informação crítica dentro do CQB.",
+            "🔴 MISSÃO 01 — INTERCEPT PROTOCOL",
+            "〔 TASK FORCE VERMELHA 〕\n\nForças Azuis iniciaram uma operação de recuperação de inteligência dentro do setor CQB. Interceptámos comunicações que confirmam a existência de uma caixa segura contendo dados altamente sensíveis.\n\nA Azul irá tentar mover-se rapidamente antes que consigamos fechar o perímetro. Não lhes deem tempo. Não lhes deem espaço. Não permitam que a inteligência saia do CQB.",
             discord.Color.red(),
             [
-                {"name": "🎯 OBJETIVOS PRINCIPAIS", "value": "▸ Localizar protocolo de destruição\n▸ Impedir extração inimiga\n▸ Garantir controlo interno do edifício"},
-                {"name": "🔐 CÓDIGO FÍSICO", "value": "O código operacional encontra-se **junto ao protocolo físico**."},
-                {"name": "⌨️ COMO VALIDAR", "value": VALIDACAO_CODIGO_TEXTO},
-                {"name": "📡 INTEL", "value": "Possível infiltração inimiga pelo flanco oeste."}
+                {"name": "🎯 OBJETIVOS", "value": "▸ Localizar forças Azuis\n▸ Intercetar a caixa segura\n▸ Impedir extração inimiga\n▸ Comprometer o conteúdo da caixa", "inline": False},
+                {"name": "⚠️ REGRAS OPERACIONAIS", "value": "▸ A caixa só pode ser comprometida dentro da base Vermelha\n▸ A destruição da inteligência é prioridade máxima", "inline": False},
+                {"name": "📡 ORDEM", "value": "Interceção autorizada.", "inline": False}
             ]
         )
     )
@@ -3365,6 +3346,10 @@ async def codigo(ctx, codigo: str):
             )
 
     team_state["completed_codes"].append(codigo)
+
+    if data.get("branch") and not milsim_state.get("mission_branch"):
+        milsim_state["mission_branch"] = data["branch"]
+
     milsim_state["scores"][team] += data["points"]
 
     await purge_team_status_panels(team)
