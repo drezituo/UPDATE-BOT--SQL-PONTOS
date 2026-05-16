@@ -2242,6 +2242,7 @@ def _remove_mission_status_fields(embed: discord.Embed):
 def build_mission_embed_with_status(team: str, embed: discord.Embed, estado: str = None):
     final_embed = embed.copy()
     _remove_mission_status_fields(final_embed)
+    final_embed = apply_medical_rules_to_embed(final_embed)
 
     team_state = milsim_state["teams"][team]
     if estado is None:
@@ -2844,6 +2845,46 @@ def medical_rules_final_field():
 def apply_medical_rules_to_embed(embed: discord.Embed):
     if not embed:
         return embed
+
+    existing = any(
+        (field.name or "").startswith("⚕️ REGRAS MÉDICAS")
+        for field in getattr(embed, "fields", [])
+    )
+    if existing:
+        return embed
+
+    title_upper = (embed.title or "").upper()
+    desc_upper = (embed.description or "").upper()
+    combined = title_upper + "\n" + desc_upper
+
+    is_mission_embed = (
+        "MISSÃO" in combined
+        or "MISSION" in combined
+        or "TASK FORCE" in combined
+        or "SECURE DRIVES" in combined
+        or "INTERCEPT PROTOCOL" in combined
+        or "DATA TRANSFER" in combined
+        or "SIGNAL BREAK" in combined
+        or "RECOVER FRAGMENTS" in combined
+        or "DENY RECOVERY" in combined
+        or "CONVOY RUN" in combined
+        or "INTERCEPT CONVOY" in combined
+        or "SATCOM" in combined
+        or "AMBUSH RAID" in combined
+        or "CAMP DEFENSE" in combined
+        or "TOTAL DOMINATION" in combined
+    )
+
+    if "SATCOM" in combined:
+        embed.add_field(**medical_rules_satcom_field())
+    elif "MISSÃO SECUNDÁRIA" in combined or "AMBUSH RAID" in combined or "CAMP DEFENSE" in combined:
+        embed.add_field(**medical_rules_secondary_5v5_field())
+    elif "TOTAL DOMINATION" in combined or "MISSÃO FINAL" in combined:
+        embed.add_field(**medical_rules_final_field())
+    elif is_mission_embed:
+        embed.add_field(**medical_rules_standard_field())
+
+    return embed
 
     existing = any(
         (field.name or "").startswith("⚕️ REGRAS MÉDICAS")
