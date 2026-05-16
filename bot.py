@@ -3462,9 +3462,7 @@ async def set_both_teams_to_regroup_after_objective(winning_team: str, mission_n
         winning_team,
         tactical_embed(
             "✅ OBJETIVO CONCLUÍDO — REAGRUPAMENTO OPERACIONAL",
-            "O objetivo foi concluído com sucesso. A unidade deve regressar ao HQ e entrar em descanso operacional.
-
-"
+            "O objetivo foi concluído com sucesso. A unidade deve regressar ao HQ e entrar em descanso operacional.\n\n"
             "Reabasteçam equipamento, confirmem comunicações e preparem-se para a próxima janela de missão.",
             winner_color,
             [
@@ -3481,16 +3479,11 @@ async def set_both_teams_to_regroup_after_objective(winning_team: str, mission_n
         enemy,
         tactical_embed(
             "⚠️ ORDEM DE RETIRADA",
-            "O objetivo inimigo foi confirmado. A janela operacional atual foi encerrada para a vossa unidade.
-
-"
+            "O objetivo inimigo foi confirmado. A janela operacional atual foi encerrada para a vossa unidade.\n\n"
             "Interrompam avanço, regressem imediatamente ao HQ e preparem resposta para a próxima operação.",
             enemy_color,
             [
-                {"name": "📍 ORDEM IMEDIATA", "value": "▸ Retirar do setor
-▸ Regressar à base
-▸ Reorganizar unidade
-▸ Reabastecer equipamento"},
+                {"name": "📍 ORDEM IMEDIATA", "value": "▸ Retirar do setor\n▸ Regressar à base\n▸ Reorganizar unidade\n▸ Reabastecer equipamento"},
                 {"name": "📌 Estado da Missão", "value": "🔵 REAGRUPAMENTO OPERACIONAL"},
                 {"name": "⏱️ Novas Ordens em", "value": f"**{format_time_remaining(enemy)}**"}
             ],
