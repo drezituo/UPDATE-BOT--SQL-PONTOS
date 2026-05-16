@@ -2211,7 +2211,7 @@ def build_operation_status_embed():
 
 def _remove_mission_status_fields(embed: discord.Embed):
     status_field_names = {
-        "⏱️ Tempo Restante",
+        "⏱️ Novas Ordens em",
         "🏆 Score",
         "📌 Estado da Missão",
         "🛌 Descanso Operacional",
@@ -2245,7 +2245,7 @@ def build_mission_embed_with_status(team: str, embed: discord.Embed, estado: str
         if team_state["phase"] == "failed":
             estado = "❌ MISSÃO FRACASSADA"
         elif team_state["phase"] == "regroup":
-            estado = "✅ Objetivo validado / A regressar à base"
+            estado = "🔵 REAGRUPAMENTO OPERACIONAL"
         elif team_state["phase"] == "rest":
             estado = "🛌 Descanso operacional"
         elif team_state["phase"] == "ready":
@@ -2259,7 +2259,7 @@ def build_mission_embed_with_status(team: str, embed: discord.Embed, estado: str
         inline=False
     )
     final_embed.add_field(
-        name="⏱️ Tempo Restante",
+        name="⏱️ Novas Ordens em",
         value=f"**{format_time_remaining(team)}**",
         inline=True
     )
@@ -2290,7 +2290,7 @@ def build_team_status_embed(team: str):
         "Painel automático da operação.",
         color,
         [
-            {"name": "⏱️ Tempo Restante", "value": f"**{format_time_remaining(team)}**", "inline": True},
+            {"name": "⏱️ Novas Ordens em", "value": f"**{format_time_remaining(team)}**", "inline": True},
             {"name": "🏆 Score", "value": f"**{milsim_state['scores'][team]} pts**", "inline": True},
         ],
         footer="COMANDO CENTRAL • STATUS TÁTICO"
@@ -2778,10 +2778,10 @@ MISSION_CODES = {
         "branch": "standard",
         "embed": lambda: tactical_embed(
             "✅ DISCO VERDADEIRO CONFIRMADO",
-            "A caixa segura regressou ao HQ e o disco verdadeiro foi identificado. A inteligência principal ainda está intacta.\n\nA operação avança para envio de dados através do BUNKER.",
+            "A caixa segura regressou ao HQ e o disco verdadeiro foi identificado. A inteligência principal ainda está intacta.\n\nA próxima janela operacional será transmitida quando o tempo da missão terminar.",
             discord.Color.blue(),
             [
-                {"name": "📍 ORDEM", "value": "Reorganizem a unidade e preparem transporte para o próximo objetivo.", "inline": False},
+                {"name": "📍 ORDEM", "value": "Regressem ao HQ, iniciem descanso operacional e preparem-se para novas ordens.", "inline": False},
                 {"name": "🏆 PONTOS", "value": "**+10 pontos atribuídos**", "inline": False}
             ]
         ),
@@ -3454,19 +3454,53 @@ async def set_both_teams_to_regroup_after_objective(winning_team: str, mission_n
         milsim_state["teams"][t]["phase"] = "regroup"
         milsim_state["teams"][t]["regrouped"] = False
 
+    winner_color = discord.Color.blue() if winning_team == "azul" else discord.Color.red()
+    enemy_color = discord.Color.blue() if enemy == "azul" else discord.Color.red()
+
+    # Equipa que concluiu o objetivo: descanso/reagrupamento até ao fim da janela operacional.
     await send_team_embed_with_status_last(
-        enemy,
+        winning_team,
         tactical_embed(
-            "⚠️ ORDEM DE REAGRUPAMENTO",
-            "O objetivo inimigo foi confirmado. A janela operacional atual entra em fase de reorganização.\n\n"
-            "Regressem imediatamente ao HQ, reorganizem a unidade e preparem resposta para a próxima missão.",
-            discord.Color.orange(),
+            "✅ OBJETIVO CONCLUÍDO — REAGRUPAMENTO OPERACIONAL",
+            "O objetivo foi concluído com sucesso. A unidade deve regressar ao HQ e entrar em descanso operacional.
+
+"
+            "Reabasteçam equipamento, confirmem comunicações e preparem-se para a próxima janela de missão.",
+            winner_color,
             [
-                {"name": "📍 ORDEM", "value": "Regressar à base e aguardar novas ordens."},
-                {"name": "⏱️ NOVAS ORDENS EM", "value": f"**{format_time_remaining(enemy)}**"}
+                {"name": "📌 Estado da Missão", "value": "🔵 REAGRUPAMENTO OPERACIONAL"},
+                {"name": "⏱️ Novas Ordens em", "value": f"**{format_time_remaining(winning_team)}**"},
+                {"name": "📍 ORDEM", "value": "Regressar à base, reorganizar unidade e aguardar nova transmissão."}
             ],
             footer="COMANDO CENTRAL • REAGRUPAMENTO OPERACIONAL"
         )
+    )
+
+    # Equipa adversária: ordem de retirada.
+    await send_team_embed_with_status_last(
+        enemy,
+        tactical_embed(
+            "⚠️ ORDEM DE RETIRADA",
+            "O objetivo inimigo foi confirmado. A janela operacional atual foi encerrada para a vossa unidade.
+
+"
+            "Interrompam avanço, regressem imediatamente ao HQ e preparem resposta para a próxima operação.",
+            enemy_color,
+            [
+                {"name": "📍 ORDEM IMEDIATA", "value": "▸ Retirar do setor
+▸ Regressar à base
+▸ Reorganizar unidade
+▸ Reabastecer equipamento"},
+                {"name": "📌 Estado da Missão", "value": "🔵 REAGRUPAMENTO OPERACIONAL"},
+                {"name": "⏱️ Novas Ordens em", "value": f"**{format_time_remaining(enemy)}**"}
+            ],
+            footer="COMANDO CENTRAL • ORDEM DE RETIRADA"
+        )
+    )
+
+    await milsim_log(
+        f"📡 Objetivo concluído por **{winning_team.upper()}**. "
+        f"**{enemy.upper()}** recebeu ordem de retirada. Reagrupamento ativo até ao fim da janela operacional."
     )
 
     await update_status_panel()
