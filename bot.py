@@ -2251,27 +2251,7 @@ def _remove_mission_status_fields(embed: discord.Embed):
         "⏱️ Novas Ordens em",
         "🏆 Score",
         "🛌 Descanso Operacional",
-        "📍 Motivo",
     }
-
-    kept_fields = []
-    for field in embed.fields:
-        if field.name not in status_field_names:
-            kept_fields.append({
-                "name": field.name,
-                "value": field.value,
-                "inline": field.inline
-            })
-
-    embed.clear_fields()
-
-    for field in kept_fields:
-        embed.add_field(
-            name=field["name"],
-            value=field["value"],
-            inline=field["inline"]
-        )
-
 
     kept_fields = []
     for field in embed.fields:
@@ -2420,58 +2400,6 @@ async def refresh_team_status_panel(team: str):
     await purge_team_status_panels(team)
 
 
-def build_inactive_mission_embed(team: str, embed: discord.Embed, reason: str = "Missão encerrada"):
-    final_embed = embed.copy()
-    _remove_mission_status_fields(final_embed)
-
-    final_embed.add_field(
-        name="📌 Estado da Missão",
-        value="⚫ MISSÃO INATIVA",
-        inline=False
-    )
-    final_embed.add_field(
-        name="📍 Motivo",
-        value=reason,
-        inline=False
-    )
-    final_embed.set_footer(text="COMANDO CENTRAL • MISSÃO INATIVA")
-    return final_embed
-
-
-async def archive_team_mission_embed(team: str, reason: str = "Missão encerrada"):
-    channel = milsim_channel_for_team(team)
-
-    current_id = milsim_state.get("mission_message_ids", {}).get(team)
-    previous_id = milsim_state.get("previous_mission_message_ids", {}).get(team)
-
-    candidate_ids = []
-    if previous_id and previous_id != current_id:
-        candidate_ids.append(previous_id)
-    if current_id:
-        candidate_ids.append(current_id)
-
-    if not channel or not candidate_ids:
-        return
-
-    for message_id in candidate_ids:
-        try:
-            msg = await channel.fetch_message(message_id)
-            if msg.embeds:
-                inactive_embed = build_inactive_mission_embed(team, msg.embeds[0], reason)
-                await msg.edit(embed=inactive_embed)
-
-                if message_id == previous_id:
-                    milsim_state.setdefault("previous_mission_message_ids", {})[team] = None
-                return
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-            continue
-
-
-async def archive_all_mission_embeds(reason: str = "Missão encerrada"):
-    await archive_team_mission_embed("azul", reason)
-    await archive_team_mission_embed("vermelho", reason)
-
-
 async def send_team_embed_with_status_last(team: str, embed: discord.Embed, estado: str = None):
     await purge_team_status_panels(team)
 
@@ -2479,13 +2407,8 @@ async def send_team_embed_with_status_last(team: str, embed: discord.Embed, esta
     if not channel:
         return None
 
-    previous_id = milsim_state.get("mission_message_ids", {}).get(team)
-    if previous_id:
-        milsim_state.setdefault("previous_mission_message_ids", {})[team] = previous_id
-
     msg = await channel.send(embed=build_mission_embed_with_status(team, embed, estado))
-    milsim_state.setdefault("mission_message_ids", {})[team] = msg.id
-    await create_team_status_panel(team)
+    milsim_state["mission_message_ids"][team] = msg.id
     return msg
 
 
@@ -2769,10 +2692,7 @@ async def handle_mission_timeout_failsafe(mission_name: str):
         milsim_state["teams"][t]["phase"] = "regroup"
         milsim_state["teams"][t]["regrouped"] = False
 
-    await archive_all_mission_embeds("Objetivo concluído. Missão encerrada.")
-
     await stop_respawn_cycle()
-    await archive_all_mission_embeds("Janela operacional terminou sem objetivo validado.")
 
     embed = tactical_embed(
         "⚠️ FALHA OPERACIONAL — INTEL PERDIDA",
@@ -2911,7 +2831,6 @@ milsim_state = {
         "task": None
     },
     "mission_message_ids": {"azul": None, "vermelho": None},
-    "previous_mission_message_ids": {"azul": None, "vermelho": None},
     "rest_seconds": {"azul": 0, "vermelho": 0},
     "rest_until": {"azul": None, "vermelho": None},
     "rest_ready": {"azul": False, "vermelho": False},
@@ -3307,24 +3226,6 @@ MISSION_CODES = {
             "⚠️ DADOS PARCIALMENTE RECUPERADOS",
             "A Task Force Azul conseguiu reconstruir fragmentos de backup. A inteligência não foi totalmente destruída.",
             discord.Color.red()
-        )
-    },
-
-
-    "HIJACK-515": {
-        "team": "azul",
-        "mission": "mission_3",
-        "points": 15,
-        "type": "complete",
-        "embed": lambda: tactical_embed(
-            "🚛 CONVOY INTERCEPTADO",
-            "A Task Force Azul conseguiu capturar a carga do comboio inimigo e regressar com o material operacional.\n\n"
-            "A logística Vermelha foi comprometida.",
-            discord.Color.blue(),
-            [
-                {"name": "📍 ORDEM", "value": "Regressar ao HQ, proteger a carga recuperada e aguardar novas ordens.", "inline": False},
-                {"name": "🏆 PONTOS", "value": "+15 pontos atribuídos", "inline": False}
-            ]
         )
     },
 
@@ -3959,7 +3860,6 @@ async def start_op(ctx):
         "task": None
     }
     milsim_state["mission_message_ids"] = {"azul": None, "vermelho": None}
-    milsim_state["previous_mission_message_ids"] = {"azul": None, "vermelho": None}
     milsim_state["rest_seconds"] = {"azul": 0, "vermelho": 0}
     milsim_state["rest_until"] = {"azul": None, "vermelho": None}
     milsim_state["rest_ready"] = {"azul": False, "vermelho": False}
@@ -4175,12 +4075,6 @@ async def set_both_teams_to_regroup_after_objective(winning_team: str, mission_n
             "enemy_title": "RECUPERAÇÃO AZUL CONFIRMADA",
             "enemy_reason": "A Task Force Azul conseguiu reconstruir os fragmentos de backup."
         },
-        "HIJACK-515": {
-            "winner_title": "CONVOY INTERCEPTADO",
-            "winner_reason": "A carga inimiga foi capturada pela Task Force Azul e retirada para o HQ com sucesso.",
-            "enemy_title": "CONVOY PERDIDO",
-            "enemy_reason": "A Task Force Azul intercetou o transporte e capturou a carga operacional."
-        },
         "GHOST-802": {
             "winner_title": "CARGA DEPOSITADA",
             "winner_reason": "A carga inimiga foi intercetada e depositada com sucesso no ponto indicado.",
@@ -4235,11 +4129,11 @@ async def set_both_teams_to_regroup_after_objective(winning_team: str, mission_n
         winning_team,
         tactical_embed(
             "✅ OBJETIVO CONCLUÍDO — REAGRUPAMENTO OPERACIONAL",
-            "A unidade deve regressar ao HQ e entrar em descanso operacional.\n\n"
+            "A unidade deve regressar ao HQ e entrar em descanso operacional.\\n\\n"
             "Reabasteçam equipamento, confirmem comunicações e preparem-se para a próxima janela de missão.",
             winner_color,
             [
-                {"name": "📌 Motivo", "value": f"**{winner_title}**\n{winner_reason}", "inline": False},
+                {"name": "📌 Motivo", "value": f"**{winner_title}**\\n{winner_reason}", "inline": False},
                 {"name": "📍 Ordem", "value": "Regressar à base, reorganizar unidade e aguardar nova transmissão.", "inline": False},
                 {"name": "📌 Estado da Missão", "value": "🔵 REAGRUPAMENTO OPERACIONAL", "inline": False},
                 {"name": "⏱️ Novas Ordens em", "value": f"**{format_time_remaining(winning_team)}**", "inline": True}
@@ -4252,12 +4146,12 @@ async def set_both_teams_to_regroup_after_objective(winning_team: str, mission_n
         enemy,
         tactical_embed(
             "⚠️ ORDEM DE RETIRADA",
-            "Retirada imediata autorizada. A missão atual foi encerrada para a vossa unidade.\n\n"
+            "Retirada imediata autorizada. A missão atual foi encerrada para a vossa unidade.\\n\\n"
             "Regressem ao HQ, reorganizem a equipa e preparem-se para novas ordens.",
             enemy_color,
             [
-                {"name": "📌 Motivo", "value": f"**{enemy_title}**\n{enemy_reason}", "inline": False},
-                {"name": "📍 Ordem Imediata", "value": "▸ Retirar do setor\n▸ Regressar à base\n▸ Reorganizar unidade\n▸ Reabastecer equipamento", "inline": False},
+                {"name": "📌 Motivo", "value": f"**{enemy_title}**\\n{enemy_reason}", "inline": False},
+                {"name": "📍 Ordem Imediata", "value": "▸ Retirar do setor\\n▸ Regressar à base\\n▸ Reorganizar unidade\\n▸ Reabastecer equipamento", "inline": False},
                 {"name": "📌 Estado da Missão", "value": "🔵 REAGRUPAMENTO OPERACIONAL", "inline": False},
                 {"name": "⏱️ Novas Ordens em", "value": f"**{format_time_remaining(enemy)}**", "inline": True}
             ],
@@ -4385,7 +4279,6 @@ async def limpardados(ctx):
     milsim_state["captured_players"] = []
     milsim_state["decryption"] = {"active": False, "cancelled": False, "team": None, "mission": None}
     milsim_state["mission_message_ids"] = {"azul": None, "vermelho": None}
-    milsim_state["previous_mission_message_ids"] = {"azul": None, "vermelho": None}
     milsim_state["team_status_panel_message_ids"] = {"azul": None, "vermelho": None}
     milsim_state["respawn"] = {
         "active": False,
