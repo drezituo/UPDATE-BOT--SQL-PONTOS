@@ -3528,6 +3528,39 @@ async def advance_milsim_phase(old_mission: str):
     await update_status_panel()
 
 
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def limpardados(ctx):
+
+    milsim_state["scores"] = {
+        "azul": 0,
+        "vermelho": 0
+    }
+
+    milsim_state["teams"] = {
+        "azul": {
+            "current": "mission_1",
+            "phase": "mission",
+            "regrouped": False
+        },
+        "vermelho": {
+            "current": "mission_1",
+            "phase": "mission",
+            "regrouped": False
+        }
+    }
+
+    milsim_state["active"] = False
+    milsim_state["mission_end_times"] = {
+        "azul": None,
+        "vermelho": None
+    }
+
+    await ctx.send("✅ Dados MILSIM limpos com sucesso.")
+
+
 @bot.command()
 async def reagrupado(ctx):
     team = milsim_team_from_channel(ctx.channel.id)
