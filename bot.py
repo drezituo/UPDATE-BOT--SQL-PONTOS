@@ -4,6 +4,7 @@ import asyncio
 import asyncio
 import psycopg2
 import os
+import random
 from datetime import datetime, timezone, timedelta
 
 # ---------- CONFIG ----------
@@ -2152,6 +2153,10 @@ GM_ROLE_ID = 1504602388496121928
 RESPAWN_INTERVAL_SECONDS = 300  # 5 minutos
 RESPAWN_OPEN_SECONDS = 5        # janela verde de respawn
 TIMEOUT_REFILL_SECONDS = 300   # 5 minutos para reagrupamento/refill quando missão expira
+SATCOM_HACK_SECONDS = 600      # 10 minutos de hack SATCOM
+SATCOM_TEAM_SIZE = 5
+SATCOM_SECONDARY_DELAY = 180  # 3 minutos até ativar missão secundária
+SATCOM_SECONDARY_SECONDS = 900  # 15 minutos para missão secundária do acampamento
 
 # ---------- CÓDIGOS DE OPERADOR / CAPTURA ----------
 AZUL_OPERATOR_CODES = {
@@ -2295,45 +2300,38 @@ def _remove_mission_status_fields(embed: discord.Embed):
 def build_mission_embed_with_status(team: str, embed: discord.Embed, estado: str = None):
     final_embed = embed.copy()
     _remove_mission_status_fields(final_embed)
-    final_embed = apply_medical_rules_to_embed(final_embed)
 
-    team_state = milsim_state["teams"][team]
-    if estado is None:
-        if team_state["phase"] == "failed":
-            estado = "❌ MISSÃO FRACASSADA"
-        elif team_state["phase"] == "regroup":
-            estado = "🔵 REAGRUPAMENTO OPERACIONAL"
-        elif team_state["phase"] == "rest":
-            estado = "🛌 Descanso operacional"
-        elif team_state["phase"] == "ready":
-            estado = "✅ Unidade pronta / Aguardando ambas as equipas"
-        else:
-            estado = "🟢 Em curso"
+    phase = milsim_state["teams"][team].get("phase", "mission")
 
-    final_embed.add_field(
-        name="📌 Estado da Missão",
-        value=estado,
-        inline=False
-    )
-    timer_label = "⏱️ Novas Ordens em" if team_state.get("phase") in ("regroup", "rest", "ready") else "⏱️ Tempo Restante"
-
-    final_embed.add_field(
-        name=timer_label,
-        value=f"**{format_time_remaining(team)}**",
-        inline=True
-    )
-    final_embed.add_field(
-        name="🏆 Score",
-        value=f"**{milsim_state['scores'][team]} pts**",
-        inline=True
-    )
-
-    rest_until = milsim_state.get("rest_until", {}).get(team)
-    if rest_until and datetime.now(timezone.utc) < rest_until:
+    if phase == "mission":
         final_embed.add_field(
-            name="🛌 Descanso Operacional",
-            value=f"Novas ordens <t:{int(rest_until.timestamp())}:R>",
+            name="📌 Estado da Missão",
+            value="🟢 EM CURSO",
             inline=False
+        )
+        final_embed.add_field(
+            name="⏱️ Tempo Restante",
+            value=f"**{format_time_remaining(team)}**",
+            inline=True
+        )
+
+    elif phase == "regroup":
+        final_embed.add_field(
+            name="📌 Estado da Missão",
+            value="🔵 REAGRUPAMENTO / REFILL",
+            inline=False
+        )
+        final_embed.add_field(
+            name="⏱️ Novas Ordens em",
+            value=f"**{format_time_remaining(team)}**",
+            inline=True
+        )
+
+    if estado:
+        final_embed.add_field(
+            name="🏆 Score",
+            value=estado,
+            inline=True
         )
 
     return final_embed
@@ -2782,12 +2780,9 @@ async def handle_mission_timeout_failsafe(mission_name: str):
             "⚠️ FALHA OPERACIONAL — INTEL PERDIDA",
             "Nenhuma Task Force conseguiu assegurar a caixa segura antes do encerramento da janela operacional.\n\n"
             "Durante a retirada das unidades, parte da inteligência foi destruída e fragmentada no terreno.\n\n"
-            "O COMANDO confirmou sinais de atividade nos setores:\n"
-            "〔 BUNKER 〕\n"
-            "〔 CQB 〕\n"
-            "〔 ACAMPAMENTO 〕\n\n"
-            "A próxima operação será focada na recuperação parcial da inteligência.\n\n"
-            "Antes da nova operação, todas as unidades têm autorização para reagrupamento, refill e reorganização.",
+            "Parte da inteligência operacional foi perdida durante a retirada das unidades.\n\n"
+            "O COMANDO CENTRAL está a reorganizar a operação e novas ordens serão transmitidas após o reagrupamento.\n\n"
+            "Antes da próxima transmissão, todas as unidades têm autorização para reagrupamento, refill e reorganização.",
             color,
             [
                 {"name": "📌 Resultado", "value": "Nenhuma equipa concluiu o objetivo principal da Missão 1.", "inline": False},
@@ -2868,12 +2863,11 @@ async def mission_timer(team: str, mission_name: str):
 
         # Aviso automático a 2 minutos do fim da janela operacional, se a equipa já estiver em reagrupamento.
         if (
-            milsim_state["teams"][team].get("phase") == "regroup"
-            and not milsim_state.get("regroup_notice_sent", {}).get(team, False)
+            team == "azul"
+            and milsim_state["teams"][team].get("phase") == "regroup"
             and timedelta(seconds=0) < remaining <= timedelta(minutes=2)
         ):
-            milsim_state["regroup_notice_sent"][team] = True
-            await send_regroup_two_minute_notice(team)
+            await broadcast_two_minute_regroup_notice()
 
         await update_status_panel()
 
@@ -2974,7 +2968,21 @@ milsim_state = {
         }
     },
     "captured_players": [],
-    "mission_branch": None
+    "mission_branch": None,
+    "satcom": {
+        "hack_active": False,
+        "hack_completed": False,
+        "hack_cancelled": False,
+        "hack_end_time": None,
+        "hack_task": None,
+        "secondary_active": False,
+        "secondary_completed": False,
+        "secondary_winner": None,
+        "secondary_end_time": None,
+        "secondary_task": None,
+        "selected": {"azul": [], "vermelho": []},
+        "secondary": {"azul": [], "vermelho": []}
+    }
 }
 
 
@@ -3238,6 +3246,268 @@ def apply_medical_rules_to_embed(embed: discord.Embed):
 
 
 
+
+def select_satcom_operators():
+    azul_codes = list(AZUL_OPERATOR_CODES.keys())
+    vermelho_codes = list(VERMELHO_OPERATOR_CODES.keys())
+    azul_satcom = random.sample(azul_codes, min(SATCOM_TEAM_SIZE, len(azul_codes)))
+    vermelho_satcom = random.sample(vermelho_codes, min(SATCOM_TEAM_SIZE, len(vermelho_codes)))
+    milsim_state["satcom"]["selected"] = {"azul": azul_satcom, "vermelho": vermelho_satcom}
+    milsim_state["satcom"]["secondary"] = {
+        "azul": [c for c in azul_codes if c not in azul_satcom],
+        "vermelho": [c for c in vermelho_codes if c not in vermelho_satcom],
+    }
+
+
+def format_operator_list(codes, team):
+    source = AZUL_OPERATOR_CODES if team == "azul" else VERMELHO_OPERATOR_CODES
+    return "\n".join([f"▸ `{code}` — {source.get(code, 'OPERADOR')}" for code in codes]) if codes else "Sem operadores definidos."
+
+
+def build_satcom_interference_embed():
+    selected = milsim_state["satcom"]["selected"]["azul"]
+    secondary = milsim_state["satcom"]["secondary"]["azul"]
+    return tactical_embed(
+        "⚠️ INTERFERÊNCIAS DETETADAS",
+        "〔 TASK FORCE AZUL 〕\n\nO COMANDO CENTRAL detetou atividade eletrónica anormal nas comunicações da operação.\n\nA origem ainda não foi confirmada. A unidade deve manter-se em prontidão até nova ordem.",
+        discord.Color.blue(),
+        [
+            {"name": "👥 EQUIPA DE RESPOSTA SATCOM", "value": format_operator_list(selected, "azul"), "inline": False},
+            {"name": "📦 EQUIPA SECUNDÁRIA", "value": format_operator_list(secondary, "azul"), "inline": False},
+            {"name": "📍 ORDEM", "value": "Os operadores SATCOM aguardam autorização de saída. Os restantes operadores ficam destacados para missão secundária.", "inline": False},
+        ],
+        footer="COMANDO CENTRAL • ALERTA DE INTERFERÊNCIAS",
+    )
+
+
+def build_satcom_red_initial_embed():
+    selected = milsim_state["satcom"]["selected"]["vermelho"]
+    secondary = milsim_state["satcom"]["secondary"]["vermelho"]
+    return tactical_embed(
+        "🔴 MISSÃO 04 — SATCOM BREACH",
+        "〔 TASK FORCE VERMELHA 〕\n\nUma estação SATCOM clandestina foi localizada no terreno. Pode ser usada para comprometer as comunicações da Task Force Azul.\n\nApenas os operadores destacados estão autorizados a avançar para o terminal SATCOM.",
+        discord.Color.red(),
+        [
+            {"name": "👥 OPERADORES SATCOM DESTACADOS", "value": format_operator_list(selected, "vermelho"), "inline": False},
+            {"name": "📦 OPERADORES SECUNDÁRIOS", "value": format_operator_list(secondary, "vermelho"), "inline": False},
+            {"name": "🎯 OBJETIVO", "value": "▸ Infiltrar terminal SATCOM\n▸ Iniciar hack com o código físico\n▸ Após início, defender posição durante 10 minutos", "inline": False},
+            {"name": "⚠️ REGRA CRÍTICA", "value": "A missão SATCOM só termina se o hack completar por tempo ou se a Azul cancelar o hack. Sem respawn. Operadores SATCOM não podem interferir na secundária.", "inline": False},
+        ],
+        footer="COMANDO CENTRAL • OPERAÇÃO SATCOM 5x5",
+    )
+
+
+def build_satcom_blue_active_embed():
+    selected = milsim_state["satcom"]["selected"]["azul"]
+    return tactical_embed(
+        "🚨 SATCOM COMPROMETIDO",
+        "〔 TASK FORCE AZUL 〕\n\nO inimigo iniciou um hack ativo contra a rede SATCOM. A origem das interferências foi confirmada.\n\nApenas a equipa SATCOM destacada está autorizada a sair da base para localizar o terminal e interromper a sequência antes da conclusão.",
+        discord.Color.blue(),
+        [
+            {"name": "👥 OPERADORES AUTORIZADOS", "value": format_operator_list(selected, "azul"), "inline": False},
+            {"name": "🎯 OBJETIVO", "value": "▸ Localizar terminal SATCOM\n▸ Romper defesa inimiga\n▸ Validar cancelamento do hack com o código físico", "inline": False},
+            {"name": "⚠️ CONDIÇÃO DE FIM", "value": "A missão termina apenas se a Azul cancelar o hack ou se o timer do hack chegar a 00:00. Sem respawn. Operadores SATCOM não podem interferir na secundária.", "inline": False},
+        ],
+        footer="COMANDO CENTRAL • SATCOM EM RISCO",
+    )
+
+
+async def start_satcom_hack():
+    satcom = milsim_state["satcom"]
+    if satcom.get("hack_active"):
+        return
+    satcom["hack_active"] = True
+    satcom["hack_completed"] = False
+    satcom["hack_cancelled"] = False
+    satcom["hack_end_time"] = datetime.now(timezone.utc) + timedelta(seconds=SATCOM_HACK_SECONDS)
+    for t in ["azul", "vermelho"]:
+        milsim_state["mission_end_times"][t] = satcom["hack_end_time"]
+        milsim_state["teams"][t]["phase"] = "mission"
+
+    await send_team_embed_with_status_last(
+        "vermelho",
+        tactical_embed(
+            "📡 HACK SATCOM INICIADO",
+            "A sequência de intrusão SATCOM está ativa.\n\nA equipa destacada deve manter controlo da posição durante 10 minutos. O terminal não pode ser abandonado.",
+            discord.Color.red(),
+            [
+                {"name": "👥 OPERADORES SATCOM", "value": format_operator_list(satcom["selected"]["vermelho"], "vermelho"), "inline": False},
+                {"name": "🎯 ORDEM", "value": "Defender terminal até o hack terminar.", "inline": False},
+                {"name": "⚠️ CONDIÇÃO DE FIM", "value": "A missão termina por tempo ou se a Azul cancelar o hack. Sem respawn. Operadores SATCOM não podem interferir na secundária.", "inline": False},
+            ],
+            footer="COMANDO CENTRAL • HACK EM CURSO",
+        ),
+    )
+    await send_team_embed_with_status_last("azul", build_satcom_blue_active_embed())
+    satcom["hack_task"] = asyncio.create_task(satcom_hack_timer())
+    asyncio.create_task(activate_satcom_secondary_missions())
+    await milsim_log("📡 Hack SATCOM iniciado por BLACK-916. Timer de 10 minutos ativo.")
+    await update_status_panel()
+
+
+
+async def activate_satcom_secondary_missions():
+    await asyncio.sleep(SATCOM_SECONDARY_DELAY)
+
+    if not milsim_state.get("active"):
+        return
+
+    satcom = milsim_state.get("satcom", {})
+    if not satcom.get("hack_active"):
+        return
+
+    satcom["secondary_active"] = True
+    satcom["secondary_completed"] = False
+    satcom["secondary_winner"] = None
+    satcom["secondary_end_time"] = datetime.now(timezone.utc) + timedelta(seconds=SATCOM_SECONDARY_SECONDS)
+
+    for t in ["azul", "vermelho"]:
+        secondary = satcom.get("secondary", {}).get(t, [])
+        color = discord.Color.blue() if t == "azul" else discord.Color.red()
+
+        if t == "azul":
+            title = "📦 MISSÃO SECUNDÁRIA — EMBOSCADA AO ACAMPAMENTO"
+            desc = (
+                "〔 TASK FORCE AZUL 〕\\n\\n"
+                "A caixa de suprimentos Vermelha foi localizada no acampamento inimigo.\\n\\n"
+                "A equipa secundária Azul tem autorização para iniciar uma emboscada, capturar a caixa e extrair até à base Azul."
+            )
+            objective = (
+                "▸ Emboscar acampamento Vermelho\\n"
+                "▸ Capturar caixa de suprimentos\\n"
+                "▸ Extrair a caixa até à base Azul\\n"
+                "▸ Validar `CACHE-777` antes dos 15 minutos"
+            )
+            win_condition = "A Azul vence a missão secundária apenas se validar `CACHE-777` na base Azul."
+        else:
+            title = "📦 MISSÃO SECUNDÁRIA — DEFESA DO ACAMPAMENTO"
+            desc = (
+                "〔 TASK FORCE VERMELHA 〕\\n\\n"
+                "A caixa de suprimentos está armazenada no acampamento.\\n\\n"
+                "A equipa secundária Vermelha deve defender a área e impedir a extração da caixa pela Task Force Azul."
+            )
+            objective = (
+                "▸ Defender acampamento\\n"
+                "▸ Proteger caixa de suprimentos\\n"
+                "▸ Impedir captura e extração inimiga\\n"
+                "▸ Resistir durante 15 minutos"
+            )
+            win_condition = "A Vermelha vence se a Azul não validar `CACHE-777` antes do fim do tempo."
+
+        await send_team_embed_with_status_last(
+            t,
+            tactical_embed(
+                title,
+                desc,
+                color,
+                [
+                    {"name": "👥 OPERADORES SECUNDÁRIOS", "value": format_operator_list(secondary, t), "inline": False},
+                    {"name": "🎯 OBJETIVO", "value": objective, "inline": False},
+                    {"name": "⏱️ TEMPO", "value": "**15 minutos**", "inline": True},
+                    {"name": "⚠️ MORTE SÚBITA", "value": "Após atendimento médico, se o operador voltar a ser eliminado, fica fora até à próxima missão. Sem respawn.", "inline": False},
+                    {"name": "🚫 RESTRIÇÃO", "value": "Operadores da secundária não podem interferir na SATCOM. Operadores SATCOM não podem interferir na secundária.", "inline": False},
+                    {"name": "🏁 CONDIÇÃO DE VITÓRIA", "value": win_condition, "inline": False},
+                ],
+                footer="COMANDO CENTRAL • MISSÃO SECUNDÁRIA 5x5"
+            )
+        )
+
+    satcom["secondary_task"] = asyncio.create_task(satcom_secondary_timer())
+
+    await milsim_log("📦 Missão secundária do acampamento ativada após 3 minutos. Timer de 15 minutos iniciado.")
+
+
+async def satcom_secondary_timer():
+    while milsim_state.get("active"):
+        satcom = milsim_state.get("satcom", {})
+        if not satcom.get("secondary_active") or satcom.get("secondary_completed"):
+            return
+
+        end_time = satcom.get("secondary_end_time")
+        if not end_time:
+            return
+
+        remaining = end_time - datetime.now(timezone.utc)
+        if remaining.total_seconds() <= 0:
+            break
+
+        await update_status_panel()
+        await asyncio.sleep(min(5, max(1, int(remaining.total_seconds()))))
+
+    satcom = milsim_state.get("satcom", {})
+    if not satcom.get("secondary_active") or satcom.get("secondary_completed"):
+        return
+
+    satcom["secondary_active"] = False
+    satcom["secondary_completed"] = True
+    satcom["secondary_winner"] = "vermelho"
+    milsim_state["scores"]["vermelho"] += 10
+
+    await milsim_send_to_team(
+        "vermelho",
+        embed=tactical_embed(
+            "📦 SECUNDÁRIA CONCLUÍDA — ACAMPAMENTO DEFENDIDO",
+            "A Task Force Azul não conseguiu capturar e registar a caixa de suprimentos dentro dos 15 minutos.",
+            discord.Color.red(),
+            [
+                {"name": "🏆 Resultado", "value": "Vitória secundária Vermelha", "inline": False},
+                {"name": "🏆 Pontos", "value": "**+10 pontos atribuídos**", "inline": True}
+            ],
+            footer="COMANDO CENTRAL • RESULTADO SECUNDÁRIO"
+        )
+    )
+
+    await milsim_send_to_team(
+        "azul",
+        embed=tactical_embed(
+            "📦 SECUNDÁRIA FALHADA — EXTRAÇÃO NÃO CONFIRMADA",
+            "A caixa de suprimentos não foi registada na base Azul dentro do tempo limite.",
+            discord.Color.blue(),
+            [
+                {"name": "📍 Ordem", "value": "Operadores secundários regressam à base e aguardam próxima janela operacional.", "inline": False}
+            ],
+            footer="COMANDO CENTRAL • RESULTADO SECUNDÁRIO"
+        )
+    )
+
+    await milsim_log("📦 Missão secundária terminou por tempo. Vermelho venceu defesa do acampamento. +10 pontos.")
+    await update_status_panel()
+
+
+async def satcom_hack_timer():
+    while milsim_state.get("active"):
+        satcom = milsim_state["satcom"]
+        if not satcom.get("hack_active") or satcom.get("hack_cancelled"):
+            return
+        remaining = satcom["hack_end_time"] - datetime.now(timezone.utc)
+        if remaining.total_seconds() <= 0:
+            break
+        await update_status_panel()
+        await asyncio.sleep(min(5, max(1, int(remaining.total_seconds()))))
+
+    satcom = milsim_state["satcom"]
+    if not satcom.get("hack_active") or satcom.get("hack_cancelled"):
+        return
+    satcom["hack_active"] = False
+    satcom["hack_completed"] = True
+    milsim_state["scores"]["vermelho"] += 20
+    await set_both_teams_to_regroup_after_objective("vermelho", "mission_4", "BLACK-916")
+
+
+async def cancel_satcom_hack():
+    satcom = milsim_state["satcom"]
+    if not satcom.get("hack_active"):
+        return False
+    satcom["hack_active"] = False
+    satcom["hack_cancelled"] = True
+    task = satcom.get("hack_task")
+    if task and not task.done():
+        task.cancel()
+    milsim_state["scores"]["azul"] += 20
+    await set_both_teams_to_regroup_after_objective("azul", "mission_4", "OMEGA-440")
+    return True
+
+
 MISSION_CODES = {
     "SHADOW-214": {
         "team": "azul",
@@ -3420,8 +3690,8 @@ MISSION_CODES = {
     "BLACK-916": {
         "team": "vermelho",
         "mission": "mission_4",
-        "points": 20,
-        "type": "complete",
+        "points": 0,
+        "type": "satcom_start",
         "embed": lambda: tactical_embed(
             "📡 HACK SATCOM INICIADO",
             "A estação SATCOM foi ativada e a sequência de intrusão começou.\n\nDefendam o terminal. A partir deste momento, a Azul irá tentar localizar a origem das interferências.",
@@ -3446,8 +3716,8 @@ MISSION_CODES = {
     "OMEGA-440": {
         "team": "azul",
         "mission": "mission_4",
-        "points": 20,
-        "type": "complete",
+        "points": 0,
+        "type": "satcom_cancel",
         "embed": lambda: tactical_embed(
             "✅ HACK CANCELADO",
             "A equipa de resposta localizou a estação SATCOM e interrompeu a sequência de intrusão.\n\nAs comunicações Azul foram preservadas.",
@@ -3468,7 +3738,7 @@ MISSION_CODES = {
         "team": "azul",
         "mission": "mission_4",
         "points": 10,
-        "type": "complete",
+        "type": "secondary",
         "embed": lambda: tactical_embed(
             "📦 SUPPLY CACHE RECUPERADA",
             "A equipa Azul executou a emboscada e extraiu recursos do acampamento avançado inimigo.",
@@ -4136,6 +4406,24 @@ async def codigo(ctx, codigo: str):
                 "⚠️ Ainda faltam checkpoints obrigatórios antes do código final."
             )
 
+    if codigo == "BLACK-916":
+        if team != "vermelho":
+            return await ctx.send("❌ Apenas a Task Force Vermelha pode iniciar o hack SATCOM.", delete_after=10)
+        if milsim_state.get("satcom", {}).get("hack_active"):
+            return await ctx.send("⚠️ O hack SATCOM já está em curso.", delete_after=10)
+        team_state["completed_codes"].append(codigo)
+        await start_satcom_hack()
+        return
+
+    if codigo == "OMEGA-440":
+        if team != "azul":
+            return await ctx.send("❌ Apenas a Task Force Azul pode cancelar o hack SATCOM.", delete_after=10)
+        if not milsim_state.get("satcom", {}).get("hack_active"):
+            return await ctx.send("⚠️ Ainda não existe hack SATCOM ativo para cancelar.", delete_after=10)
+        team_state["completed_codes"].append(codigo)
+        await cancel_satcom_hack()
+        return
+
     team_state["completed_codes"].append(codigo)
 
     if data.get("branch") and not milsim_state.get("mission_branch"):
@@ -4166,6 +4454,61 @@ async def codigo(ctx, codigo: str):
 
     if data["type"] == "decryption":
         asyncio.create_task(milsim_start_decryption(team))
+        return
+
+    if codigo == "CACHE-777":
+        if team != "azul":
+            return await ctx.send("❌ Apenas a Task Force Azul pode validar a captura da caixa.", delete_after=10)
+
+        satcom = milsim_state.get("satcom", {})
+        if not satcom.get("secondary_active"):
+            return await ctx.send("⚠️ A missão secundária ainda não está ativa ou já terminou.", delete_after=10)
+
+        satcom["secondary_active"] = False
+        satcom["secondary_completed"] = True
+        satcom["secondary_winner"] = "azul"
+
+        task = satcom.get("secondary_task")
+        if task and not task.done():
+            task.cancel()
+
+        team_state["completed_codes"].append(codigo)
+        milsim_state["scores"]["azul"] += 10
+
+        await milsim_send_to_team(
+            "azul",
+            embed=tactical_embed(
+                "📦 SECUNDÁRIA CONCLUÍDA — CAIXA EXTRAÍDA",
+                "A caixa de suprimentos Vermelha foi capturada, extraída e registada com sucesso na base Azul.",
+                discord.Color.blue(),
+                [
+                    {"name": "🏆 Resultado", "value": "Vitória secundária Azul", "inline": False},
+                    {"name": "🏆 Pontos", "value": "**+10 pontos atribuídos**", "inline": True}
+                ],
+                footer="COMANDO CENTRAL • RESULTADO SECUNDÁRIO"
+            )
+        )
+
+        await milsim_send_to_team(
+            "vermelho",
+            embed=tactical_embed(
+                "📦 ACAMPAMENTO COMPROMETIDO",
+                "A Task Force Azul capturou a caixa de suprimentos e validou a extração na base Azul.",
+                discord.Color.red(),
+                [
+                    {"name": "📍 Ordem", "value": "Operadores secundários regressam à base e aguardam próxima janela operacional.", "inline": False}
+                ],
+                footer="COMANDO CENTRAL • RESULTADO SECUNDÁRIO"
+            )
+        )
+
+        await milsim_log("📦 CACHE-777 validado pela Azul. Missão secundária vencida pela Azul. +10 pontos.")
+        await update_status_panel()
+        return
+
+    if data["type"] == "secondary":
+        await milsim_log(f"📦 Objetivo secundário `{codigo}` validado por **{team.upper()}**.")
+        await update_status_panel()
         return
 
     if data["type"] == "end":
@@ -4334,7 +4677,15 @@ async def advance_milsim_phase(old_mission: str):
 
         await purge_team_status_panels(t)
 
-        if old_mission == "mission_1" and milsim_state.get("mission_branch") == "compromised":
+        if old_mission == "mission_3":
+            if not milsim_state.get("satcom", {}).get("selected", {}).get("azul"):
+                select_satcom_operators()
+            if t == "vermelho":
+                await milsim_send_to_team(t, embed=build_satcom_red_initial_embed())
+            else:
+                await milsim_send_to_team(t, embed=build_satcom_interference_embed())
+
+        elif old_mission == "mission_1" and milsim_state.get("mission_branch") == "compromised":
             alt_mission = globals().get("NEXT_MISSIONS_ALT", {}).get("mission_1_compromised", {})
             if t in alt_mission:
                 await milsim_send_to_team(t, embed=alt_mission[t]())
