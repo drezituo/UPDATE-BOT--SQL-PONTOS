@@ -2941,6 +2941,71 @@ def apply_medical_rules_to_embed(embed: discord.Embed):
     desc_upper = (embed.description or "").upper()
     combined = title_upper + "\n" + desc_upper
 
+    # Nunca aplicar regras médicas em embeds que não são briefings de missão.
+    blocked_keywords = [
+        "REAGRUPAMENTO OPERACIONAL",
+        "ORDEM DE RETIRADA",
+        "OBJETIVO CONCLUÍDO",
+        "DESCANSO OPERACIONAL",
+        "ALERTA OPERACIONAL",
+        "NOVAS ORDENS",
+        "RESSURGIMENTO",
+        "PAINEL",
+        "OPERADOR CAPTURADO",
+        "OPERADOR COMPROMETIDO",
+        "FALHA OPERACIONAL",
+        "MISSÃO FRACASSADA"
+    ]
+
+    if any(keyword in combined for keyword in blocked_keywords):
+        return embed
+
+    existing = any(
+        (field.name or "").startswith("⚕️ REGRAS MÉDICAS")
+        for field in getattr(embed, "fields", [])
+    )
+    if existing:
+        return embed
+
+    is_mission_embed = (
+        "MISSÃO 01" in combined
+        or "MISSÃO 02" in combined
+        or "MISSÃO 03" in combined
+        or "MISSÃO 04" in combined
+        or "MISSÃO FINAL" in combined
+        or "MISSÃO SECUNDÁRIA" in combined
+        or "SECURE DRIVES" in combined
+        or "INTERCEPT PROTOCOL" in combined
+        or "DATA TRANSFER" in combined
+        or "SIGNAL BREAK" in combined
+        or "RECOVER FRAGMENTS" in combined
+        or "DENY RECOVERY" in combined
+        or "CONVOY RUN" in combined
+        or "INTERCEPT CONVOY" in combined
+        or "SATCOM DOMINATION" in combined
+        or "AMBUSH RAID" in combined
+        or "CAMP DEFENSE" in combined
+        or "TOTAL DOMINATION" in combined
+    )
+
+    if not is_mission_embed:
+        return embed
+
+    if "SATCOM DOMINATION" in combined:
+        embed.add_field(**medical_rules_satcom_field())
+    elif "MISSÃO SECUNDÁRIA" in combined or "AMBUSH RAID" in combined or "CAMP DEFENSE" in combined:
+        embed.add_field(**medical_rules_secondary_5v5_field())
+    elif "TOTAL DOMINATION" in combined or "MISSÃO FINAL" in combined:
+        embed.add_field(**medical_rules_final_field())
+    else:
+        embed.add_field(**medical_rules_standard_field())
+
+    return embed
+
+    title_upper = (embed.title or "").upper()
+    desc_upper = (embed.description or "").upper()
+    combined = title_upper + "\n" + desc_upper
+
     # Nunca aplicar regras médicas em embeds de reagrupamento/retirada.
     blocked_keywords = [
         "REAGRUPAMENTO OPERACIONAL",
