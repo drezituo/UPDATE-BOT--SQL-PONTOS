@@ -3310,6 +3310,24 @@ MISSION_CODES = {
         )
     },
 
+
+    "HIJACK-515": {
+        "team": "azul",
+        "mission": "mission_3",
+        "points": 15,
+        "type": "complete",
+        "embed": lambda: tactical_embed(
+            "🚛 CONVOY INTERCEPTADO",
+            "A Task Force Azul conseguiu capturar a carga do comboio inimigo e regressar com o material operacional.\n\n"
+            "A logística Vermelha foi comprometida.",
+            discord.Color.blue(),
+            [
+                {"name": "📍 ORDEM", "value": "Regressar ao HQ, proteger a carga recuperada e aguardar novas ordens.", "inline": False},
+                {"name": "🏆 PONTOS", "value": "+15 pontos atribuídos", "inline": False}
+            ]
+        )
+    },
+
     "RED-CP1": {"team": "vermelho", "mission": "mission_3", "points": 0, "type": "checkpoint", "step": 1, "embed": lambda: tactical_embed("✅ CHECKPOINT 1 VALIDADO", "A carga passou pelo primeiro ponto da rota obrigatória.", discord.Color.red(), [{"name": "➡️ PRÓXIMO PASSO", "value": "Avancem para o checkpoint seguinte.", "inline": False}])},
     "RED-CP2": {"team": "vermelho", "mission": "mission_3", "points": 0, "type": "checkpoint", "step": 2, "embed": lambda: tactical_embed("✅ CHECKPOINT 2 VALIDADO", "A carga continua em movimento. A pressão inimiga deverá aumentar.", discord.Color.red(), [{"name": "➡️ PRÓXIMO PASSO", "value": "Continuem a rota.", "inline": False}])},
     "RED-CP3": {"team": "vermelho", "mission": "mission_3", "points": 0, "type": "checkpoint", "step": 3, "embed": lambda: tactical_embed("✅ CHECKPOINT 3 VALIDADO", "Metade crítica da rota foi ultrapassada. Mantenham escolta apertada.", discord.Color.red(), [{"name": "➡️ PRÓXIMO PASSO", "value": "Avancem para o próximo ponto.", "inline": False}])},
@@ -4156,6 +4174,12 @@ async def set_both_teams_to_regroup_after_objective(winning_team: str, mission_n
             "winner_reason": "Os fragmentos foram reunidos e parte da inteligência foi restaurada com sucesso.",
             "enemy_title": "RECUPERAÇÃO AZUL CONFIRMADA",
             "enemy_reason": "A Task Force Azul conseguiu reconstruir os fragmentos de backup."
+        },
+        "HIJACK-515": {
+            "winner_title": "CONVOY INTERCEPTADO",
+            "winner_reason": "A carga inimiga foi capturada pela Task Force Azul e retirada para o HQ com sucesso.",
+            "enemy_title": "CONVOY PERDIDO",
+            "enemy_reason": "A Task Force Azul intercetou o transporte e capturou a carga operacional."
         },
         "GHOST-802": {
             "winner_title": "CARGA DEPOSITADA",
