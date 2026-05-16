@@ -2151,6 +2151,7 @@ GM_ROLE_ID = 1504602388496121928
 
 RESPAWN_INTERVAL_SECONDS = 300  # 5 minutos
 RESPAWN_OPEN_SECONDS = 5        # janela verde de respawn
+TIMEOUT_REFILL_SECONDS = 300   # 5 minutos para reagrupamento/refill quando missão expira
 
 # ---------- CÓDIGOS DE OPERADOR / CAPTURA ----------
 AZUL_OPERATOR_CODES = {
@@ -2804,6 +2805,41 @@ async def handle_mission_timeout_failsafe(mission_name: str):
     return True
 
 
+
+async def set_timeout_refill_regroup(mission_name: str):
+    refill_until = datetime.now(timezone.utc) + timedelta(seconds=TIMEOUT_REFILL_SECONDS)
+
+    for t in ["azul", "vermelho"]:
+        milsim_state["teams"][t]["phase"] = "regroup"
+        milsim_state["teams"][t]["regrouped"] = False
+        milsim_state["mission_end_times"][t] = refill_until
+        milsim_state["regroup_notice_sent"][t] = False
+
+    await stop_respawn_cycle()
+
+    for t in ["azul", "vermelho"]:
+        color = discord.Color.blue() if t == "azul" else discord.Color.red()
+        await send_team_embed_with_status_last(
+            t,
+            tactical_embed(
+                "⏱️ TEMPO ESGOTADO — REAGRUPAMENTO E REFILL",
+                f"A janela operacional da **{mission_name.upper()}** terminou sem objetivo validado.\n\n"
+                "Nenhuma força conseguiu concluir a missão dentro do tempo. O COMANDO CENTRAL autorizou uma janela curta de reagrupamento, hidratação e reabastecimento antes da próxima transmissão.",
+                color,
+                [
+                    {"name": "📌 Resultado", "value": "Objetivo não concluído dentro do tempo operacional.", "inline": False},
+                    {"name": "📍 Ordem", "value": "Regressar ao HQ, reorganizar unidade, fazer refill e preparar nova missão.", "inline": False},
+                    {"name": "📌 Estado da Missão", "value": "🔵 REAGRUPAMENTO / REFILL", "inline": False},
+                    {"name": "⏱️ Novas Ordens em", "value": f"**{format_time_remaining(t)}**", "inline": True}
+                ],
+                footer="COMANDO CENTRAL • REAGRUPAMENTO E REFILL"
+            )
+        )
+
+    await milsim_log(f"⏱️ `{mission_name}` terminou por tempo esgotado. Janela de 5 minutos de reagrupamento/refill ativada.")
+    await update_status_panel()
+
+
 async def mission_timer(team: str, mission_name: str):
     if team == "azul":
         await start_respawn_cycle(mission_name)
@@ -2859,30 +2895,9 @@ async def mission_timer(team: str, mission_name: str):
             await advance_milsim_phase(mission_name)
         return
 
-    # Tempo esgotado sem objetivo concluído: missão fracassada.
-    await set_both_teams_to_regroup_after_objective(team, team_state["current"])
-
-    await send_team_embed_with_status_last(
-        team,
-        tactical_embed(
-            "❌ MISSÃO FRACASSADA",
-            f"O tempo operacional da **{mission_name.upper()}** expirou.\n\n"
-            "O objetivo principal não foi concluído.",
-            discord.Color.red(),
-            [
-                {"name": "📍 ORDEM", "value": "Regressem imediatamente ao **COMANDO CENTRAL**."},
-                {"name": "⏱️ REAGRUPAMENTO", "value": "Aguardem novas ordens quando a janela operacional terminar."}
-            ],
-            footer="COMANDO CENTRAL • MISSÃO FRACASSADA"
-        )
-    )
-
-    await milsim_log(f"❌ `{mission_name}` fracassou para **{team.upper()}** por tempo esgotado.")
-    await update_status_panel()
-
-    other = milsim_enemy(team)
-    if milsim_state["teams"][other].get("phase") == "regroup":
-        await advance_milsim_phase(mission_name)
+    # Tempo esgotado sem objetivo concluído: ativar 5 minutos de reagrupamento/refill.
+    await set_timeout_refill_regroup(mission_name)
+    return
 
 
 MILSPEED = {
