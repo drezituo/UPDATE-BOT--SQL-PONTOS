@@ -2766,42 +2766,46 @@ async def handle_mission_timeout_failsafe(mission_name: str):
 
     milsim_state["mission_branch"] = "compromised"
 
+    refill_until = datetime.now(timezone.utc) + timedelta(seconds=TIMEOUT_REFILL_SECONDS)
+
     for t in ["azul", "vermelho"]:
         milsim_state["teams"][t]["phase"] = "regroup"
         milsim_state["teams"][t]["regrouped"] = False
-
-    await archive_all_mission_embeds("Objetivo concluído. Missão encerrada.")
+        milsim_state["mission_end_times"][t] = refill_until
+        milsim_state["regroup_notice_sent"][t] = False
 
     await stop_respawn_cycle()
-    await archive_all_mission_embeds("Janela operacional terminou sem objetivo validado.")
 
-    embed = tactical_embed(
-        "⚠️ FALHA OPERACIONAL — INTEL PERDIDA",
-        "Nenhuma Task Force conseguiu assegurar a caixa segura antes do encerramento da janela operacional.\n\n"
-        "Durante a retirada das unidades, parte da inteligência foi destruída e fragmentada no terreno.\n\n"
-        "O COMANDO confirmou sinais de atividade nos setores:\n"
-        "〔 BUNKER 〕\n"
-        "〔 CQB 〕\n"
-        "〔 ACAMPAMENTO 〕\n\n"
-        "A próxima operação será focada na recuperação parcial da inteligência.",
-        discord.Color.orange(),
-        [
-            {"name": "📌 Resultado", "value": "Nenhuma equipa concluiu o objetivo principal da Missão 1.", "inline": False},
-            {"name": "📡 Nova Diretriz", "value": "A operação segue para **RECOVER FRAGMENTS**.", "inline": False},
-            {"name": "📍 Ordem", "value": "Regressar à base, reorganizar unidade e aguardar novas ordens.", "inline": False},
-            {"name": "⏱️ Novas Ordens em", "value": "**00:00**", "inline": True}
-        ],
-        footer="COMANDO CENTRAL • FAILSAFE OPERACIONAL"
-    )
+    for t in ["azul", "vermelho"]:
+        color = discord.Color.blue() if t == "azul" else discord.Color.red()
+        embed = tactical_embed(
+            "⚠️ FALHA OPERACIONAL — INTEL PERDIDA",
+            "Nenhuma Task Force conseguiu assegurar a caixa segura antes do encerramento da janela operacional.\n\n"
+            "Durante a retirada das unidades, parte da inteligência foi destruída e fragmentada no terreno.\n\n"
+            "O COMANDO confirmou sinais de atividade nos setores:\n"
+            "〔 BUNKER 〕\n"
+            "〔 CQB 〕\n"
+            "〔 ACAMPAMENTO 〕\n\n"
+            "A próxima operação será focada na recuperação parcial da inteligência.\n\n"
+            "Antes da nova operação, todas as unidades têm autorização para reagrupamento, refill e reorganização.",
+            color,
+            [
+                {"name": "📌 Resultado", "value": "Nenhuma equipa concluiu o objetivo principal da Missão 1.", "inline": False},
+                {"name": "📡 Nova Diretriz", "value": "A operação seguirá para **RECOVER FRAGMENTS** após o refill.", "inline": False},
+                {"name": "📍 Ordem", "value": "Regressar à base, reorganizar unidade, fazer refill e aguardar novas ordens.", "inline": False},
+                {"name": "📌 Estado da Missão", "value": "🔵 REAGRUPAMENTO / REFILL", "inline": False},
+                {"name": "⏱️ Novas Ordens em", "value": f"**{format_time_remaining(t)}**", "inline": True}
+            ],
+            footer="COMANDO CENTRAL • FAILSAFE OPERACIONAL"
+        )
 
-    await send_team_embed_with_status_last("azul", embed.copy())
-    await send_team_embed_with_status_last("vermelho", embed.copy())
+        await send_team_embed_with_status_last(t, embed)
 
-    await milsim_log("⚠️ Missão 1 terminou sem objetivo validado. Failsafe ativado: branch RECOVER FRAGMENTS.")
+    await milsim_log("⚠️ Missão 1 terminou sem objetivo validado. Failsafe ativado: 5 minutos de refill antes de RECOVER FRAGMENTS.")
     await update_status_panel()
 
-    # Avança automaticamente para a próxima fase quando ambas as equipas ficarem em reagrupamento.
-    await advance_milsim_phase("mission_1")
+    # Não avançar já para a Missão 2.
+    # O avanço acontece automaticamente quando a janela de 5 minutos terminar.
     return True
 
 
@@ -2841,26 +2845,26 @@ async def set_timeout_refill_regroup(mission_name: str):
 
 
 async def mission_timer(team: str, mission_name: str):
+    # Apenas uma task inicia o ciclo de respawn por missão.
     if team == "azul":
         await start_respawn_cycle(mission_name)
 
     seconds = MISSION_TIME_LIMITS[mission_name]
-    milsim_state["mission_end_times"][team] = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+    end_time = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+    milsim_state["mission_end_times"][team] = end_time
     milsim_state.setdefault("regroup_notice_sent", {"azul": False, "vermelho": False})
     milsim_state["regroup_notice_sent"][team] = False
 
-    while seconds > 0:
-        await asyncio.sleep(10)
-        seconds -= 10
-
-        if not milsim_state["active"]:
-            return
-
+    # Timer preciso baseado no relógio real.
+    while milsim_state.get("active"):
         current = milsim_state["teams"][team]["current"]
         if current != mission_name:
             return
 
         remaining = milsim_state["mission_end_times"][team] - datetime.now(timezone.utc)
+
+        if remaining.total_seconds() <= 0:
+            break
 
         # Aviso automático a 2 minutos do fim da janela operacional, se a equipa já estiver em reagrupamento.
         if (
@@ -2873,31 +2877,51 @@ async def mission_timer(team: str, mission_name: str):
 
         await update_status_panel()
 
-    if not milsim_state["active"]:
+        # Verifica no máximo de 5 em 5 segundos, e mais rápido no último segundo.
+        sleep_for = min(5, max(1, int(remaining.total_seconds())))
+        await asyncio.sleep(sleep_for)
+
+    if not milsim_state.get("active"):
         return
 
     current = milsim_state["teams"][team]["current"]
     if current != mission_name:
         return
 
-    # Se a Missão 1 terminar sem nenhuma equipa concluir objetivo, ativar caminho alternativo.
-    if await handle_mission_timeout_failsafe(mission_name):
-        return
-
     team_state = milsim_state["teams"][team]
 
+    # Se a equipa está em reagrupamento/refill, tentar avançar quando ambas estiverem nessa fase.
     if team_state.get("phase") == "regroup":
         await milsim_log(f"📡 Janela de reagrupamento terminou para **{team.upper()}**.")
         await update_status_panel()
 
         other = milsim_enemy(team)
         if milsim_state["teams"][other].get("phase") == "regroup":
-            await advance_milsim_phase(mission_name)
+            if milsim_state.get("timeout_resolution_active", False):
+                return
+
+            milsim_state["timeout_resolution_active"] = True
+            try:
+                await advance_milsim_phase(mission_name)
+            finally:
+                milsim_state["timeout_resolution_active"] = False
         return
 
-    # Tempo esgotado sem objetivo concluído: ativar 5 minutos de reagrupamento/refill.
-    await set_timeout_refill_regroup(mission_name)
-    return
+    # A partir daqui, só uma das duas tasks pode resolver o fim da missão.
+    if milsim_state.get("timeout_resolution_active", False):
+        return
+
+    milsim_state["timeout_resolution_active"] = True
+    try:
+        # Se a Missão 1 terminar sem nenhuma equipa concluir objetivo, ativar failsafe com refill.
+        if await handle_mission_timeout_failsafe(mission_name):
+            return
+
+        # Tempo esgotado sem objetivo concluído: ativar 5 minutos de reagrupamento/refill.
+        await set_timeout_refill_regroup(mission_name)
+        return
+    finally:
+        milsim_state["timeout_resolution_active"] = False
 
 
 MILSPEED = {
@@ -2912,6 +2936,7 @@ VALIDACAO_CODIGO_TEXTO = (
 
 milsim_state = {
     "active": False,
+    "timeout_resolution_active": False,
     "scores": {"azul": 0, "vermelho": 0},
     "mission_end_times": {"azul": None, "vermelho": None},
     "regroup_notice_sent": {"azul": False, "vermelho": False},
@@ -3952,6 +3977,7 @@ async def start_op(ctx):
         return await ctx.send("❌ Apenas Game Masters podem iniciar a operação.", delete_after=10)
 
     milsim_state["active"] = True
+    milsim_state["timeout_resolution_active"] = False
     milsim_state["scores"] = {"azul": 0, "vermelho": 0}
     milsim_state["mission_end_times"] = {"azul": None, "vermelho": None}
     milsim_state["regroup_notice_sent"] = {"azul": False, "vermelho": False}
@@ -4393,6 +4419,7 @@ async def end_op(ctx):
 async def limpardados(ctx):
     milsim_state["scores"] = {"azul": 0, "vermelho": 0}
     milsim_state["active"] = False
+    milsim_state["timeout_resolution_active"] = False
     milsim_state["mission_end_times"] = {"azul": None, "vermelho": None}
     milsim_state["regroup_notice_sent"] = {"azul": False, "vermelho": False}
     milsim_state["mission_branch"] = None
