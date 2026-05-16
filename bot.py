@@ -2149,6 +2149,9 @@ AZUL_ROLE_ID = 1504599233137868961
 VERMELHO_ROLE_ID = 1504599117488455832
 GM_ROLE_ID = 1504602388496121928
 
+RESPAWN_INTERVAL_SECONDS = 300  # 5 minutos
+RESPAWN_OPEN_SECONDS = 30       # janela visível de respawn
+
 
 
 MISSION_TIME_LIMITS = {
@@ -2634,6 +2637,9 @@ async def update_status_panel():
 
 
 async def mission_timer(team: str, mission_name: str):
+    if team == "azul":
+        await start_respawn_cycle(mission_name)
+
     seconds = MISSION_TIME_LIMITS[mission_name]
     milsim_state["mission_end_times"][team] = datetime.now(timezone.utc) + timedelta(seconds=seconds)
     milsim_state.setdefault("regroup_notice_sent", {"azul": False, "vermelho": False})
@@ -2724,6 +2730,14 @@ milsim_state = {
     "regroup_notice_sent": {"azul": False, "vermelho": False},
     "status_panel_message_id": None,
     "team_status_panel_message_ids": {"azul": None, "vermelho": None},
+    "respawn": {
+        "active": False,
+        "mission": None,
+        "cycle_started_at": None,
+        "next_respawn_at": None,
+        "panel_message_id": None,
+        "task": None
+    },
     "mission_message_ids": {"azul": None, "vermelho": None},
     "rest_seconds": {"azul": 0, "vermelho": 0},
     "rest_until": {"azul": None, "vermelho": None},
@@ -2767,6 +2781,92 @@ def tactical_embed(title, description, color=discord.Color.dark_grey(), fields=N
             )
     embed.set_footer(text=footer)
     return embed
+
+
+def medical_rules_standard_field():
+    return {
+        "name": "⚕️ REGRAS MÉDICAS",
+        "value": (
+            "▸ 1 médico por equipa\n"
+            "▸ 2 vidas por operador\n\n"
+            "▸ Operador abatido permanece **1 minuto no solo**\n"
+            "▸ Operador abatido está **sempre sujeito a captura inimiga**\n"
+            "▸ Após bandagem médica, regressa ao combate na última vida operacional\n"
+            "▸ Segunda eliminação: permanece 1 minuto no solo e continua sujeito a captura\n"
+            "▸ Caso não seja capturado, regressa à base e aguarda a próxima janela de respawn"
+        ),
+        "inline": False
+    }
+
+
+def medical_rules_satcom_field():
+    return {
+        "name": "⚕️ REGRAS MÉDICAS — OPERAÇÃO 5x5",
+        "value": (
+            "▸ 1 médico por equipa\n"
+            "▸ **Sem revive** nesta missão\n"
+            "▸ Apenas os 5 operadores designados participam\n"
+            "▸ Sem reforços, substituições ou respawns no terreno\n\n"
+            "▸ Operador abatido permanece **1 minuto no solo**\n"
+            "▸ Operador abatido está **sempre sujeito a captura inimiga**\n"
+            "▸ Caso não seja capturado, regressa à base e aguarda a próxima janela de respawn"
+        ),
+        "inline": False
+    }
+
+
+def medical_rules_secondary_5v5_field():
+    return {
+        "name": "⚕️ REGRAS MÉDICAS — MISSÃO SECUNDÁRIA",
+        "value": (
+            "▸ 1 médico por equipa\n"
+            "▸ Sem revive nesta missão\n"
+            "▸ Operadores abatidos permanecem **1 minuto no solo**\n"
+            "▸ Operador abatido está **sempre sujeito a captura inimiga**\n"
+            "▸ Caso não seja capturado, regressa à base e aguarda a próxima janela de respawn"
+        ),
+        "inline": False
+    }
+
+
+def medical_rules_final_field():
+    return {
+        "name": "⚕️ REGRAS MÉDICAS — FASE FINAL",
+        "value": (
+            "▸ Operador abatido permanece **1 minuto no solo**\n"
+            "▸ Operador abatido está **sempre sujeito a captura inimiga**\n"
+            "▸ Regras finais seguem instruções do COMANDO no terreno"
+        ),
+        "inline": False
+    }
+
+
+def apply_medical_rules_to_embed(embed: discord.Embed):
+    if not embed:
+        return embed
+
+    existing = any(
+        (field.name or "").startswith("⚕️ REGRAS MÉDICAS")
+        for field in getattr(embed, "fields", [])
+    )
+    if existing:
+        return embed
+
+    title_upper = (embed.title or "").upper()
+    desc_upper = (embed.description or "").upper()
+    combined = title_upper + "\n" + desc_upper
+
+    if "SATCOM" in combined:
+        embed.add_field(**medical_rules_satcom_field())
+    elif "MISSÃO SECUNDÁRIA" in combined or "AMBUSH RAID" in combined or "CAMP DEFENSE" in combined:
+        embed.add_field(**medical_rules_secondary_5v5_field())
+    elif "TOTAL DOMINATION" in combined or "MISSÃO FINAL" in combined:
+        embed.add_field(**medical_rules_final_field())
+    elif "MISSÃO" in combined:
+        embed.add_field(**medical_rules_standard_field())
+
+    return embed
+
 
 
 MISSION_CODES = {
@@ -3149,9 +3249,184 @@ async def milsim_send_to_team(team: str, embed=None, content=None):
     canal = milsim_channel_for_team(team)
     if canal:
         if embed:
+            embed = apply_medical_rules_to_embed(embed)
             await canal.send(embed=embed)
         elif content:
             await canal.send(content)
+
+
+def format_respawn_remaining():
+    respawn = milsim_state.get("respawn", {})
+    next_at = respawn.get("next_respawn_at")
+
+    if not respawn.get("active") or not next_at:
+        return "Inativo"
+
+    now = datetime.now(timezone.utc)
+    remaining = next_at - now
+
+    if remaining.total_seconds() <= 0:
+        return "00:00"
+
+    total_seconds = int(remaining.total_seconds())
+    minutes = total_seconds // 60
+    seconds = total_seconds % 60
+    return f"{minutes:02d}:{seconds:02d}"
+
+
+def build_respawn_panel_embed():
+    respawn = milsim_state.get("respawn", {})
+    active = respawn.get("active", False)
+    mission = respawn.get("mission") or "Sem missão ativa"
+    next_at = respawn.get("next_respawn_at")
+
+    if active and next_at:
+        remaining = next_at - datetime.now(timezone.utc)
+        if remaining.total_seconds() <= RESPAWN_OPEN_SECONDS:
+            status = "🟢 RESSURGIMENTO AUTORIZADO"
+            desc = (
+                "Janela de ressurgimento aberta.\n\n"
+                "Jogadores em base autorizados a regressar ao jogo."
+            )
+        else:
+            status = "🟡 A AGUARDAR PRÓXIMA JANELA"
+            desc = "Jogadores em base devem aguardar a próxima vaga de ressurgimento."
+    else:
+        status = "⚫ RESPawns INATIVOS"
+        desc = "O ciclo de ressurgimento ainda não está ativo."
+
+    embed = tactical_embed(
+        "♻️ PAINEL DE RESSURGIMENTO",
+        desc,
+        discord.Color.green() if active else discord.Color.dark_grey(),
+        [
+            {"name": "📡 Missão Atual", "value": f"`{mission}`", "inline": True},
+            {"name": "📌 Estado", "value": status, "inline": True},
+            {"name": "⏱️ Próxima Janela", "value": f"**{format_respawn_remaining()}**", "inline": False},
+            {
+                "name": "📍 Regras de Respawn",
+                "value": (
+                    "▸ Ciclos de ressurgimento a cada **5 minutos**\n"
+                    "▸ Respawn apenas na base\n"
+                    "▸ Jogadores eliminados/capturados aguardam próxima vaga\n"
+                    "▸ O ciclo reinicia sempre que uma nova missão começa"
+                ),
+                "inline": False
+            }
+        ],
+        footer="COMANDO CENTRAL • CONTROLO DE RESSURGIMENTO"
+    )
+
+    return embed
+
+
+async def update_respawn_panel():
+    channel = milsim_get_channel(COMANDO_CHANNEL_ID)
+    if not channel:
+        return
+
+    respawn = milsim_state.setdefault("respawn", {})
+    message_id = respawn.get("panel_message_id")
+
+    if message_id:
+        try:
+            msg = await channel.fetch_message(message_id)
+            await msg.edit(embed=build_respawn_panel_embed())
+            return
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            respawn["panel_message_id"] = None
+
+    try:
+        msg = await channel.send(embed=build_respawn_panel_embed())
+        respawn["panel_message_id"] = msg.id
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+
+
+async def respawn_panel_loop(mission_name: str):
+    while milsim_state.get("active") and milsim_state.get("respawn", {}).get("active"):
+        respawn = milsim_state.get("respawn", {})
+
+        if respawn.get("mission") != mission_name:
+            return
+
+        # Parar respawn quando as duas equipas já estão em reagrupamento.
+        if all(milsim_state["teams"][t].get("phase") == "regroup" for t in ["azul", "vermelho"]):
+            respawn["active"] = False
+            await update_respawn_panel()
+            return
+
+        now = datetime.now(timezone.utc)
+        next_at = respawn.get("next_respawn_at")
+
+        if next_at and now >= next_at:
+            # Mantém janela aberta visualmente durante RESPAWN_OPEN_SECONDS e depois agenda a próxima.
+            await update_respawn_panel()
+            await asyncio.sleep(RESPAWN_OPEN_SECONDS)
+
+            if not milsim_state.get("active"):
+                return
+
+            respawn = milsim_state.get("respawn", {})
+            if respawn.get("mission") != mission_name or not respawn.get("active"):
+                return
+
+            respawn["next_respawn_at"] = datetime.now(timezone.utc) + timedelta(seconds=RESPAWN_INTERVAL_SECONDS)
+            await update_respawn_panel()
+        else:
+            await update_respawn_panel()
+            await asyncio.sleep(10)
+
+
+async def start_respawn_cycle(mission_name: str):
+    respawn = milsim_state.setdefault("respawn", {})
+
+    old_task = respawn.get("task")
+    if old_task and not old_task.done():
+        old_task.cancel()
+
+    now = datetime.now(timezone.utc)
+    respawn["active"] = True
+    respawn["mission"] = mission_name
+    respawn["cycle_started_at"] = now
+    respawn["next_respawn_at"] = now + timedelta(seconds=RESPAWN_INTERVAL_SECONDS)
+
+    await update_respawn_panel()
+
+    task = asyncio.create_task(respawn_panel_loop(mission_name))
+    respawn["task"] = task
+
+
+async def stop_respawn_cycle():
+    respawn = milsim_state.setdefault("respawn", {})
+    respawn["active"] = False
+
+    task = respawn.get("task")
+    if task and not task.done():
+        task.cancel()
+
+    await update_respawn_panel()
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def painel_respawn(ctx):
+    await update_respawn_panel()
+    await ctx.send("✅ Painel de respawn criado/atualizado no Comando Central.", delete_after=10)
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def respawn_now(ctx):
+    respawn = milsim_state.setdefault("respawn", {})
+    if not respawn.get("active"):
+        return await ctx.send("⚠️ O ciclo de respawn não está ativo.", delete_after=10)
+
+    respawn["next_respawn_at"] = datetime.now(timezone.utc)
+    await update_respawn_panel()
+    await ctx.send("🟢 Janela de respawn forçada.", delete_after=10)
+
+
 
 
 async def send_regroup_two_minute_notice(team: str):
@@ -3255,6 +3530,22 @@ async def start_op(ctx):
     milsim_state["regroup_notice_sent"] = {"azul": False, "vermelho": False}
     milsim_state["status_panel_message_id"] = None
     milsim_state["team_status_panel_message_ids"] = {"azul": None, "vermelho": None}
+    milsim_state["respawn"] = {
+        "active": False,
+        "mission": None,
+        "cycle_started_at": None,
+        "next_respawn_at": None,
+        "panel_message_id": None,
+        "task": None
+    }
+    milsim_state["respawn"] = {
+        "active": False,
+        "mission": None,
+        "cycle_started_at": None,
+        "next_respawn_at": None,
+        "panel_message_id": None,
+        "task": None
+    }
     milsim_state["mission_message_ids"] = {"azul": None, "vermelho": None}
     milsim_state["rest_seconds"] = {"azul": 0, "vermelho": 0}
     milsim_state["rest_until"] = {"azul": None, "vermelho": None}
@@ -3400,7 +3691,7 @@ async def codigo(ctx, codigo: str):
 
     if data["type"] in ("checkpoint", "decryption"):
         await purge_team_status_panels(team)
-        msg = await ctx.send(embed=build_mission_embed_with_status(team, data["embed"](), "✅ Objetivo validado"))
+        msg = await ctx.send(embed=apply_medical_rules_to_embed(build_mission_embed_with_status(team, data["embed"](), "✅ Objetivo validado")))
         milsim_state["mission_message_ids"][team] = msg.id
 
         enemy_alert = data.get("enemy_alert_embed")
@@ -3425,7 +3716,7 @@ async def codigo(ctx, codigo: str):
 
     if data["type"] == "end":
         await purge_team_status_panels(team)
-        msg = await ctx.send(embed=build_mission_embed_with_status(team, data["embed"](), "🏁 Operação terminada"))
+        msg = await ctx.send(embed=apply_medical_rules_to_embed(build_mission_embed_with_status(team, data["embed"](), "🏁 Operação terminada")))
         milsim_state["mission_message_ids"][team] = msg.id
         milsim_state["active"] = False
         await milsim_log("🏁 Operação terminada por código final.")
@@ -3440,6 +3731,8 @@ async def set_both_teams_to_regroup_after_objective(winning_team: str, mission_n
     for t in ["azul", "vermelho"]:
         milsim_state["teams"][t]["phase"] = "regroup"
         milsim_state["teams"][t]["regrouped"] = False
+
+    await stop_respawn_cycle()
 
     winner_color = discord.Color.blue() if winning_team == "azul" else discord.Color.red()
     enemy_color = discord.Color.blue() if enemy == "azul" else discord.Color.red()
@@ -3604,6 +3897,22 @@ async def limpardados(ctx):
     milsim_state["decryption"] = {"active": False, "cancelled": False, "team": None, "mission": None}
     milsim_state["mission_message_ids"] = {"azul": None, "vermelho": None}
     milsim_state["team_status_panel_message_ids"] = {"azul": None, "vermelho": None}
+    milsim_state["respawn"] = {
+        "active": False,
+        "mission": None,
+        "cycle_started_at": None,
+        "next_respawn_at": None,
+        "panel_message_id": None,
+        "task": None
+    }
+    milsim_state["respawn"] = {
+        "active": False,
+        "mission": None,
+        "cycle_started_at": None,
+        "next_respawn_at": None,
+        "panel_message_id": None,
+        "task": None
+    }
     milsim_state["teams"] = {
         "azul": {"current": "mission_1", "phase": "mission", "regrouped": False, "completed_codes": []},
         "vermelho": {"current": "mission_1", "phase": "mission", "regrouped": False, "completed_codes": []}
