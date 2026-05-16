@@ -2214,9 +2214,10 @@ def build_operation_status_embed():
 
 def _remove_mission_status_fields(embed: discord.Embed):
     status_field_names = {
+        "📌 Estado da Missão",
+        "⏱️ Tempo Restante",
         "⏱️ Novas Ordens em",
         "🏆 Score",
-        "📌 Estado da Missão",
         "🛌 Descanso Operacional",
     }
 
@@ -2237,7 +2238,6 @@ def _remove_mission_status_fields(embed: discord.Embed):
             value=field["value"],
             inline=field["inline"]
         )
-
 
 def build_mission_embed_with_status(team: str, embed: discord.Embed, estado: str = None):
     final_embed = embed.copy()
