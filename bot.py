@@ -4040,6 +4040,67 @@ async def advance_milsim_phase(old_mission: str):
 
 
 
+
+
+@bot.command(name="end_op")
+@commands.has_permissions(administrator=True)
+async def end_op(ctx):
+    if not milsim_state.get("active"):
+        return await ctx.send("⚠️ Não existe nenhuma operação ativa.", delete_after=10)
+
+    milsim_state["active"] = False
+
+    # Cancelar task de respawn
+    respawn = milsim_state.get("respawn", {})
+    task = respawn.get("task")
+    if task and not task.done():
+        task.cancel()
+
+    respawn["active"] = False
+
+    # Colocar equipas em estado final
+    for team in ["azul", "vermelho"]:
+        milsim_state["teams"][team]["phase"] = "ended"
+
+    azul_score = milsim_state["scores"]["azul"]
+    vermelho_score = milsim_state["scores"]["vermelho"]
+
+    if azul_score > vermelho_score:
+        resultado = "🔵 TASK FORCE AZUL VENCEU A OPERAÇÃO"
+        cor = discord.Color.blue()
+    elif vermelho_score > azul_score:
+        resultado = "🔴 TASK FORCE VERMELHA VENCEU A OPERAÇÃO"
+        cor = discord.Color.red()
+    else:
+        resultado = "⚖️ OPERAÇÃO TERMINOU EMPATADA"
+        cor = discord.Color.orange()
+
+    embed = tactical_embed(
+        "🏁 OPERAÇÃO TERMINADA",
+        "O COMANDO CENTRAL declarou encerrada a operação atual.\n\n"
+        "Todas as unidades devem regressar ao HQ e iniciar procedimento de desmobilização.",
+        cor,
+        [
+            {"name": "📌 Resultado Final", "value": resultado, "inline": False},
+            {"name": "🔵 Score Azul", "value": f"**{azul_score} pts**", "inline": True},
+            {"name": "🔴 Score Vermelho", "value": f"**{vermelho_score} pts**", "inline": True},
+            {"name": "📍 Ordem Final", "value": "Desmobilizar equipamento, confirmar material e aguardar debrief operacional.", "inline": False}
+        ],
+        footer="COMANDO CENTRAL • FIM DE OPERAÇÃO"
+    )
+
+    # Enviar para equipas
+    for team in ["azul", "vermelho"]:
+        await send_team_embed_with_status_last(team, embed.copy())
+
+    # Enviar para comando central
+    comando = milsim_get_channel(COMANDO_CHANNEL_ID)
+    if comando:
+        await comando.send(embed=embed)
+
+    await ctx.send("✅ Operação terminada.", delete_after=10)
+
+
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def limpardados(ctx):
