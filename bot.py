@@ -2255,10 +2255,31 @@ def _remove_mission_status_fields(embed: discord.Embed):
         "📌 Estado da Missão",
         "⏱️ Tempo Restante",
         "⏱️ Novas Ordens em",
-        "🏆 Score",
+        "⏱️ NOVAS ORDENS EM",
+        "⏱️ Descanso",
         "🛌 Descanso Operacional",
+        "🏆 Score",
         "📍 Motivo",
     }
+
+    kept_fields = []
+    for field in embed.fields:
+        if field.name not in status_field_names:
+            kept_fields.append({
+                "name": field.name,
+                "value": field.value,
+                "inline": field.inline
+            })
+
+    embed.clear_fields()
+
+    for field in kept_fields:
+        embed.add_field(
+            name=field["name"],
+            value=field["value"],
+            inline=field["inline"]
+        )
+
 
     kept_fields = []
     for field in embed.fields:
@@ -2471,16 +2492,54 @@ async def archive_all_mission_embeds(reason: str = "Missão encerrada"):
     await archive_team_mission_embed("vermelho", reason)
 
 
+def build_inactive_mission_embed(team: str, embed: discord.Embed, reason: str = "Missão encerrada"):
+    final_embed = embed.copy()
+    _remove_mission_status_fields(final_embed)
+
+    final_embed.add_field(
+        name="📌 Estado da Missão",
+        value="⚫ MISSÃO INATIVA",
+        inline=False
+    )
+    final_embed.add_field(
+        name="📍 Motivo",
+        value=reason,
+        inline=False
+    )
+    final_embed.set_footer(text="COMANDO CENTRAL • MISSÃO INATIVA")
+    return final_embed
+
+
+async def deactivate_current_mission_embed(team: str, reason: str = "Missão encerrada"):
+    channel = milsim_channel_for_team(team)
+    message_id = milsim_state.get("mission_message_ids", {}).get(team)
+
+    if not channel or not message_id:
+        return
+
+    try:
+        msg = await channel.fetch_message(message_id)
+        if msg.embeds:
+            await msg.edit(embed=build_inactive_mission_embed(team, msg.embeds[0], reason))
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        pass
+
+
+async def deactivate_all_current_mission_embeds(reason: str = "Missão encerrada"):
+    await deactivate_current_mission_embed("azul", reason)
+    await deactivate_current_mission_embed("vermelho", reason)
+
+
 async def send_team_embed_with_status_last(team: str, embed: discord.Embed, estado: str = None):
+    old_id = milsim_state.get("mission_message_ids", {}).get(team)
+    if old_id:
+        await deactivate_current_mission_embed(team, "Nova transmissão operacional emitida.")
+
     await purge_team_status_panels(team)
 
     channel = milsim_channel_for_team(team)
     if not channel:
         return None
-
-    previous_id = milsim_state.get("mission_message_ids", {}).get(team)
-    if previous_id:
-        milsim_state.setdefault("previous_mission_message_ids", {})[team] = previous_id
 
     msg = await channel.send(embed=build_mission_embed_with_status(team, embed, estado))
     milsim_state.setdefault("mission_message_ids", {})[team] = msg.id
@@ -2867,7 +2926,10 @@ async def mission_timer(team: str, mission_name: str):
             and milsim_state["teams"][team].get("phase") == "regroup"
             and timedelta(seconds=0) < remaining <= timedelta(minutes=2)
         ):
-            await broadcast_two_minute_regroup_notice()
+            try:
+                await broadcast_two_minute_regroup_notice()
+            except Exception as e:
+                await milsim_log(f"⚠️ Erro ao enviar alerta de 2 minutos: `{e}`")
 
         await update_status_panel()
 
@@ -4175,6 +4237,14 @@ async def send_regroup_two_minute_notice(team: str):
 
 def milsim_is_gm(ctx):
     return any(role.id == GM_ROLE_ID for role in ctx.author.roles) or ctx.author.guild_permissions.administrator
+
+
+async def broadcast_two_minute_regroup_notice():
+    for t in ["azul", "vermelho"]:
+        if milsim_state["teams"][t].get("phase") == "regroup":
+            if not milsim_state.get("regroup_notice_sent", {}).get(t, False):
+                milsim_state["regroup_notice_sent"][t] = True
+                await send_regroup_two_minute_notice(t)
 
 
 async def milsim_start_decryption(team: str):
