@@ -2340,6 +2340,7 @@ def build_mission_embed_with_status(team: str, embed: discord.Embed, estado: str
 
 def build_team_status_embed(team: str):
     # Mantido por compatibilidade com comandos/funções antigas.
+    st = milsim_state["teams"][team]
     emoji = "🔵" if team == "azul" else "🔴"
     color = discord.Color.blue() if team == "azul" else discord.Color.red()
 
@@ -2843,28 +2844,36 @@ async def mission_timer(team: str, mission_name: str):
         return
 
     # Tempo esgotado sem objetivo concluído: missão fracassada.
-    await set_both_teams_to_regroup_after_objective(team, team_state["current"])
+    # Não chamar set_both_teams_to_regroup_after_objective() aqui,
+    # porque essa função envia o embed de "OBJETIVO CONCLUÍDO".
+    team_state["phase"] = "failed"
+    team_state["regrouped"] = False
+
+    await stop_respawn_cycle()
+
+    failed_embed = tactical_embed(
+        "❌ MISSÃO FRACASSADA",
+        f"O tempo operacional da **{mission_name.upper()}** expirou.\n\n"
+        "O objetivo principal não foi concluído.",
+        discord.Color.red(),
+        [
+            {"name": "📍 ORDEM", "value": "Regressem imediatamente ao **COMANDO CENTRAL**.", "inline": False},
+            {"name": "⏱️ REAGRUPAMENTO", "value": "Aguardem novas ordens quando a janela operacional terminar.", "inline": False}
+        ],
+        footer="COMANDO CENTRAL • MISSÃO FRACASSADA"
+    )
 
     await send_team_embed_with_status_last(
         team,
-        tactical_embed(
-            "❌ MISSÃO FRACASSADA",
-            f"O tempo operacional da **{mission_name.upper()}** expirou.\n\n"
-            "O objetivo principal não foi concluído.",
-            discord.Color.red(),
-            [
-                {"name": "📍 ORDEM", "value": "Regressem imediatamente ao **COMANDO CENTRAL**."},
-                {"name": "⏱️ REAGRUPAMENTO", "value": "Aguardem novas ordens quando a janela operacional terminar."}
-            ],
-            footer="COMANDO CENTRAL • MISSÃO FRACASSADA"
-        )
+        failed_embed,
+        estado="❌ MISSÃO FRACASSADA"
     )
 
     await milsim_log(f"❌ `{mission_name}` fracassou para **{team.upper()}** por tempo esgotado.")
     await update_status_panel()
 
     other = milsim_enemy(team)
-    if milsim_state["teams"][other].get("phase") == "regroup":
+    if milsim_state["teams"][other].get("phase") in ("regroup", "failed"):
         await advance_milsim_phase(mission_name)
 
 
