@@ -2251,7 +2251,27 @@ def _remove_mission_status_fields(embed: discord.Embed):
         "⏱️ Novas Ordens em",
         "🏆 Score",
         "🛌 Descanso Operacional",
+        "📍 Motivo",
     }
+
+    kept_fields = []
+    for field in embed.fields:
+        if field.name not in status_field_names:
+            kept_fields.append({
+                "name": field.name,
+                "value": field.value,
+                "inline": field.inline
+            })
+
+    embed.clear_fields()
+
+    for field in kept_fields:
+        embed.add_field(
+            name=field["name"],
+            value=field["value"],
+            inline=field["inline"]
+        )
+
 
     kept_fields = []
     for field in embed.fields:
@@ -2398,6 +2418,47 @@ async def purge_team_status_panels(team: str):
 
 async def refresh_team_status_panel(team: str):
     await purge_team_status_panels(team)
+
+
+
+def build_inactive_mission_embed(team: str, embed: discord.Embed, reason: str = "Missão encerrada"):
+    final_embed = embed.copy()
+    _remove_mission_status_fields(final_embed)
+
+    final_embed.add_field(
+        name="📌 Estado da Missão",
+        value="⚫ MISSÃO INATIVA",
+        inline=False
+    )
+    final_embed.add_field(
+        name="📍 Motivo",
+        value=reason,
+        inline=False
+    )
+    final_embed.set_footer(text="COMANDO CENTRAL • MISSÃO INATIVA")
+    return final_embed
+
+
+async def archive_team_mission_embed(team: str, reason: str = "Missão encerrada"):
+    channel = milsim_channel_for_team(team)
+    message_id = milsim_state.get("mission_message_ids", {}).get(team)
+
+    if not channel or not message_id:
+        return
+
+    try:
+        msg = await channel.fetch_message(message_id)
+        if msg.embeds:
+            inactive_embed = build_inactive_mission_embed(team, msg.embeds[0], reason)
+            await msg.edit(embed=inactive_embed)
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        pass
+
+
+async def archive_all_mission_embeds(reason: str = "Missão encerrada"):
+    await archive_team_mission_embed("azul", reason)
+    await archive_team_mission_embed("vermelho", reason)
+
 
 
 async def send_team_embed_with_status_last(team: str, embed: discord.Embed, estado: str = None):
@@ -2692,7 +2753,10 @@ async def handle_mission_timeout_failsafe(mission_name: str):
         milsim_state["teams"][t]["phase"] = "regroup"
         milsim_state["teams"][t]["regrouped"] = False
 
+    await archive_all_mission_embeds("Objetivo concluído. Unidade em reagrupamento operacional.")
+
     await stop_respawn_cycle()
+    await archive_all_mission_embeds("Janela operacional terminou sem objetivo validado.")
 
     embed = tactical_embed(
         "⚠️ FALHA OPERACIONAL — INTEL PERDIDA",
@@ -4185,6 +4249,7 @@ async def advance_milsim_phase(old_mission: str):
         if milsim_state["teams"][t]["current"] == "mission_3":
             milsim_state["mission3_route"]["vermelho_step"] = 0
 
+        await archive_team_mission_embed(t, "Nova fase operacional iniciada.")
         await purge_team_status_panels(t)
 
         if old_mission == "mission_1" and milsim_state.get("mission_branch") == "compromised":
