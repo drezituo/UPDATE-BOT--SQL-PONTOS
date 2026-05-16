@@ -3402,6 +3402,71 @@ NEXT_MISSIONS = {
 }
 
 
+
+NEXT_MISSIONS_ALT = {
+    "mission_1_compromised": {
+        "azul": lambda: tactical_embed(
+            "🔵 MISSÃO 02 — RECOVER FRAGMENTS",
+            "〔 TASK FORCE AZUL 〕\n\n"
+            "A caixa segura não foi assegurada dentro da janela operacional. A inteligência principal foi perdida ou fragmentada no terreno.\n\n"
+            "Ainda existem backups parciais espalhados pelo complexo. Esta é a última oportunidade de restaurar parte dos dados.",
+            discord.Color.blue(),
+            [
+                {
+                    "name": "🎯 OBJETIVOS",
+                    "value": (
+                        "▸ Recuperar fragmento no BUNKER\n"
+                        "▸ Recuperar fragmento no CQB\n"
+                        "▸ Recuperar fragmento no ACAMPAMENTO\n"
+                        "▸ Juntar os três fragmentos\n"
+                        "▸ Validar o código reconstruído"
+                    ),
+                    "inline": False
+                },
+                {
+                    "name": "📡 INTEL",
+                    "value": "As forças Vermelhas também sabem que os fragmentos existem. Esperem resistência nos três setores.",
+                    "inline": False
+                },
+                {
+                    "name": "📍 ORDEM",
+                    "value": "Movam-se rápido. Cada fragmento pode ser a diferença entre recuperar a operação ou perder a inteligência para sempre.",
+                    "inline": False
+                }
+            ]
+        ),
+        "vermelho": lambda: tactical_embed(
+            "🔴 MISSÃO 02 — DENY RECOVERY",
+            "〔 TASK FORCE VERMELHA 〕\n\n"
+            "Nenhuma força conseguiu assegurar a caixa segura. A inteligência foi fragmentada e espalhada pelo terreno.\n\n"
+            "A Azul irá tentar recuperar esses fragmentos para reconstruir parte dos dados.",
+            discord.Color.red(),
+            [
+                {
+                    "name": "🎯 OBJETIVOS",
+                    "value": (
+                        "▸ Impedir recolha dos fragmentos\n"
+                        "▸ Defender setores críticos\n"
+                        "▸ Atrasar movimentação Azul\n"
+                        "▸ Negar recuperação parcial da inteligência"
+                    ),
+                    "inline": False
+                },
+                {
+                    "name": "📡 INTEL",
+                    "value": "Atividade provável nos setores BUNKER, CQB e ACAMPAMENTO.",
+                    "inline": False
+                },
+                {
+                    "name": "📍 ORDEM",
+                    "value": "Não lhes permitam recuperar aquilo que a janela operacional destruiu.",
+                    "inline": False
+                }
+            ]
+        )
+    }
+}
+
 def milsim_get_channel(channel_id: int):
     return bot.get_channel(channel_id)
 
@@ -4058,7 +4123,11 @@ async def advance_milsim_phase(old_mission: str):
         await purge_team_status_panels(t)
 
         if old_mission == "mission_1" and milsim_state.get("mission_branch") == "compromised":
-            await milsim_send_to_team(t, embed=NEXT_MISSIONS_ALT["mission_1_compromised"][t]())
+            alt_mission = globals().get("NEXT_MISSIONS_ALT", {}).get("mission_1_compromised", {})
+            if t in alt_mission:
+                await milsim_send_to_team(t, embed=alt_mission[t]())
+            else:
+                await milsim_send_to_team(t, embed=NEXT_MISSIONS[old_mission][t]())
         else:
             await milsim_send_to_team(t, embed=NEXT_MISSIONS[old_mission][t]())
 
