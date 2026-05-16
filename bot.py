@@ -2786,8 +2786,8 @@ MISSION_CODES = {
             ]
         ),
         "enemy_alert_embed": lambda: tactical_embed(
-            "⚠️ ORDEM DE RETIRADA — INTEL AZUL EXTRAÍDA",
-            "A Task Force Azul conseguiu retirar a caixa segura e identificar o disco verdadeiro.\n\nRegressem imediatamente à base, reorganizem a unidade e preparem-se para novas ordens.",
+            "⚠️ INTEL AZUL EXTRAÍDA",
+            "A Task Force Azul conseguiu retirar a caixa segura e identificar o disco verdadeiro.\n\nPreparem-se para impedir o envio dos dados.",
             discord.Color.red()
         )
     },
@@ -3341,24 +3341,7 @@ async def milsim_resolve_sabotage_by_red():
         milsim_state["decryption"]["cancelled"] = True
         milsim_state["decryption"]["active"] = False
 
-    # Azul falha a desencriptação e também entra em reagrupamento
-    await set_team_to_regroup_after_objective("azul")
-
-    await send_team_embed_with_status_last(
-        "azul",
-        tactical_embed(
-            "❌ MISSÃO FALHADA — SIGNAL KEY",
-            "A desencriptação foi interrompida por sabotagem inimiga.",
-            discord.Color.red(),
-            [
-                {"name": "📡 ESTADO DO TERMINAL", "value": "UPLINK comprometido."},
-                {"name": "📍 ORDEM", "value": "Regressem ao COMANDO e usem `!reagrupado`."}
-            ]
-        )
-    )
-
-    await milsim_log("💥 Sabotagem vermelha cancelou a desencriptação azul. Missão 2 do Azul marcada como falhada.")
-    await update_status_panel()
+    await milsim_log("💥 Sabotagem vermelha cancelou a desencriptação azul.")
 
 
 @bot.command()
@@ -3415,14 +3398,15 @@ async def codigo(ctx, codigo: str):
 
     milsim_state["scores"][team] += data["points"]
 
-    await purge_team_status_panels(team)
-    msg = await ctx.send(embed=build_mission_embed_with_status(team, data["embed"](), "✅ Objetivo validado"))
-    milsim_state["mission_message_ids"][team] = msg.id
+    if data["type"] in ("checkpoint", "decryption"):
+        await purge_team_status_panels(team)
+        msg = await ctx.send(embed=build_mission_embed_with_status(team, data["embed"](), "✅ Objetivo validado"))
+        milsim_state["mission_message_ids"][team] = msg.id
 
-    enemy_alert = data.get("enemy_alert_embed")
-    if enemy_alert:
-        enemy = milsim_enemy(team)
-        await send_team_embed_with_status_last(enemy, enemy_alert())
+        enemy_alert = data.get("enemy_alert_embed")
+        if enemy_alert:
+            enemy = milsim_enemy(team)
+            await send_team_embed_with_status_last(enemy, enemy_alert())
 
     if codigo == "RAVEN-119":
         await milsim_resolve_sabotage_by_red()
@@ -3440,16 +3424,17 @@ async def codigo(ctx, codigo: str):
         return
 
     if data["type"] == "end":
+        await purge_team_status_panels(team)
+        msg = await ctx.send(embed=build_mission_embed_with_status(team, data["embed"](), "🏁 Operação terminada"))
+        milsim_state["mission_message_ids"][team] = msg.id
         milsim_state["active"] = False
         await milsim_log("🏁 Operação terminada por código final.")
         return
 
-    await set_both_teams_to_regroup_after_objective(team, team_state["current"])
-
-    await set_team_to_regroup_after_objective(team)
+    await set_both_teams_to_regroup_after_objective(team, team_state["current"], codigo)
 
 
-async def set_both_teams_to_regroup_after_objective(winning_team: str, mission_name: str):
+async def set_both_teams_to_regroup_after_objective(winning_team: str, mission_name: str, codigo: str = None):
     enemy = milsim_enemy(winning_team)
 
     for t in ["azul", "vermelho"]:
@@ -3459,17 +3444,93 @@ async def set_both_teams_to_regroup_after_objective(winning_team: str, mission_n
     winner_color = discord.Color.blue() if winning_team == "azul" else discord.Color.red()
     enemy_color = discord.Color.blue() if enemy == "azul" else discord.Color.red()
 
+    result_map = {
+        "SHADOW-214": {
+            "winner_title": "DISCO VERDADEIRO CONFIRMADO",
+            "winner_reason": "A caixa segura regressou ao HQ e o disco verdadeiro foi identificado. A inteligência principal permanece intacta.",
+            "enemy_title": "INTEL AZUL EXTRAÍDA",
+            "enemy_reason": "A Task Force Azul conseguiu retirar a caixa segura e identificar o disco verdadeiro."
+        },
+        "VIPER-771": {
+            "winner_title": "CAIXA COMPROMETIDA",
+            "winner_reason": "A caixa segura foi capturada e comprometida na base Vermelha. A inteligência principal da Azul deixou de ser confiável.",
+            "enemy_title": "CAIXA SEGURA COMPROMETIDA",
+            "enemy_reason": "A Task Force Vermelha conseguiu capturar a caixa e comprometer o conteúdo."
+        },
+        "RAVEN-119": {
+            "winner_title": "TRANSMISSÃO SABOTADA",
+            "winner_reason": "A transmissão de dados foi interrompida com sucesso antes de chegar à central.",
+            "enemy_title": "TRANSMISSÃO INTERROMPIDA",
+            "enemy_reason": "A Task Force Vermelha sabotou o uplink e interrompeu o envio de dados."
+        },
+        "FRAGMENT-404": {
+            "winner_title": "FRAGMENTOS RECUPERADOS",
+            "winner_reason": "Os fragmentos foram reunidos e parte da inteligência foi restaurada com sucesso.",
+            "enemy_title": "RECUPERAÇÃO AZUL CONFIRMADA",
+            "enemy_reason": "A Task Force Azul conseguiu reconstruir os fragmentos de backup."
+        },
+        "GHOST-802": {
+            "winner_title": "CARGA DEPOSITADA",
+            "winner_reason": "A carga inimiga foi intercetada e depositada com sucesso no ponto indicado.",
+            "enemy_title": "CARGA INTERCETADA",
+            "enemy_reason": "A Task Force Azul conseguiu capturar e depositar a carga operacional."
+        },
+        "EXFIL-337": {
+            "winner_title": "CONVOY VALIDADO",
+            "winner_reason": "A carga completou a rota obrigatória e foi extraída com sucesso após os checkpoints.",
+            "enemy_title": "CONVOY INIMIGO CONCLUÍDO",
+            "enemy_reason": "A Task Force Vermelha completou a rota de transporte e concluiu a extração final."
+        },
+        "BLACK-916": {
+            "winner_title": "SATCOM HACK INICIADO",
+            "winner_reason": "A estação SATCOM foi ativada e o hack às comunicações inimigas entrou em curso.",
+            "enemy_title": "INTERFERÊNCIA SATCOM DETETADA",
+            "enemy_reason": "A Task Force Vermelha iniciou atividade hostil numa estação SATCOM clandestina."
+        },
+        "OMEGA-440": {
+            "winner_title": "HACK SATCOM CANCELADO",
+            "winner_reason": "O terminal SATCOM foi localizado e a sequência de hackeamento foi cancelada.",
+            "enemy_title": "HACK SATCOM INTERROMPIDO",
+            "enemy_reason": "A Task Force Azul localizou o terminal e cancelou a operação SATCOM."
+        },
+        "CACHE-777": {
+            "winner_title": "SUPPLY CACHE RECUPERADA",
+            "winner_reason": "A supply crate foi recuperada e extraída com sucesso durante a emboscada.",
+            "enemy_title": "ACAMPAMENTO COMPROMETIDO",
+            "enemy_reason": "A Task Force Azul conseguiu infiltrar o acampamento e recuperar recursos."
+        },
+        "NOVA-999": {
+            "winner_title": "TRANSMISSÃO FINAL CONCLUÍDA",
+            "winner_reason": "A transmissão final foi concluída e a Task Force Azul assumiu vantagem decisiva.",
+            "enemy_title": "VITÓRIA AZUL CONFIRMADA",
+            "enemy_reason": "A transmissão final foi concluída pela Task Force Azul."
+        },
+        "IRON-666": {
+            "winner_title": "TRANSMISSÃO FINAL IMPEDIDA",
+            "winner_reason": "A transmissão inimiga foi interrompida e a Task Force Vermelha assumiu vantagem decisiva.",
+            "enemy_title": "VITÓRIA VERMELHA CONFIRMADA",
+            "enemy_reason": "A transmissão final foi impedida pela Task Force Vermelha."
+        },
+    }
+
+    result = result_map.get(codigo or "", {})
+    winner_title = result.get("winner_title", "OBJETIVO CONCLUÍDO")
+    winner_reason = result.get("winner_reason", "O objetivo foi concluído com sucesso.")
+    enemy_title = result.get("enemy_title", "OBJETIVO INIMIGO CONFIRMADO")
+    enemy_reason = result.get("enemy_reason", "O objetivo inimigo foi confirmado e a janela operacional atual foi encerrada.")
+
     await send_team_embed_with_status_last(
         winning_team,
         tactical_embed(
             "✅ OBJETIVO CONCLUÍDO — REAGRUPAMENTO OPERACIONAL",
-            "O objetivo foi concluído com sucesso. A unidade deve regressar ao HQ e entrar em descanso operacional.\\n\\n"
+            "A unidade deve regressar ao HQ e entrar em descanso operacional.\\n\\n"
             "Reabasteçam equipamento, confirmem comunicações e preparem-se para a próxima janela de missão.",
             winner_color,
             [
-                {"name": "📌 Estado da Missão", "value": "🔵 REAGRUPAMENTO OPERACIONAL"},
-                {"name": "⏱️ Novas Ordens em", "value": f"**{format_time_remaining(winning_team)}**"},
-                {"name": "📍 ORDEM", "value": "Regressar à base, reorganizar unidade e aguardar nova transmissão."}
+                {"name": "📌 Motivo", "value": f"**{winner_title}**\\n{winner_reason}", "inline": False},
+                {"name": "📍 Ordem", "value": "Regressar à base, reorganizar unidade e aguardar nova transmissão.", "inline": False},
+                {"name": "📌 Estado da Missão", "value": "🔵 REAGRUPAMENTO OPERACIONAL", "inline": False},
+                {"name": "⏱️ Novas Ordens em", "value": f"**{format_time_remaining(winning_team)}**", "inline": True}
             ],
             footer="COMANDO CENTRAL • REAGRUPAMENTO OPERACIONAL"
         )
@@ -3479,13 +3540,14 @@ async def set_both_teams_to_regroup_after_objective(winning_team: str, mission_n
         enemy,
         tactical_embed(
             "⚠️ ORDEM DE RETIRADA",
-            "O objetivo inimigo foi confirmado. A janela operacional atual foi encerrada para a vossa unidade.\\n\\n"
-            "Interrompam avanço, regressem imediatamente ao HQ e preparem resposta para a próxima operação.",
+            "Retirada imediata autorizada. A missão atual foi encerrada para a vossa unidade.\\n\\n"
+            "Regressem ao HQ, reorganizem a equipa e preparem-se para novas ordens.",
             enemy_color,
             [
-                {"name": "📍 ORDEM IMEDIATA", "value": "▸ Retirar do setor\\n▸ Regressar à base\\n▸ Reorganizar unidade\\n▸ Reabastecer equipamento"},
-                {"name": "📌 Estado da Missão", "value": "🔵 REAGRUPAMENTO OPERACIONAL"},
-                {"name": "⏱️ Novas Ordens em", "value": f"**{format_time_remaining(enemy)}**"}
+                {"name": "📌 Motivo", "value": f"**{enemy_title}**\\n{enemy_reason}", "inline": False},
+                {"name": "📍 Ordem Imediata", "value": "▸ Retirar do setor\\n▸ Regressar à base\\n▸ Reorganizar unidade\\n▸ Reabastecer equipamento", "inline": False},
+                {"name": "📌 Estado da Missão", "value": "🔵 REAGRUPAMENTO OPERACIONAL", "inline": False},
+                {"name": "⏱️ Novas Ordens em", "value": f"**{format_time_remaining(enemy)}**", "inline": True}
             ],
             footer="COMANDO CENTRAL • ORDEM DE RETIRADA"
         )
@@ -3529,35 +3591,23 @@ async def advance_milsim_phase(old_mission: str):
 
 
 
-
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def limpardados(ctx):
-
-    milsim_state["scores"] = {
-        "azul": 0,
-        "vermelho": 0
-    }
-
-    milsim_state["teams"] = {
-        "azul": {
-            "current": "mission_1",
-            "phase": "mission",
-            "regrouped": False
-        },
-        "vermelho": {
-            "current": "mission_1",
-            "phase": "mission",
-            "regrouped": False
-        }
-    }
-
+    milsim_state["scores"] = {"azul": 0, "vermelho": 0}
     milsim_state["active"] = False
-    milsim_state["mission_end_times"] = {
-        "azul": None,
-        "vermelho": None
+    milsim_state["mission_end_times"] = {"azul": None, "vermelho": None}
+    milsim_state["regroup_notice_sent"] = {"azul": False, "vermelho": False}
+    milsim_state["mission_branch"] = None
+    milsim_state["mission3_route"] = {"vermelho_step": 0}
+    milsim_state["captured_players"] = []
+    milsim_state["decryption"] = {"active": False, "cancelled": False, "team": None, "mission": None}
+    milsim_state["mission_message_ids"] = {"azul": None, "vermelho": None}
+    milsim_state["team_status_panel_message_ids"] = {"azul": None, "vermelho": None}
+    milsim_state["teams"] = {
+        "azul": {"current": "mission_1", "phase": "mission", "regrouped": False, "completed_codes": []},
+        "vermelho": {"current": "mission_1", "phase": "mission", "regrouped": False, "completed_codes": []}
     }
-
     await ctx.send("✅ Dados MILSIM limpos com sucesso.")
 
 
