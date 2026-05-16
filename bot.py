@@ -2152,6 +2152,38 @@ GM_ROLE_ID = 1504602388496121928
 RESPAWN_INTERVAL_SECONDS = 300  # 5 minutos
 RESPAWN_OPEN_SECONDS = 5        # janela verde de respawn
 
+# ---------- CÓDIGOS DE OPERADOR / CAPTURA ----------
+AZUL_OPERATOR_CODES = {
+    "AZ-117": "GHOST-1",
+    "AZ-204": "GHOST-2",
+    "AZ-318": "GHOST-3",
+    "AZ-442": "GHOST-4",
+    "AZ-509": "GHOST-5",
+    "AZ-661": "GHOST-6",
+    "AZ-734": "GHOST-7",
+    "AZ-845": "GHOST-8",
+    "AZ-918": "GHOST-9",
+    "AZ-990": "GHOST-10",
+}
+
+VERMELHO_OPERATOR_CODES = {
+    "VR-103": "VIPER-1",
+    "VR-216": "VIPER-2",
+    "VR-344": "VIPER-3",
+    "VR-451": "VIPER-4",
+    "VR-578": "VIPER-5",
+    "VR-602": "VIPER-6",
+    "VR-745": "VIPER-7",
+    "VR-811": "VIPER-8",
+    "VR-923": "VIPER-9",
+    "VR-997": "VIPER-10",
+}
+
+ALL_OPERATOR_CODES = {
+    **AZUL_OPERATOR_CODES,
+    **VERMELHO_OPERATOR_CODES,
+}
+
 
 
 MISSION_TIME_LIMITS = {
@@ -3318,8 +3350,8 @@ NEXT_MISSIONS = {
             "〔 TASK FORCE VERMELHA 〕\n\nMaterial operacional altamente sensível precisa de atravessar o complexo através de uma rota obrigatória. A rota foi comprometida. Interceção inimiga é esperada a qualquer momento.\n\nReconhecimento indica movimentação Azul nos flancos do percurso. Esperem emboscadas, ataques rápidos e combate constante até à extração final.",
             discord.Color.red(),
             [
-                {"name": "🎯 OBJETIVOS", "value": "▸ Proteger a carga\n▸ Validar checkpoints obrigatórios\n▸ Manter integridade do transporte\n▸ Concluir extração final", "inline": False},
-                {"name": "⚠️ REGRAS OPERACIONAIS", "value": "▸ O operador da carga não pode correr\n▸ Se eliminado, a carga permanece no local\n▸ A rota deve ser seguida por ordem", "inline": False},
+                {"name": "🎯 OBJETIVOS", "value": "▸ Proteger a carga\n▸ Validar os 5 checkpoints obrigatórios\n▸ Manter integridade do transporte\n▸ Concluir extração final", "inline": False},
+                {"name": "⚠️ REGRAS OPERACIONAIS", "value": "▸ O operador da carga não pode correr\n▸ Se eliminado, a carga permanece no local\n▸ A rota deve ser seguida por ordem. Devem validar 5 checkpoints antes da extração final", "inline": False},
                 {"name": "📍 ORDEM", "value": "Mantenham o comboio em movimento.", "inline": False}
             ]
         )
@@ -4174,43 +4206,91 @@ async def reagrupado(ctx):
     await update_status_panel()
 
 
+
 @bot.command()
-async def capturar(ctx, player_id: str):
+@commands.has_permissions(administrator=True)
+async def codigos_operadores(ctx):
+    embed = tactical_embed(
+        "🪪 CÓDIGOS DE OPERADOR",
+        "Lista interna de códigos usados para capturas.",
+        discord.Color.dark_gold(),
+        [
+            {"name": "🔵 Task Force Azul", "value": "\n".join([f"`{code}` — {name}" for code, name in AZUL_OPERATOR_CODES.items()]), "inline": False},
+            {"name": "🔴 Task Force Vermelha", "value": "\n".join([f"`{code}` — {name}" for code, name in VERMELHO_OPERATOR_CODES.items()]), "inline": False},
+            {"name": "📌 Uso", "value": "`!capturar CODIGO-OPERADOR`", "inline": False}
+        ],
+        footer="COMANDO CENTRAL • CÓDIGOS DE OPERADOR"
+    )
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+async def capturar(ctx, codigo_operador: str):
     team = milsim_team_from_channel(ctx.channel.id)
 
     if not team:
         return await ctx.send("⚠️ Este comando só pode ser usado no canal da tua equipa.", delete_after=10)
 
     if not milsim_state["active"]:
-        return await ctx.send("⚠️ A operação não está ativa.")
+        return await ctx.send("⚠️ A operação não está ativa.", delete_after=10)
 
-    player_id = player_id.upper().strip()
+    codigo_operador = codigo_operador.upper().strip()
 
-    valid_prefix = "IRON-" if team == "azul" else "NOVA-"
+    if codigo_operador not in ALL_OPERATOR_CODES:
+        return await ctx.send("❌ Código de operador inválido.", delete_after=10)
 
-    if not player_id.startswith(valid_prefix):
-        return await ctx.send("❌ Esse operador não pertence à equipa inimiga.")
+    enemy_codes = VERMELHO_OPERATOR_CODES if team == "azul" else AZUL_OPERATOR_CODES
+    own_codes = AZUL_OPERATOR_CODES if team == "azul" else VERMELHO_OPERATOR_CODES
 
-    if player_id in milsim_state["captured_players"]:
-        return await ctx.send("⚠️ Esse operador já foi capturado anteriormente.")
+    if codigo_operador in own_codes:
+        return await ctx.send("❌ Esse operador pertence à tua própria equipa.", delete_after=10)
 
-    milsim_state["captured_players"].append(player_id)
+    if codigo_operador not in enemy_codes:
+        return await ctx.send("❌ Esse operador não pertence à equipa inimiga.", delete_after=10)
+
+    if codigo_operador in milsim_state.get("captured_players", []):
+        return await ctx.send("⚠️ Esse operador já foi capturado anteriormente.", delete_after=10)
+
+    milsim_state.setdefault("captured_players", []).append(codigo_operador)
     milsim_state["scores"][team] += 5
 
-    await purge_team_status_panels(team)
-    await ctx.send(embed=tactical_embed(
-        "🪪 OPERADOR CAPTURADO",
-        f"ID confirmado: **{player_id}**",
-        discord.Color.dark_red(),
-        [
-            {"name": "📡 INTEL RECUPERADA", "value": "▸ Informação operacional parcial obtida\n▸ Possível quebra de comunicações inimigas"},
-            {"name": "🏆 PONTOS", "value": "**+5 pontos atribuídos**"}
-        ]
-    ))
-    await create_team_status_panel(team)
+    operator_name = ALL_OPERATOR_CODES[codigo_operador]
+    enemy = milsim_enemy(team)
 
-    await milsim_log(f"🪪 **{team.upper()}** capturou `{player_id}`. +5 pontos.")
+    await send_team_embed_with_status_last(
+        team,
+        tactical_embed(
+            "🪪 OPERADOR CAPTURADO",
+            f"Operador inimigo confirmado: **{operator_name}**\\nCódigo: `{codigo_operador}`",
+            discord.Color.dark_red(),
+            [
+                {
+                    "name": "📡 INTEL RECUPERADA",
+                    "value": "▸ Identificação operacional confirmada\\n▸ Operador removido temporariamente do terreno\\n▸ Deve regressar à base e aguardar próxima janela de respawn",
+                    "inline": False
+                },
+                {"name": "🏆 Pontos", "value": "**+5 pontos atribuídos**", "inline": True}
+            ],
+            footer="COMANDO CENTRAL • CAPTURA DE OPERADOR"
+        )
+    )
+
+    await milsim_send_to_team(
+        enemy,
+        embed=tactical_embed(
+            "⚠️ OPERADOR COMPROMETIDO",
+            f"Um operador da vossa equipa foi capturado.\\n\\nCódigo comprometido: `{codigo_operador}`",
+            discord.Color.orange(),
+            [
+                {"name": "📍 ORDEM", "value": "O operador capturado deve regressar à base e aguardar próxima janela de respawn.", "inline": False}
+            ],
+            footer="COMANDO CENTRAL • ALERTA DE CAPTURA"
+        )
+    )
+
+    await milsim_log(f"🪪 **{team.upper()}** capturou `{codigo_operador}` ({operator_name}). +5 pontos.")
     await update_status_panel()
+
 
 @bot.command()
 async def opstatus(ctx):
