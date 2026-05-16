@@ -2639,6 +2639,59 @@ async def update_status_panel():
     await update_all_team_status_panels()
 
 
+
+async def handle_mission_timeout_failsafe(mission_name: str):
+    # Failsafe narrativo para impedir bloqueio da campanha quando a Missão 1 termina sem objetivo validado.
+    if mission_name != "mission_1":
+        return False
+
+    if milsim_state.get("mission_branch"):
+        return False
+
+    azul_done = bool(milsim_state["teams"]["azul"].get("completed_codes"))
+    vermelho_done = bool(milsim_state["teams"]["vermelho"].get("completed_codes"))
+
+    if azul_done or vermelho_done:
+        return False
+
+    milsim_state["mission_branch"] = "compromised"
+
+    for t in ["azul", "vermelho"]:
+        milsim_state["teams"][t]["phase"] = "regroup"
+        milsim_state["teams"][t]["regrouped"] = False
+
+    await stop_respawn_cycle()
+
+    embed = tactical_embed(
+        "⚠️ FALHA OPERACIONAL — INTEL PERDIDA",
+        "Nenhuma Task Force conseguiu assegurar a caixa segura antes do encerramento da janela operacional.\n\n"
+        "Durante a retirada das unidades, parte da inteligência foi destruída e fragmentada no terreno.\n\n"
+        "O COMANDO confirmou sinais de atividade nos setores:\n"
+        "〔 BUNKER 〕\n"
+        "〔 CQB 〕\n"
+        "〔 ACAMPAMENTO 〕\n\n"
+        "A próxima operação será focada na recuperação parcial da inteligência.",
+        discord.Color.orange(),
+        [
+            {"name": "📌 Resultado", "value": "Nenhuma equipa concluiu o objetivo principal da Missão 1.", "inline": False},
+            {"name": "📡 Nova Diretriz", "value": "A operação segue para **RECOVER FRAGMENTS**.", "inline": False},
+            {"name": "📍 Ordem", "value": "Regressar à base, reorganizar unidade e aguardar novas ordens.", "inline": False},
+            {"name": "⏱️ Novas Ordens em", "value": "**00:00**", "inline": True}
+        ],
+        footer="COMANDO CENTRAL • FAILSAFE OPERACIONAL"
+    )
+
+    await send_team_embed_with_status_last("azul", embed.copy())
+    await send_team_embed_with_status_last("vermelho", embed.copy())
+
+    await milsim_log("⚠️ Missão 1 terminou sem objetivo validado. Failsafe ativado: branch RECOVER FRAGMENTS.")
+    await update_status_panel()
+
+    # Avança automaticamente para a próxima fase quando ambas as equipas ficarem em reagrupamento.
+    await advance_milsim_phase("mission_1")
+    return True
+
+
 async def mission_timer(team: str, mission_name: str):
     if team == "azul":
         await start_respawn_cycle(mission_name)
@@ -2677,6 +2730,10 @@ async def mission_timer(team: str, mission_name: str):
 
     current = milsim_state["teams"][team]["current"]
     if current != mission_name:
+        return
+
+    # Se a Missão 1 terminar sem nenhuma equipa concluir objetivo, ativar caminho alternativo.
+    if await handle_mission_timeout_failsafe(mission_name):
         return
 
     team_state = milsim_state["teams"][team]
@@ -3916,7 +3973,12 @@ async def advance_milsim_phase(old_mission: str):
             milsim_state["mission3_route"]["vermelho_step"] = 0
 
         await purge_team_status_panels(t)
-        await milsim_send_to_team(t, embed=NEXT_MISSIONS[old_mission][t]())
+
+        if old_mission == "mission_1" and milsim_state.get("mission_branch") == "compromised":
+            await milsim_send_to_team(t, embed=NEXT_MISSIONS_ALT["mission_1_compromised"][t]())
+        else:
+            await milsim_send_to_team(t, embed=NEXT_MISSIONS[old_mission][t]())
+
         await create_team_status_panel(t)
 
     for t in ["azul", "vermelho"]:
