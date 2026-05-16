@@ -2420,7 +2420,6 @@ async def refresh_team_status_panel(team: str):
     await purge_team_status_panels(team)
 
 
-
 def build_inactive_mission_embed(team: str, embed: discord.Embed, reason: str = "Missão encerrada"):
     final_embed = embed.copy()
     _remove_mission_status_fields(final_embed)
@@ -2460,7 +2459,6 @@ async def archive_all_mission_embeds(reason: str = "Missão encerrada"):
     await archive_team_mission_embed("vermelho", reason)
 
 
-
 async def send_team_embed_with_status_last(team: str, embed: discord.Embed, estado: str = None):
     await purge_team_status_panels(team)
 
@@ -2470,6 +2468,7 @@ async def send_team_embed_with_status_last(team: str, embed: discord.Embed, esta
 
     msg = await channel.send(embed=build_mission_embed_with_status(team, embed, estado))
     milsim_state["mission_message_ids"][team] = msg.id
+    await create_team_status_panel(team)
     return msg
 
 
@@ -2753,7 +2752,7 @@ async def handle_mission_timeout_failsafe(mission_name: str):
         milsim_state["teams"][t]["phase"] = "regroup"
         milsim_state["teams"][t]["regrouped"] = False
 
-    await archive_all_mission_embeds("Objetivo concluído. Unidade em reagrupamento operacional.")
+    await archive_all_mission_embeds("Objetivo concluído. Missão encerrada.")
 
     await stop_respawn_cycle()
     await archive_all_mission_embeds("Janela operacional terminou sem objetivo validado.")
@@ -4249,7 +4248,6 @@ async def advance_milsim_phase(old_mission: str):
         if milsim_state["teams"][t]["current"] == "mission_3":
             milsim_state["mission3_route"]["vermelho_step"] = 0
 
-        await archive_team_mission_embed(t, "Nova fase operacional iniciada.")
         await purge_team_status_panels(t)
 
         if old_mission == "mission_1" and milsim_state.get("mission_branch") == "compromised":
