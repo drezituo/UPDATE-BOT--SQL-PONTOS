@@ -2523,6 +2523,17 @@ async def deactivate_all_current_mission_embeds(reason: str = "Missão encerrada
     await deactivate_current_mission_embed("vermelho", reason)
 
 
+def mission_display_name(mission_name: str):
+    names = {
+        "mission_1": "SECURE DRIVES",
+        "mission_2": "SIGNAL KEY / RECOVER FRAGMENTS",
+        "mission_3": "CONVOY RUN",
+        "mission_4": "SATCOM BREACH",
+        "final": "TOTAL DOMINATION",
+    }
+    return names.get(mission_name, str(mission_name).upper())
+
+
 def get_timer_context(team: str):
     phase = milsim_state["teams"][team].get("phase", "mission")
     current = milsim_state["teams"][team].get("current", "unknown")
@@ -2675,6 +2686,23 @@ async def force_archive_current_mission_embed(team: str, reason: str = "Nova fas
 async def force_archive_all_current_mission_embeds(reason: str = "Nova fase operacional iniciada."):
     await force_archive_current_mission_embed("azul", reason)
     await force_archive_current_mission_embed("vermelho", reason)
+
+
+async def send_team_embed_plain(team: str, embed: discord.Embed):
+    await force_archive_current_mission_embed(team, "Nova transmissão operacional emitida.")
+    await purge_team_status_panels(team)
+    await cleanup_team_timer_panels(team)
+
+    channel = milsim_channel_for_team(team)
+    if not channel:
+        return None
+
+    msg = await channel.send(embed=embed)
+    milsim_state.setdefault("mission_message_ids", {})[team] = msg.id
+
+    await create_team_timer_panel(team)
+    await create_team_status_panel(team)
+    return msg
 
 
 async def send_team_embed_with_status_last(team: str, embed: discord.Embed, estado: str = None):
@@ -4837,41 +4865,89 @@ async def set_both_teams_to_regroup_after_objective(winning_team: str, mission_n
     }
 
     result = result_map.get(codigo or "", {})
+
+    # SATCOM codes do NOT trigger regroup/retreat flow.
+    if codigo == "BLACK-916":
+        if winning_team == "vermelho":
+            await milsim_send_to_team(
+                "vermelho",
+                embed=tactical_embed(
+                    "📡 HACK SATCOM INICIADO",
+                    "A sequência de intrusão SATCOM está ativa.\n\n"
+                    "A equipa destacada deve manter controlo da posição durante 10 minutos.\n\n"
+                    "O terminal não pode ser abandonado.",
+                    discord.Color.red(),
+                    footer="COMANDO CENTRAL • SATCOM BREACH"
+                )
+            )
+
+            await milsim_send_to_team(
+                "azul",
+                embed=tactical_embed(
+                    "🚨 SATCOM COMPROMETIDO",
+                    "O inimigo iniciou um hack ativo contra a rede SATCOM.\n\n"
+                    "Apenas a equipa destacada está autorizada a intervir.",
+                    discord.Color.blue(),
+                    footer="COMANDO CENTRAL • SATCOM ALERT"
+                )
+            )
+
+            await milsim_log("📡 SATCOM hack iniciado pela Task Force Vermelha.")
+        return
+
+    if codigo == "OMEGA-440":
+        await milsim_send_to_team(
+            "azul",
+            embed=tactical_embed(
+                "📡 HACK CANCELADO",
+                "O terminal SATCOM foi localizado e a sequência de hackeamento foi interrompida com sucesso.",
+                discord.Color.blue(),
+                footer="COMANDO CENTRAL • SATCOM SECURED"
+            )
+        )
+
+        await milsim_send_to_team(
+            "vermelho",
+            embed=tactical_embed(
+                "📡 HACK SATCOM INTERROMPIDO",
+                "A Task Force Azul conseguiu localizar o terminal e cancelar a operação SATCOM.",
+                discord.Color.red(),
+                footer="COMANDO CENTRAL • SATCOM FAILURE"
+            )
+        )
+
+        await milsim_log("📡 SATCOM cancelado pela Task Force Azul.")
+        return
+
     winner_title = result.get("winner_title", "OBJETIVO CONCLUÍDO")
     winner_reason = result.get("winner_reason", "O objetivo foi concluído com sucesso.")
     enemy_title = result.get("enemy_title", "OBJETIVO INIMIGO CONFIRMADO")
     enemy_reason = result.get("enemy_reason", "O objetivo inimigo foi confirmado e a janela operacional atual foi encerrada.")
 
-    await send_team_embed_with_status_last(
+    mission_label = mission_display_name(mission_name)
+
+    await send_team_embed_plain(
         winning_team,
         tactical_embed(
-            "✅ OBJETIVO CONCLUÍDO — REAGRUPAMENTO OPERACIONAL",
-            "A unidade deve regressar ao HQ e entrar em descanso operacional.\n\n"
-            "Reabasteçam equipamento, confirmem comunicações e preparem-se para a próxima janela de missão.",
+            f"✅ Ordem de Retirada - Missão Bem sucedida ({mission_label})",
+            "📡 A missão foi um êxito! Regressem de imediato à base, reorganizem a equipa, reabasteçam equipamento, confirmem comunicações e preparem-se para a próxima janela de missão.\n\n"
+            f"📌 **Motivo - {winner_title}**\n"
+            f"{winner_reason}\n\n"
+            "Estejam em alerta e aguardem novas ordens!",
             winner_color,
-            [
-                {"name": "📌 Motivo", "value": f"**{winner_title}**\n{winner_reason}", "inline": False},
-                {"name": "📍 Ordem", "value": "Regressar à base, reorganizar unidade e aguardar nova transmissão.", "inline": False},
-                {"name": "📌 Estado da Missão", "value": "🔵 REAGRUPAMENTO OPERACIONAL", "inline": False},
-                {"name": "⏱️ Novas Ordens em", "value": f"**{format_time_remaining(winning_team)}**", "inline": True}
-            ],
-            footer="COMANDO CENTRAL • REAGRUPAMENTO OPERACIONAL"
+            footer="COMANDO CENTRAL • ORDEM DE RETIRADA"
         )
     )
 
-    await send_team_embed_with_status_last(
+    await send_team_embed_plain(
         enemy,
         tactical_embed(
-            "⚠️ ORDEM DE RETIRADA",
-            "Retirada imediata autorizada. A missão atual foi encerrada para a vossa unidade.\n\n"
-            "Regressem ao HQ, reorganizem a equipa e preparem-se para novas ordens.",
+            f"⚠️ Ordem de Retirada - Missão Fracassada! ({mission_label})",
+            "📡 Regressem de imediato ao HQ, reorganizem a equipa e preparem-se para novas ordens.\n\n"
+            f"📌 **Motivo - {enemy_title}**\n"
+            f"{enemy_reason}\n\n"
+            "Estejam em alerta e aguardem novas ordens!",
             enemy_color,
-            [
-                {"name": "📌 Motivo", "value": f"**{enemy_title}**\n{enemy_reason}", "inline": False},
-                {"name": "📍 Ordem Imediata", "value": "▸ Retirar do setor\n▸ Regressar à base\n▸ Reorganizar unidade\n▸ Reabastecer equipamento", "inline": False},
-                {"name": "📌 Estado da Missão", "value": "🔵 REAGRUPAMENTO OPERACIONAL", "inline": False},
-                {"name": "⏱️ Novas Ordens em", "value": f"**{format_time_remaining(enemy)}**", "inline": True}
-            ],
             footer="COMANDO CENTRAL • ORDEM DE RETIRADA"
         )
     )
