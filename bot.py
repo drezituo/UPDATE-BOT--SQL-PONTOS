@@ -2325,34 +2325,27 @@ def build_mission_embed_with_status(team: str, embed: discord.Embed, estado: str
     phase = milsim_state["teams"][team].get("phase", "mission")
 
     if phase == "mission":
-        final_embed.add_field(
-            name="📌 Estado da Missão",
-            value="🟢 EM CURSO",
-            inline=False
-        )
-        final_embed.add_field(
-            name="⏱️ Tempo Restante",
-            value=f"**{format_time_remaining(team)}**",
-            inline=True
-        )
-
+        state_value = "🟢 EM CURSO"
     elif phase == "regroup":
-        final_embed.add_field(
-            name="📌 Estado da Missão",
-            value="🔵 REAGRUPAMENTO / REFILL",
-            inline=False
-        )
-        final_embed.add_field(
-            name="⏱️ Novas Ordens em",
-            value=f"**{format_time_remaining(team)}**",
-            inline=True
-        )
+        state_value = "🔵 REAGRUPAMENTO / REFILL"
+    elif phase == "rest":
+        state_value = "🛌 DESCANSO OPERACIONAL"
+    elif phase == "failed":
+        state_value = "❌ MISSÃO FRACASSADA"
+    else:
+        state_value = str(phase).upper()
+
+    final_embed.add_field(
+        name="📌 Estado da Missão",
+        value=state_value,
+        inline=False
+    )
 
     if estado:
         final_embed.add_field(
-            name="🏆 Score",
+            name="📍 Estado Operacional",
             value=estado,
-            inline=True
+            inline=False
         )
 
     return final_embed
@@ -2530,12 +2523,105 @@ async def deactivate_all_current_mission_embeds(reason: str = "Missão encerrada
     await deactivate_current_mission_embed("vermelho", reason)
 
 
+def get_timer_context(team: str):
+    phase = milsim_state["teams"][team].get("phase", "mission")
+    current = milsim_state["teams"][team].get("current", "unknown")
+
+    if phase == "mission":
+        title = f"⏱️ TIMER — {current.upper()}"
+        label = "Tempo restante para executar"
+        color = discord.Color.blue() if team == "azul" else discord.Color.red()
+    elif phase in ("regroup", "rest"):
+        title = "⏱️ TIMER — REAGRUPAMENTO / DESCANSO"
+        label = "Tempo restante para novas ordens"
+        color = discord.Color.dark_gold()
+    elif phase == "failed":
+        title = "⏱️ TIMER — MISSÃO ENCERRADA"
+        label = "Estado"
+        color = discord.Color.dark_grey()
+    else:
+        title = f"⏱️ TIMER — {phase.upper()}"
+        label = "Tempo restante"
+        color = discord.Color.dark_grey()
+
+    return title, label, color
+
+
+def build_team_timer_embed(team: str):
+    title, label, color = get_timer_context(team)
+
+    return tactical_embed(
+        title,
+        "Painel separado de tempo operacional.",
+        color,
+        [
+            {"name": label, "value": f"**{format_time_remaining(team)}**", "inline": False}
+        ],
+        footer="COMANDO CENTRAL • TIMER OPERACIONAL"
+    )
+
+
+async def delete_team_timer_panel(team: str):
+    channel = milsim_channel_for_team(team)
+    message_id = milsim_state.get("team_timer_panel_message_ids", {}).get(team)
+
+    if not channel or not message_id:
+        return
+
+    try:
+        msg = await channel.fetch_message(message_id)
+        await msg.delete()
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        pass
+
+    milsim_state.setdefault("team_timer_panel_message_ids", {})[team] = None
+
+
+async def create_team_timer_panel(team: str):
+    await delete_team_timer_panel(team)
+
+    channel = milsim_channel_for_team(team)
+    if not channel:
+        return None
+
+    msg = await channel.send(embed=build_team_timer_embed(team))
+    milsim_state.setdefault("team_timer_panel_message_ids", {})[team] = msg.id
+    return msg
+
+
+async def update_team_timer_panel(team: str):
+    channel = milsim_channel_for_team(team)
+    message_id = milsim_state.get("team_timer_panel_message_ids", {}).get(team)
+
+    if not channel:
+        return
+
+    if not message_id:
+        await create_team_timer_panel(team)
+        return
+
+    try:
+        msg = await channel.fetch_message(message_id)
+        await msg.edit(embed=build_team_timer_embed(team))
+    except discord.NotFound:
+        milsim_state.setdefault("team_timer_panel_message_ids", {})[team] = None
+        await create_team_timer_panel(team)
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+
+
+async def update_all_team_timer_panels():
+    await update_team_timer_panel("azul")
+    await update_team_timer_panel("vermelho")
+
+
 async def send_team_embed_with_status_last(team: str, embed: discord.Embed, estado: str = None):
     old_id = milsim_state.get("mission_message_ids", {}).get(team)
     if old_id:
         await deactivate_current_mission_embed(team, "Nova transmissão operacional emitida.")
 
     await purge_team_status_panels(team)
+    await delete_team_timer_panel(team)
 
     channel = milsim_channel_for_team(team)
     if not channel:
@@ -2543,6 +2629,8 @@ async def send_team_embed_with_status_last(team: str, embed: discord.Embed, esta
 
     msg = await channel.send(embed=build_mission_embed_with_status(team, embed, estado))
     milsim_state.setdefault("mission_message_ids", {})[team] = msg.id
+
+    await create_team_timer_panel(team)
     await create_team_status_panel(team)
     return msg
 
@@ -2563,6 +2651,8 @@ async def update_team_mission_embed(team: str, estado: str = None):
         await msg.edit(embed=build_mission_embed_with_status(team, base_embed, estado))
     except (discord.NotFound, discord.Forbidden, discord.HTTPException):
         pass
+
+    await update_team_timer_panel(team)
 
 
 def calculate_remaining_mission_seconds(team: str) -> int:
@@ -2804,6 +2894,7 @@ async def update_status_panel():
             pass
 
     await update_all_team_status_panels()
+    await update_all_team_timer_panels()
 
 
 
@@ -2998,6 +3089,7 @@ milsim_state = {
     "regroup_notice_sent": {"azul": False, "vermelho": False},
     "status_panel_message_id": None,
     "team_status_panel_message_ids": {"azul": None, "vermelho": None},
+    "team_timer_panel_message_ids": {"azul": None, "vermelho": None},
     "respawn": {
         "active": False,
         "mission": None,
@@ -4407,6 +4499,8 @@ async def start_op(ctx):
         )
     )
 
+    await create_team_timer_panel("azul")
+    await create_team_timer_panel("vermelho")
     await create_team_status_panel("azul")
     await create_team_status_panel("vermelho")
 
@@ -4850,6 +4944,7 @@ async def limpardados(ctx):
     milsim_state["mission_message_ids"] = {"azul": None, "vermelho": None}
     milsim_state["previous_mission_message_ids"] = {"azul": None, "vermelho": None}
     milsim_state["team_status_panel_message_ids"] = {"azul": None, "vermelho": None}
+    milsim_state["team_timer_panel_message_ids"] = {"azul": None, "vermelho": None}
     milsim_state["respawn"] = {
         "active": False,
         "mission": None,
@@ -5058,6 +5153,43 @@ async def gm_blackout(ctx):
     await send_team_embed_with_status_last("vermelho", embed)
     await milsim_log("⚫ Blackout ativado pelo Game Master.")
     await ctx.send("✅ Blackout enviado.")
+
+
+
+@bot.command()
+async def skip_pausa(ctx):
+    if ctx.channel.id != GM_CHANNEL_ID:
+        return await ctx.send("⚠️ Este comando só pode ser usado no canal GM.", delete_after=10)
+
+    if not milsim_is_gm(ctx):
+        return await ctx.send("❌ Apenas Game Masters podem usar este comando.", delete_after=10)
+
+    if not milsim_state.get("active"):
+        return await ctx.send("⚠️ A operação não está ativa.", delete_after=10)
+
+    phases = {t: milsim_state["teams"][t].get("phase") for t in ["azul", "vermelho"]}
+
+    if not any(phase == "regroup" for phase in phases.values()):
+        return await ctx.send("⚠️ Não existe pausa/reagrupamento ativo para avançar.", delete_after=10)
+
+    mission_name = milsim_state["teams"]["azul"].get("current") or milsim_state["teams"]["vermelho"].get("current")
+
+    for t in ["azul", "vermelho"]:
+        if milsim_state["teams"][t].get("phase") == "regroup":
+            milsim_state["mission_end_times"][t] = datetime.now(timezone.utc)
+            milsim_state["regroup_notice_sent"][t] = True
+
+    await milsim_log("⏭️ Pausa/reagrupamento avançado manualmente pelo Game Master.")
+
+    await ctx.send("⏭️ Pausa/reagrupamento avançado. A próxima fase será iniciada agora.", delete_after=10)
+
+    if mission_name:
+        await advance_milsim_phase(mission_name)
+
+
+@bot.command(name="passarpausa")
+async def passar_pausa(ctx):
+    await skip_pausa(ctx)
 
 
 @bot.command()
