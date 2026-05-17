@@ -2688,6 +2688,28 @@ async def force_archive_all_current_mission_embeds(reason: str = "Nova fase oper
     await force_archive_current_mission_embed("vermelho", reason)
 
 
+def remove_estado_missao_field(embed: discord.Embed):
+    kept_fields = []
+    for field in embed.fields:
+        if field.name != "📌 Estado da Missão":
+            kept_fields.append({
+                "name": field.name,
+                "value": field.value,
+                "inline": field.inline
+            })
+
+    embed.clear_fields()
+
+    for field in kept_fields:
+        embed.add_field(
+            name=field["name"],
+            value=field["value"],
+            inline=field["inline"]
+        )
+
+    return embed
+
+
 async def send_team_embed_plain(team: str, embed: discord.Embed):
     await force_archive_current_mission_embed(team, "Nova transmissão operacional emitida.")
     await purge_team_status_panels(team)
@@ -2697,7 +2719,9 @@ async def send_team_embed_plain(team: str, embed: discord.Embed):
     if not channel:
         return None
 
-    msg = await channel.send(embed=embed)
+    clean_embed = remove_estado_missao_field(embed.copy())
+
+    msg = await channel.send(embed=clean_embed)
     milsim_state.setdefault("mission_message_ids", {})[team] = msg.id
 
     await create_team_timer_panel(team)
