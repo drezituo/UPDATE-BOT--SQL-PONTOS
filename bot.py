@@ -2319,37 +2319,11 @@ def _remove_mission_status_fields(embed: discord.Embed):
         )
 
 def build_mission_embed_with_status(team: str, embed: discord.Embed, estado: str = None):
+    # Limpa campos automáticos antigos.
+    # O "Estado da Missão" foi removido dos embeds porque estava a ficar desatualizado/bugado.
     final_embed = embed.copy()
     _remove_mission_status_fields(final_embed)
-
-    phase = milsim_state["teams"][team].get("phase", "mission")
-
-    if phase == "mission":
-        state_value = "🟢 EM CURSO"
-    elif phase == "regroup":
-        state_value = "🔵 REAGRUPAMENTO / REFILL"
-    elif phase == "rest":
-        state_value = "🛌 DESCANSO OPERACIONAL"
-    elif phase == "failed":
-        state_value = "❌ MISSÃO FRACASSADA"
-    else:
-        state_value = str(phase).upper()
-
-    final_embed.add_field(
-        name="📌 Estado da Missão",
-        value=state_value,
-        inline=False
-    )
-
-    if estado:
-        final_embed.add_field(
-            name="📍 Estado Operacional",
-            value=estado,
-            inline=False
-        )
-
     return final_embed
-
 
 def build_team_status_embed(team: str):
     # Mantido por compatibilidade com comandos/funções antigas.
@@ -2434,20 +2408,10 @@ async def refresh_team_status_panel(team: str):
 
 
 def build_inactive_mission_embed(team: str, embed: discord.Embed, reason: str = "Missão encerrada"):
+    # Arquiva a mensagem sem adicionar "Estado da Missão" nem "Motivo".
     final_embed = embed.copy()
     _remove_mission_status_fields(final_embed)
-
-    final_embed.add_field(
-        name="📌 Estado da Missão",
-        value="⚫ MISSÃO INATIVA",
-        inline=False
-    )
-    final_embed.add_field(
-        name="📍 Motivo",
-        value=reason,
-        inline=False
-    )
-    final_embed.set_footer(text="COMANDO CENTRAL • MISSÃO INATIVA")
+    final_embed.set_footer(text="COMANDO CENTRAL • MISSÃO ARQUIVADA")
     return final_embed
 
 
@@ -2486,20 +2450,10 @@ async def archive_all_mission_embeds(reason: str = "Missão encerrada"):
 
 
 def build_inactive_mission_embed(team: str, embed: discord.Embed, reason: str = "Missão encerrada"):
+    # Arquiva a mensagem sem adicionar "Estado da Missão" nem "Motivo".
     final_embed = embed.copy()
     _remove_mission_status_fields(final_embed)
-
-    final_embed.add_field(
-        name="📌 Estado da Missão",
-        value="⚫ MISSÃO INATIVA",
-        inline=False
-    )
-    final_embed.add_field(
-        name="📍 Motivo",
-        value=reason,
-        inline=False
-    )
-    final_embed.set_footer(text="COMANDO CENTRAL • MISSÃO INATIVA")
+    final_embed.set_footer(text="COMANDO CENTRAL • MISSÃO ARQUIVADA")
     return final_embed
 
 
@@ -2681,24 +2635,7 @@ async def force_archive_all_current_mission_embeds(reason: str = "Nova fase oper
 
 
 def remove_estado_missao_field(embed: discord.Embed):
-    kept_fields = []
-    for field in embed.fields:
-        if field.name != "📌 Estado da Missão":
-            kept_fields.append({
-                "name": field.name,
-                "value": field.value,
-                "inline": field.inline
-            })
-
-    embed.clear_fields()
-
-    for field in kept_fields:
-        embed.add_field(
-            name=field["name"],
-            value=field["value"],
-            inline=field["inline"]
-        )
-
+    _remove_mission_status_fields(embed)
     return embed
 
 
