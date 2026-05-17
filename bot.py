@@ -2666,17 +2666,9 @@ async def force_archive_current_mission_embed(team: str, reason: str = "Nova fas
         old_embed = msg.embeds[0].copy()
         _remove_mission_status_fields(old_embed)
 
-        old_embed.add_field(
-            name="📌 Estado da Missão",
-            value="⚫ MISSÃO INATIVA",
-            inline=False
-        )
-        old_embed.add_field(
-            name="📍 Motivo",
-            value=reason,
-            inline=False
-        )
-        old_embed.set_footer(text="COMANDO CENTRAL • MISSÃO INATIVA")
+        # Ao arquivar embeds antigos, removemos campos operacionais temporários.
+        # O Estado da Missão deve aparecer apenas nos embeds das missões principais.
+        old_embed.set_footer(text="COMANDO CENTRAL • MISSÃO ARQUIVADA")
 
         await msg.edit(embed=old_embed)
     except (discord.NotFound, discord.Forbidden, discord.HTTPException):
@@ -3053,13 +3045,12 @@ async def handle_mission_timeout_failsafe(mission_name: str):
                 {"name": "📌 Resultado", "value": "Nenhuma equipa concluiu o objetivo principal da Missão 1.", "inline": False},
                 {"name": "📡 Nova Diretriz", "value": "A operação seguirá para **RECOVER FRAGMENTS** após o refill.", "inline": False},
                 {"name": "📍 Ordem", "value": "Regressar à base, reorganizar unidade, fazer refill e aguardar novas ordens.", "inline": False},
-                {"name": "📌 Estado da Missão", "value": "🔵 REAGRUPAMENTO / REFILL", "inline": False},
                 {"name": "⏱️ Novas Ordens em", "value": f"**{format_time_remaining(t)}**", "inline": True}
             ],
             footer="COMANDO CENTRAL • FAILSAFE OPERACIONAL"
         )
 
-        await send_team_embed_with_status_last(t, embed)
+        await send_team_embed_plain(t, embed)
 
     await milsim_log("⚠️ Missão 1 terminou sem objetivo validado. Failsafe ativado: 5 minutos de refill antes de RECOVER FRAGMENTS.")
     await update_status_panel()
@@ -3083,7 +3074,7 @@ async def set_timeout_refill_regroup(mission_name: str):
 
     for t in ["azul", "vermelho"]:
         color = discord.Color.blue() if t == "azul" else discord.Color.red()
-        await send_team_embed_with_status_last(
+        await send_team_embed_plain(
             t,
             tactical_embed(
                 "⏱️ TEMPO ESGOTADO — REAGRUPAMENTO E REFILL",
@@ -3093,7 +3084,6 @@ async def set_timeout_refill_regroup(mission_name: str):
                 [
                     {"name": "📌 Resultado", "value": "Objetivo não concluído dentro do tempo operacional.", "inline": False},
                     {"name": "📍 Ordem", "value": "Regressar ao HQ, reorganizar unidade, fazer refill e preparar nova missão.", "inline": False},
-                    {"name": "📌 Estado da Missão", "value": "🔵 REAGRUPAMENTO / REFILL", "inline": False},
                     {"name": "⏱️ Novas Ordens em", "value": f"**{format_time_remaining(t)}**", "inline": True}
                 ],
                 footer="COMANDO CENTRAL • REAGRUPAMENTO E REFILL"
@@ -4955,8 +4945,6 @@ async def set_both_teams_to_regroup_after_objective(winning_team: str, mission_n
         tactical_embed(
             f"✅ Ordem de Retirada - Missão Bem sucedida ({mission_label})",
             "📡 A missão foi um êxito! Regressem de imediato à base, reorganizem a equipa, reabasteçam equipamento, confirmem comunicações e preparem-se para a próxima janela de missão.\n\n"
-            f"📌 **Motivo - {winner_title}**\n"
-            f"{winner_reason}\n\n"
             "Estejam em alerta e aguardem novas ordens!",
             winner_color,
             footer="COMANDO CENTRAL • ORDEM DE RETIRADA"
@@ -4968,8 +4956,6 @@ async def set_both_teams_to_regroup_after_objective(winning_team: str, mission_n
         tactical_embed(
             f"⚠️ Ordem de Retirada - Missão Fracassada! ({mission_label})",
             "📡 Regressem de imediato ao HQ, reorganizem a equipa e preparem-se para novas ordens.\n\n"
-            f"📌 **Motivo - {enemy_title}**\n"
-            f"{enemy_reason}\n\n"
             "Estejam em alerta e aguardem novas ordens!",
             enemy_color,
             footer="COMANDO CENTRAL • ORDEM DE RETIRADA"
