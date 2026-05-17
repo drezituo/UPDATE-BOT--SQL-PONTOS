@@ -2640,10 +2640,46 @@ async def update_all_team_timer_panels():
     await update_team_timer_panel("vermelho")
 
 
+async def force_archive_current_mission_embed(team: str, reason: str = "Nova fase operacional iniciada."):
+    channel = milsim_channel_for_team(team)
+    message_id = milsim_state.get("mission_message_ids", {}).get(team)
+
+    if not channel or not message_id:
+        return
+
+    try:
+        msg = await channel.fetch_message(message_id)
+        if not msg.embeds:
+            return
+
+        old_embed = msg.embeds[0].copy()
+        _remove_mission_status_fields(old_embed)
+
+        old_embed.add_field(
+            name="📌 Estado da Missão",
+            value="⚫ MISSÃO INATIVA",
+            inline=False
+        )
+        old_embed.add_field(
+            name="📍 Motivo",
+            value=reason,
+            inline=False
+        )
+        old_embed.set_footer(text="COMANDO CENTRAL • MISSÃO INATIVA")
+
+        await msg.edit(embed=old_embed)
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        pass
+
+
+async def force_archive_all_current_mission_embeds(reason: str = "Nova fase operacional iniciada."):
+    await force_archive_current_mission_embed("azul", reason)
+    await force_archive_current_mission_embed("vermelho", reason)
+
+
 async def send_team_embed_with_status_last(team: str, embed: discord.Embed, estado: str = None):
-    old_id = milsim_state.get("mission_message_ids", {}).get(team)
-    if old_id:
-        await deactivate_current_mission_embed(team, "Nova transmissão operacional emitida.")
+    # Arquivar visualmente o embed operacional anterior antes de enviar nova missão/descanso/reagrupamento.
+    await force_archive_current_mission_embed(team, "Nova transmissão operacional emitida.")
 
     await purge_team_status_panels(team)
     await cleanup_team_timer_panels(team)
@@ -2948,6 +2984,8 @@ async def handle_mission_timeout_failsafe(mission_name: str):
         milsim_state["regroup_notice_sent"][t] = False
 
     await stop_respawn_cycle()
+    await force_archive_all_current_mission_embeds("Missão encerrada sem objetivo validado.")
+    await force_archive_all_current_mission_embeds("Tempo operacional esgotado.")
 
     for t in ["azul", "vermelho"]:
         color = discord.Color.blue() if t == "azul" else discord.Color.red()
@@ -4864,6 +4902,7 @@ async def advance_milsim_phase(old_mission: str):
         if milsim_state["teams"][t]["current"] == "mission_3":
             milsim_state["mission3_route"]["vermelho_step"] = 0
 
+        await force_archive_current_mission_embed(t, "Nova fase operacional iniciada.")
         await purge_team_status_panels(t)
 
         if old_mission == "mission_3":
