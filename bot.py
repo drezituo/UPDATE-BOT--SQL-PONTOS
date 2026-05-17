@@ -2577,8 +2577,29 @@ async def delete_team_timer_panel(team: str):
     milsim_state.setdefault("team_timer_panel_message_ids", {})[team] = None
 
 
+async def cleanup_team_timer_panels(team: str, limit: int = 30):
+    channel = milsim_channel_for_team(team)
+    if not channel:
+        return
+
+    try:
+        async for msg in channel.history(limit=limit):
+            if msg.author == bot.user and msg.embeds:
+                title = msg.embeds[0].title or ""
+                footer = msg.embeds[0].footer.text if msg.embeds[0].footer else ""
+                if title.startswith("⏱️ TIMER") or "TIMER OPERACIONAL" in footer:
+                    try:
+                        await msg.delete()
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        pass
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+
+    milsim_state.setdefault("team_timer_panel_message_ids", {})[team] = None
+
+
 async def create_team_timer_panel(team: str):
-    await delete_team_timer_panel(team)
+    await cleanup_team_timer_panels(team)
 
     channel = milsim_channel_for_team(team)
     if not channel:
@@ -2621,7 +2642,7 @@ async def send_team_embed_with_status_last(team: str, embed: discord.Embed, esta
         await deactivate_current_mission_embed(team, "Nova transmissão operacional emitida.")
 
     await purge_team_status_panels(team)
-    await delete_team_timer_panel(team)
+    await cleanup_team_timer_panels(team)
 
     channel = milsim_channel_for_team(team)
     if not channel:
