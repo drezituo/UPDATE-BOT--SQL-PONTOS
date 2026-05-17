@@ -2577,7 +2577,7 @@ async def delete_team_timer_panel(team: str):
     milsim_state.setdefault("team_timer_panel_message_ids", {})[team] = None
 
 
-async def cleanup_team_timer_panels(team: str, limit: int = 30):
+async def cleanup_team_timer_panels(team: str, limit: int = 100):
     channel = milsim_channel_for_team(team)
     if not channel:
         return
@@ -2585,9 +2585,18 @@ async def cleanup_team_timer_panels(team: str, limit: int = 30):
     try:
         async for msg in channel.history(limit=limit):
             if msg.author == bot.user and msg.embeds:
-                title = msg.embeds[0].title or ""
-                footer = msg.embeds[0].footer.text if msg.embeds[0].footer else ""
-                if title.startswith("⏱️ TIMER") or "TIMER OPERACIONAL" in footer:
+                embed = msg.embeds[0]
+                title = embed.title or ""
+                footer = embed.footer.text if embed.footer else ""
+                description = embed.description or ""
+
+                is_timer = (
+                    title.startswith("⏱️ TIMER")
+                    or "TIMER OPERACIONAL" in footer
+                    or "Painel separado de tempo operacional" in description
+                )
+
+                if is_timer:
                     try:
                         await msg.delete()
                     except (discord.NotFound, discord.Forbidden, discord.HTTPException):
@@ -2614,11 +2623,7 @@ async def update_team_timer_panel(team: str):
     channel = milsim_channel_for_team(team)
     message_id = milsim_state.get("team_timer_panel_message_ids", {}).get(team)
 
-    if not channel:
-        return
-
-    if not message_id:
-        await create_team_timer_panel(team)
+    if not channel or not message_id:
         return
 
     try:
@@ -2626,7 +2631,6 @@ async def update_team_timer_panel(team: str):
         await msg.edit(embed=build_team_timer_embed(team))
     except discord.NotFound:
         milsim_state.setdefault("team_timer_panel_message_ids", {})[team] = None
-        await create_team_timer_panel(team)
     except (discord.Forbidden, discord.HTTPException):
         pass
 
@@ -5211,6 +5215,26 @@ async def skip_pausa(ctx):
 @bot.command(name="passarpausa")
 async def passar_pausa(ctx):
     await skip_pausa(ctx)
+
+
+
+@bot.command()
+async def limpar_timers(ctx):
+    if ctx.channel.id != GM_CHANNEL_ID:
+        return await ctx.send("⚠️ Este comando só pode ser usado no canal GM.", delete_after=10)
+
+    if not milsim_is_gm(ctx):
+        return await ctx.send("❌ Apenas Game Masters podem usar este comando.", delete_after=10)
+
+    await cleanup_team_timer_panels("azul")
+    await cleanup_team_timer_panels("vermelho")
+
+    # Recriar apenas se houver operação ativa.
+    if milsim_state.get("active"):
+        await create_team_timer_panel("azul")
+        await create_team_timer_panel("vermelho")
+
+    await ctx.send("✅ Timers operacionais limpos/recriados.", delete_after=10)
 
 
 @bot.command()
