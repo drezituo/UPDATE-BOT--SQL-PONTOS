@@ -3782,7 +3782,7 @@ MISSION_CODES = {
     "BUNKER-551": {
         "team": "azul",
         "mission": "mission_2",
-        "points": 15,
+        "points": 0,
         "type": "decryption",
         "embed": lambda: tactical_embed(
             "📡 ENVIO DE DADOS INICIADO",
@@ -3791,7 +3791,7 @@ MISSION_CODES = {
             [
                 {"name": "⏱️ TEMPO ESTIMADO", "value": "**10 MINUTOS**", "inline": True},
                 {"name": "📍 ORDEM", "value": "Segurem o BUNKER. Todas as forças hostis irão convergir para esta posição.", "inline": False},
-                {"name": "🏆 PONTOS", "value": "**+15 pontos atribuídos**", "inline": False}
+                {"name": "🏆 PONTOS", "value": "Os pontos são atribuídos se a transmissão for concluída.", "inline": False}
             ]
         ),
         "enemy_alert_embed": lambda: tactical_embed(
@@ -4437,12 +4437,15 @@ async def broadcast_two_minute_regroup_notice():
 
 
 async def milsim_start_decryption(team: str):
+    # Missão 2A — BUNKER-551 inicia a transmissão Azul no BUNKER.
     milsim_state["decryption"] = {
         "active": True,
         "cancelled": False,
         "team": team,
         "mission": "mission_2"
     }
+
+    await milsim_log("📡 Transmissão de dados iniciada no BUNKER pela Task Force Azul. Janela de 10 minutos ativa.")
 
     await asyncio.sleep(MILSPEED["decryption_seconds"])
 
@@ -4465,35 +4468,12 @@ async def milsim_start_decryption(team: str):
     if team_state["current"] != "mission_2":
         return
 
-    milsim_state["scores"][team] += 10
-    await set_team_to_regroup_after_objective(team)
-
+    # A transmissão só dá pontos e encerra a missão quando os 10 minutos terminarem.
+    milsim_state["scores"][team] += 20
     milsim_state["decryption"]["active"] = False
 
-    await send_team_embed_with_status_last(
-        team,
-        tactical_embed(
-            "✅ DESENCRIPTAÇÃO CONCLUÍDA",
-            "A sequência foi concluída com sucesso.\n\n+10 pontos atribuídos.",
-            discord.Color.green(),
-            [{"name": "📍 ORDEM", "value": "Regressem ao COMANDO e usem `!reagrupado`."}]
-        )
-    )
-
-    enemy = milsim_enemy(team)
-    await send_team_embed_with_status_last(
-        enemy,
-        tactical_embed(
-            "⚠️ DESENCRIPTAÇÃO INIMIGA CONCLUÍDA",
-            "O inimigo concluiu a sequência no BUNKER.",
-            discord.Color.orange(),
-            [{"name": "📍 ORDEM", "value": "Regressem ao COMANDO e aguardem nova janela operacional."}]
-        )
-    )
-
-    await set_team_to_regroup_after_objective(enemy)
-
-    await milsim_log(f"✅ Desencriptação concluída para **{team.upper()}**. +10 pontos.")
+    await milsim_log("✅ Transmissão BUNKER-551 concluída pela Task Force Azul. +20 pontos.")
+    await set_both_teams_to_regroup_after_objective(team, "mission_2", "BUNKER-551")
     await update_status_panel()
 
 
@@ -4616,8 +4596,10 @@ async def milsim_resolve_sabotage_by_red():
     if decryption.get("active") and decryption.get("team") == "azul":
         milsim_state["decryption"]["cancelled"] = True
         milsim_state["decryption"]["active"] = False
+        await milsim_log("💥 Sabotagem vermelha cancelou a transmissão Azul no BUNKER.")
+        return True
 
-    await milsim_log("💥 Sabotagem vermelha cancelou a desencriptação azul.")
+    return False
 
 
 @bot.command()
@@ -4667,6 +4649,30 @@ async def codigo(ctx, codigo: str):
                 "⚠️ Ainda faltam checkpoints obrigatórios antes do código final."
             )
 
+    if codigo == "BUNKER-551":
+        if team != "azul":
+            return await ctx.send("❌ Apenas a Task Force Azul pode iniciar a transmissão no BUNKER.", delete_after=10)
+        if milsim_state.get("decryption", {}).get("active"):
+            return await ctx.send("⚠️ Já existe uma transmissão ativa no BUNKER.", delete_after=10)
+
+        team_state["completed_codes"].append(codigo)
+
+        await purge_team_status_panels(team)
+        await prepare_team_channel_for_new_milsim_embed(team)
+        msg = await ctx.send(embed=apply_medical_rules_to_embed(build_mission_embed_with_status(team, data["embed"](), "📡 Transmissão ativa")))
+        milsim_state["mission_message_ids"][team] = msg.id
+        await finish_team_channel_after_new_milsim_embed(team)
+
+        enemy_alert = data.get("enemy_alert_embed")
+        if enemy_alert:
+            enemy = milsim_enemy(team)
+            await send_team_embed_with_status_last(enemy, enemy_alert())
+
+        asyncio.create_task(milsim_start_decryption(team))
+        await milsim_log("📡 Código `BUNKER-551` validado pela Task Force Azul. Transmissão iniciada no BUNKER.")
+        await update_status_panel()
+        return
+
     if codigo == "BLACK-916":
         if team != "vermelho":
             return await ctx.send("❌ Apenas a Task Force Vermelha pode iniciar o hack SATCOM.", delete_after=10)
@@ -4692,10 +4698,10 @@ async def codigo(ctx, codigo: str):
 
     milsim_state["scores"][team] += data["points"]
 
-    if data["type"] in ("checkpoint", "decryption"):
+    if data["type"] == "checkpoint":
         await purge_team_status_panels(team)
         await prepare_team_channel_for_new_milsim_embed(team)
-        msg = await ctx.send(embed=apply_medical_rules_to_embed(build_mission_embed_with_status(team, data["embed"](), "✅ Objetivo validado")))
+        msg = await ctx.send(embed=apply_medical_rules_to_embed(build_mission_embed_with_status(team, data["embed"](), "✅ Checkpoint validado")))
         milsim_state["mission_message_ids"][team] = msg.id
         await finish_team_channel_after_new_milsim_embed(team)
 
@@ -4705,7 +4711,9 @@ async def codigo(ctx, codigo: str):
             await send_team_embed_with_status_last(enemy, enemy_alert())
 
     if codigo == "RAVEN-119":
-        await milsim_resolve_sabotage_by_red()
+        sabotaged = await milsim_resolve_sabotage_by_red()
+        if not sabotaged:
+            return await ctx.send("⚠️ Não existe transmissão ativa para sabotar.", delete_after=10)
 
     await milsim_log(f"🔐 Código `{codigo}` validado por **{team.upper()}**. +{data['points']} pontos.")
     await update_status_panel()
@@ -4716,7 +4724,6 @@ async def codigo(ctx, codigo: str):
         return
 
     if data["type"] == "decryption":
-        asyncio.create_task(milsim_start_decryption(team))
         return
 
     if codigo == "CACHE-777":
@@ -4811,6 +4818,12 @@ async def set_both_teams_to_regroup_after_objective(winning_team: str, mission_n
             "winner_reason": "A caixa segura foi capturada e comprometida na base Vermelha. A inteligência principal da Azul deixou de ser confiável.",
             "enemy_title": "CAIXA SEGURA COMPROMETIDA",
             "enemy_reason": "A Task Force Vermelha conseguiu capturar a caixa e comprometer o conteúdo."
+        },
+        "BUNKER-551": {
+            "winner_title": "TRANSMISSÃO BUNKER CONCLUÍDA",
+            "winner_reason": "A Task Force Azul manteve o controlo do BUNKER até ao fim da sequência e concluiu o envio de dados para a central.",
+            "enemy_title": "TRANSMISSÃO AZUL CONCLUÍDA",
+            "enemy_reason": "A Task Force Azul completou o envio de dados no BUNKER antes de a transmissão ser sabotada."
         },
         "RAVEN-119": {
             "winner_title": "TRANSMISSÃO SABOTADA",
