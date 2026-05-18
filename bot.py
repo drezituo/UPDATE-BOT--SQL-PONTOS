@@ -577,6 +577,9 @@ async def on_ready():
     if not verificar_inscricoes.is_running():
         verificar_inscricoes.start()
 
+    if not limpar_timers_auto.is_running():
+        limpar_timers_auto.start()
+
 
 @bot.event
 async def on_message(message):
@@ -2158,6 +2161,13 @@ SATCOM_TEAM_SIZE = 5
 SATCOM_SECONDARY_DELAY = 180  # 3 minutos até ativar missão secundária
 SATCOM_SECONDARY_SECONDS = 900  # 15 minutos para missão secundária do acampamento
 
+# ---------- CORES DOS EMBEDS MILSIM ----------
+MILSIM_COLOR_MAIN_MISSION = discord.Color.from_rgb(255, 255, 255)  # branco
+MILSIM_COLOR_SUCCESS = discord.Color.green()
+MILSIM_COLOR_FAILED = discord.Color.red()
+MILSIM_COLOR_TIMER = discord.Color.orange()
+MILSIM_COLOR_TIMEOUT = discord.Color.yellow()
+
 # ---------- CÓDIGOS DE OPERADOR / CAPTURA ----------
 AZUL_OPERATOR_CODES = {
     "AZ-117": "GHOST-1",
@@ -2323,7 +2333,7 @@ def build_mission_embed_with_status(team: str, embed: discord.Embed, estado: str
     # O "Estado da Missão" foi removido dos embeds porque estava a ficar desatualizado/bugado.
     final_embed = embed.copy()
     _remove_mission_status_fields(final_embed)
-    return final_embed
+    return aplicar_cor_milsim(final_embed)
 
 def build_team_status_embed(team: str):
     # Mantido por compatibilidade com comandos/funções antigas.
@@ -2495,19 +2505,19 @@ def get_timer_context(team: str):
     if phase == "mission":
         title = f"⏱️ TIMER — {current.upper()}"
         label = "Tempo restante para executar"
-        color = discord.Color.blue() if team == "azul" else discord.Color.red()
+        color = MILSIM_COLOR_TIMER
     elif phase in ("regroup", "rest"):
         title = "⏱️ TIMER — REAGRUPAMENTO / DESCANSO"
         label = "Tempo restante para novas ordens"
-        color = discord.Color.dark_gold()
+        color = MILSIM_COLOR_TIMER
     elif phase == "failed":
         title = "⏱️ TIMER — MISSÃO ENCERRADA"
         label = "Estado"
-        color = discord.Color.dark_grey()
+        color = MILSIM_COLOR_TIMER
     else:
         title = f"⏱️ TIMER — {phase.upper()}"
         label = "Tempo restante"
-        color = discord.Color.dark_grey()
+        color = MILSIM_COLOR_TIMER
 
     return title, label, color
 
@@ -2649,11 +2659,12 @@ async def send_team_embed_plain(team: str, embed: discord.Embed):
         return None
 
     clean_embed = remove_estado_missao_field(embed.copy())
+    clean_embed = aplicar_cor_milsim(clean_embed)
 
     msg = await channel.send(embed=clean_embed)
     milsim_state.setdefault("mission_message_ids", {})[team] = msg.id
 
-    await create_team_timer_panel(team)
+    await finish_team_channel_after_new_milsim_embed(team)
     await create_team_status_panel(team)
     return msg
 
@@ -2672,7 +2683,7 @@ async def send_team_embed_with_status_last(team: str, embed: discord.Embed, esta
     msg = await channel.send(embed=build_mission_embed_with_status(team, embed, estado))
     milsim_state.setdefault("mission_message_ids", {})[team] = msg.id
 
-    await create_team_timer_panel(team)
+    await finish_team_channel_after_new_milsim_embed(team)
     await create_team_status_panel(team)
     return msg
 
@@ -3182,6 +3193,25 @@ milsim_state = {
 }
 
 
+def aplicar_cor_milsim(embed: discord.Embed):
+    """Aplica a paleta visual da Operação Duality aos embeds principais."""
+    title = (embed.title or "").upper()
+    footer = (embed.footer.text if embed.footer else "").upper()
+
+    if "TIMER" in title or "TIMER OPERACIONAL" in footer:
+        embed.color = MILSIM_COLOR_TIMER
+    elif "TEMPO ESGOTADO" in title:
+        embed.color = MILSIM_COLOR_TIMEOUT
+    elif "BEM SUCEDIDA" in title or "MISSÃO CONCLUÍDA" in title or "OBJETIVO CONCLUÍDO" in title:
+        embed.color = MILSIM_COLOR_SUCCESS
+    elif "FRACASSADA" in title or "MISSÃO FALHADA" in title or "MISSÃO FRACASSADA" in title:
+        embed.color = MILSIM_COLOR_FAILED
+    elif "MISSÃO" in title:
+        embed.color = MILSIM_COLOR_MAIN_MISSION
+
+    return embed
+
+
 def tactical_embed(title, description, color=discord.Color.dark_grey(), fields=None, footer="COMANDO CENTRAL • OPERAÇÃO DUALITY"):
     embed = discord.Embed(
         title=title,
@@ -3197,7 +3227,7 @@ def tactical_embed(title, description, color=discord.Color.dark_grey(), fields=N
                 inline=field.get("inline", False)
             )
     embed.set_footer(text=footer)
-    return embed
+    return aplicar_cor_milsim(embed)
 
 
 def medical_rules_standard_field():
@@ -4163,14 +4193,39 @@ async def milsim_log(texto: str):
         await logs.send(texto)
 
 
+async def should_show_team_timer(team: str) -> bool:
+    """Mostra/recria o painel de timer só quando existe uma operação ativa e timer real guardado."""
+    return bool(
+        milsim_state.get("active")
+        and milsim_state.get("mission_end_times", {}).get(team)
+    )
+
+
+async def prepare_team_channel_for_new_milsim_embed(team: str):
+    """Limpa timers antigos antes de publicar um novo embed Milsim no canal da equipa.
+
+    Não altera mission_end_times, por isso o cronómetro real da missão não reinicia.
+    """
+    await cleanup_team_timer_panels(team)
+
+
+async def finish_team_channel_after_new_milsim_embed(team: str):
+    """Recria o painel visual de timer depois de publicar um novo embed Milsim."""
+    if await should_show_team_timer(team):
+        await create_team_timer_panel(team)
+
+
 async def milsim_send_to_team(team: str, embed=None, content=None):
     canal = milsim_channel_for_team(team)
     if canal:
         if embed:
+            await prepare_team_channel_for_new_milsim_embed(team)
             embed = apply_medical_rules_to_embed(embed)
-            await canal.send(embed=embed)
+            msg = await canal.send(embed=embed)
+            await finish_team_channel_after_new_milsim_embed(team)
+            return msg
         elif content:
-            await canal.send(content)
+            return await canal.send(content)
 
 
 def format_respawn_remaining():
@@ -4639,8 +4694,10 @@ async def codigo(ctx, codigo: str):
 
     if data["type"] in ("checkpoint", "decryption"):
         await purge_team_status_panels(team)
+        await prepare_team_channel_for_new_milsim_embed(team)
         msg = await ctx.send(embed=apply_medical_rules_to_embed(build_mission_embed_with_status(team, data["embed"](), "✅ Objetivo validado")))
         milsim_state["mission_message_ids"][team] = msg.id
+        await finish_team_channel_after_new_milsim_embed(team)
 
         enemy_alert = data.get("enemy_alert_embed")
         if enemy_alert:
@@ -4719,9 +4776,11 @@ async def codigo(ctx, codigo: str):
 
     if data["type"] == "end":
         await purge_team_status_panels(team)
+        await prepare_team_channel_for_new_milsim_embed(team)
         msg = await ctx.send(embed=apply_medical_rules_to_embed(build_mission_embed_with_status(team, data["embed"](), "🏁 Operação terminada")))
         milsim_state["mission_message_ids"][team] = msg.id
         milsim_state["active"] = False
+        await cleanup_team_timer_panels(team)
         await milsim_log("🏁 Operação terminada por código final.")
         return
 
@@ -5278,6 +5337,17 @@ async def skip_pausa(ctx):
 async def passar_pausa(ctx):
     await skip_pausa(ctx)
 
+
+
+@tasks.loop(minutes=10)
+async def limpar_timers_auto():
+    if not milsim_state.get("active"):
+        return
+
+    await cleanup_team_timer_panels("azul")
+    await cleanup_team_timer_panels("vermelho")
+    await create_team_timer_panel("azul")
+    await create_team_timer_panel("vermelho")
 
 
 @bot.command()
