@@ -2371,11 +2371,124 @@ def _remove_mission_status_fields(embed: discord.Embed):
             inline=field["inline"]
         )
 
+
+def get_operational_note_for_embed(embed: discord.Embed):
+    title = (embed.title or "").upper()
+    desc = (embed.description or "").upper()
+    combined = title + "\n" + desc
+
+    if "MISSÃO 01" in combined and "SECURE DRIVES" in combined and "TASK FORCE AZUL" in combined:
+        return (
+            "Capturar os 5 discos espalhados pela área operacional.\n\n"
+            "Após recuperar os discos:\n"
+            "▸ transportar para a base\n"
+            "▸ abrir os discos\n"
+            "▸ identificar qual contém o código verdadeiro"
+        )
+
+    if "MISSÃO 01" in combined and "SECURE DRIVES" in combined and "TASK FORCE VERMELHA" in combined:
+        return (
+            "Capturar a caixa segura e transportá-la para a base.\n\n"
+            "O código de validação encontra-se gravado na própria caixa."
+        )
+
+    if "RECOVER FRAGMENTS" in combined and "TASK FORCE AZUL" in combined:
+        return (
+            "Procurar partes do código de validação espalhadas pelo terreno.\n\n"
+            "Locais possíveis:\n"
+            "▸ bunker\n"
+            "▸ CQB\n"
+            "▸ acampamento\n\n"
+            "Os códigos encontram-se em CDs espalhados pelas zonas."
+        )
+
+    if "DENY RECOVERY" in combined and "TASK FORCE VERMELHA" in combined:
+        return (
+            "Impedir a Task Force Azul de recuperar os CDs.\n\n"
+            "A Task Force Vermelha NÃO pode mexer nos CDs caso os encontre.\n\n"
+            "Apenas defender os locais."
+        )
+
+    if ("SIGNAL KEY" in combined or "DATA TRANSFER" in combined) and "TASK FORCE AZUL" in combined:
+        return (
+            "Transportar a caixa segura até ao bunker operacional.\n\n"
+            "No bunker estará localizado o código de ativação da transmissão."
+        )
+
+    if ("SIGNAL KEY" in combined or "DATA TRANSFER" in combined) and "TASK FORCE VERMELHA" in combined:
+        return (
+            "Aceder ao bunker onde se encontra a caixa segura.\n\n"
+            "No mesmo local do código de ativação estará também o código de sabotagem."
+        )
+
+    if "CONVOY RUN" in combined and "TASK FORCE VERMELHA" in combined:
+        return (
+            "Aceder aos pontos definidos pelo comando.\n\n"
+            "Os códigos de validação estarão localizados nos checkpoints.\n\n"
+            "A caixa deverá acompanhar a equipa até cada ponto."
+        )
+
+    if "INTERCEPT CONVOY" in combined and "TASK FORCE AZUL" in combined:
+        return (
+            "Capturar a caixa do convoy e transportá-la para a base.\n\n"
+            "O código de validação encontra-se gravado na própria caixa."
+        )
+
+    if "SATCOM BREACH" in combined and "TASK FORCE VERMELHA" in combined:
+        return (
+            "A equipa destacada deverá localizar a estação SATCOM.\n\n"
+            "Junto ao terminal estará o código necessário para iniciar o hack."
+        )
+
+    if "SATCOM COMPROMETIDO" in combined and "TASK FORCE AZUL" in combined:
+        return (
+            "A equipa destacada deverá localizar a estação SATCOM inimiga.\n\n"
+            "Junto ao terminal estará o código necessário para interromper o hack."
+        )
+
+    if "INTERFERÊNCIAS DETETADAS" in combined and "TASK FORCE AZUL" in combined:
+        return (
+            "A equipa destacada deverá manter-se em prontidão.\n\n"
+            "Caso o hack seja iniciado, devem localizar a estação SATCOM inimiga.\n\n"
+            "Junto ao terminal estará o código necessário para interromper o hack."
+        )
+
+    if "DEFESA DO ACAMPAMENTO" in combined and "TASK FORCE VERMELHA" in combined:
+        return "Defender a caixa de suprimentos localizada no acampamento."
+
+    if "EMBOSCADA AO ACAMPAMENTO" in combined and "TASK FORCE AZUL" in combined:
+        return (
+            "Capturar a caixa de suprimentos e transportá-la para a base.\n\n"
+            "O código de validação encontra-se gravado na própria caixa."
+        )
+
+    return None
+
+
+def apply_operational_note_to_embed(embed: discord.Embed):
+    existing = any((field.name or "") == "📌 NOTA OPERACIONAL" for field in getattr(embed, "fields", []))
+    if existing:
+        return embed
+
+    note = get_operational_note_for_embed(embed)
+    if not note:
+        return embed
+
+    embed.add_field(
+        name="📌 NOTA OPERACIONAL",
+        value=note,
+        inline=False
+    )
+    return embed
+
+
+
 def build_mission_embed_with_status(team: str, embed: discord.Embed, estado: str = None):
     # Limpa campos automáticos antigos.
     # O "Estado da Missão" foi removido dos embeds porque estava a ficar desatualizado/bugado.
     final_embed = embed.copy()
     _remove_mission_status_fields(final_embed)
+    final_embed = apply_operational_note_to_embed(final_embed)
     return aplicar_cor_milsim(final_embed)
 
 def build_team_status_embed(team: str):
