@@ -2525,52 +2525,76 @@ def apply_operational_note_to_embed(embed: discord.Embed):
 
 
 
+
+    kept_fields = []
+    replaced = False
+
+    for field in embed.fields:
+        field_name = field.name or ""
+        if field_name in ("🎯 OBJETIVOS", "🎯 OBJETIVO", "📌 OBJETIVO DA MISSÃO"):
+            kept_fields.append({"name": "📌 OBJETIVO DA MISSÃO", "value": objective, "inline": False})
+            replaced = True
+        else:
+            kept_fields.append({"name": field.name, "value": field.value, "inline": field.inline})
+
+    if not replaced:
+        kept_fields.append({"name": "📌 OBJETIVO DA MISSÃO", "value": objective, "inline": False})
+
+    embed.clear_fields()
+
+    for field in kept_fields:
+        embed.add_field(name=field["name"], value=field["value"], inline=field["inline"])
+
+    return embed
+
+
+
 def get_clear_objective_for_embed(embed: discord.Embed):
     title = (embed.title or "").upper()
     desc = (embed.description or "").upper()
     combined = title + "\n" + desc
 
     if "MISSÃO 01" in combined and "SECURE DRIVES" in combined and "TASK FORCE AZUL" in combined:
-        return '▸ Localizar a intel e guardar na caixa segura\n▸ Transportar até à base\n▸ Abrir os discos e procurar o código de validação\n▸ Validar o código para finalizar a missão'
+        return '▸ Recuperar a intel operacional e garantir a sua segurança na caixa segura\n▸ Transportar a caixa até ao HQ para análise\n▸ Abrir os discos e identificar o código de validação correto\n▸ Validar o código para concluir a operação'
 
     if "MISSÃO 01" in combined and ("INTERCEPT PROTOCOL" in combined or "SECURE DRIVES" in combined) and "TASK FORCE VERMELHA" in combined:
-        return '▸ Localizar a Task Force Azul\n▸ Intercetar a caixa segura\n▸ Transportar até à base\n▸ Validar o código gravado na caixa para finalizar a missão'
+        return '▸ Localizar a Task Force Azul e intercetar a caixa segura antes da extração\n▸ Capturar a caixa e transportá-la até ao HQ Vermelho\n▸ Procurar o código de validação gravado na própria caixa\n▸ Validar o código para concluir a operação'
 
     if ("DATA TRANSFER" in combined or "SIGNAL KEY" in combined) and "TASK FORCE AZUL" in combined:
-        return '▸ Transportar a caixa segura até ao bunker\n▸ Localizar o ponto exato para começar a transmissão de dados\n▸ Validar o código de ativação da transmissão\n\n(Código de ativação junto ao ponto)'
+        return '▸ Transportar a caixa segura até ao bunker operacional\n▸ Localizar o ponto exato de transmissão de dados\n▸ Validar o código de ativação localizado junto ao ponto de transmissão\n▸ Iniciar a transmissão e manter controlo da posição'
 
     if ("SIGNAL BREAK" in combined or "SIGNAL KEY" in combined or "DATA TRANSFER" in combined) and "TASK FORCE VERMELHA" in combined:
-        return '▸ Localizar a Task Force Azul\n▸ Infiltrar o bunker\n▸ Cortar/sabotar o envio de dados\n▸ Validar o código para sabotar a transmissão\n\n(Código junto da caixa)'
+        return '▸ Localizar a Task Force Azul e infiltrar o bunker operacional\n▸ Alcançar o ponto onde se encontra a caixa segura\n▸ Validar o código de sabotagem localizado junto da caixa\n▸ Cortar/interromper o envio de dados antes da conclusão da transmissão'
 
     if "RECOVER FRAGMENTS" in combined and "TASK FORCE AZUL" in combined:
-        return '▸ Localizar partes da intel perdida\n(CDs com partes do código de ativação)\n\n▸ Voltar à base, decifrar o código de ativação e validar o código para finalizar a missão'
+        return '▸ Localizar os CDs com fragmentos da intel perdida\n▸ Recolher as partes necessárias para reconstruir o código de ativação\n▸ Regressar ao HQ para decifrar a informação recuperada\n▸ Validar o código para concluir a missão'
 
     if "DENY RECOVERY" in combined and "TASK FORCE VERMELHA" in combined:
-        return '▸ Localizar partes da intel perdida\n(CDs com partes do código de ativação)\n\n▸ Intercetar a Task Force Azul\n▸ Defender o local\n\n(Task Force Vermelha não tem autorização para recuperar CDs, apenas impedir que a Task Force Azul registe provas)'
+        return '▸ Localizar as zonas onde estão os CDs com fragmentos da intel perdida\n▸ Intercetar a Task Force Azul antes da recuperação das provas\n▸ Defender os locais e impedir o registo dos CDs\n▸ A Task Force Vermelha não tem autorização para mover ou recuperar os CDs'
 
     if "CONVOY RUN" in combined and "TASK FORCE VERMELHA" in combined:
-        return '▸ Transportar a caixa até ao último ponto\n▸ Validar os códigos nos pontos designados'
+        return '▸ Transportar a caixa pelo percurso operacional indicado no mapa\n▸ Alcançar cada ponto designado com a caixa sob controlo\n▸ Validar os códigos nos checkpoints para desbloquear o próximo ponto\n▸ Garantir que a carga chega ao depósito final'
 
     if "INTERCEPT CONVOY" in combined and "TASK FORCE AZUL" in combined:
-        return '▸ Intercetar a caixa\n▸ Extrair a caixa até à base\n▸ Validar o código gravado na caixa para finalizar a missão'
+        return '▸ Intercetar o convoy Vermelho durante o transporte da caixa\n▸ Capturar a caixa e extrair até ao HQ Azul\n▸ Procurar o código de validação gravado na própria caixa\n▸ Validar o código para concluir a missão'
 
     if "SATCOM BREACH" in combined and "TASK FORCE VERMELHA" in combined:
-        return '▸ Procurar o SATCOM (CQB)\n▸ Validar o código de ativação do hack\n\n(Código junto ao SATCOM)\n\n▸ Intercetar a Task Force Azul até à finalização do hack (10 min)'
+        return '▸ Localizar o terminal SATCOM ativo no setor CQB\n▸ Validar o código de ativação localizado junto ao terminal\n▸ Iniciar o hack às comunicações inimigas\n▸ Manter controlo da posição e intercetar a Task Force Azul até conclusão do hack (10 min)'
 
     if ("SATCOM COMPROMETIDO" in combined or "SATCOM EM RISCO" in combined or "INTERFERÊNCIAS DETETADAS" in combined) and "TASK FORCE AZUL" in combined:
-        return '▸ Localizar o SATCOM (CQB)\n▸ Intercetar a Task Force Vermelha\n▸ Sabotar/interromper o hack\n\n(Código junto ao SATCOM)'
+        return '▸ Localizar o terminal SATCOM ativo no setor CQB\n▸ Intercetar a Task Force Vermelha antes da conclusão do hack\n▸ Validar o código localizado junto ao SATCOM\n▸ Sabotar/interromper o hack para preservar as comunicações Azul'
 
     if "DEFESA DO ACAMPAMENTO" in combined and "TASK FORCE VERMELHA" in combined:
-        return '▸ Localizar a caixa de suprimentos\n(Acampamento — não mover a caixa)\n\n▸ Vigiar o local e eliminar ameaças\n\n(Não sair do perímetro do acampamento)'
+        return '▸ Localizar a caixa de suprimentos no acampamento\n▸ Manter controlo do perímetro e impedir qualquer extração inimiga\n▸ Eliminar ameaças dentro da área operacional\n▸ A caixa não pode ser movida e a equipa não deve abandonar o perímetro do acampamento'
 
     if "EMBOSCADA AO ACAMPAMENTO" in combined and "TASK FORCE AZUL" in combined:
-        return '▸ Localizar o acampamento\n▸ Eliminar a Task Force Vermelha\n▸ Localizar a caixa de suprimentos\n▸ Extrair até à base\n▸ Validar o código gravado na caixa para finalizar a missão'
+        return '▸ Localizar o acampamento Vermelho\n▸ Eliminar a resistência inimiga na zona\n▸ Capturar a caixa de suprimentos e extrair até ao HQ Azul\n▸ Procurar o código gravado na própria caixa e validar para concluir a missão'
 
     if "TOTAL DOMINATION" in combined and "TASK FORCE VERMELHA" in combined:
-        return '▸ Localizar dispositivos (timers)\n▸ Validar equipa (colocar timer para a Task Force Vermelha)\n▸ Dominar zonas'
+        return '▸ Localizar os dispositivos de controlo de zona (timers)\n▸ Validar a equipa para iniciar contagem a favor da Task Force Vermelha\n▸ Manter domínio das zonas até garantir superioridade operacional'
 
     if "TOTAL DOMINATION" in combined and "TASK FORCE AZUL" in combined:
-        return '▸ Localizar dispositivos (timers)\n▸ Validar equipa (colocar timer para a Task Force Azul)\n▸ Dominar zonas'
+        return '▸ Localizar os dispositivos de controlo de zona (timers)\n▸ Validar a equipa para iniciar contagem a favor da Task Force Azul\n▸ Manter domínio das zonas até garantir superioridade operacional'
 
     return None
 
