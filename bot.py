@@ -992,7 +992,8 @@ async def comandos(ctx):
             "`!start_op`\n"
             "`!codigo CÓDIGO`\n"
             "`!reagrupado`\n"
-            "`!capturar player_id`\n"
+            "`!codigo CODIGO-OPERADOR`\n"
+            "`!extracaohtv CODIGO-OPERADOR`\n"
             "`!opstatus`\n"
             "`!score`\n"
             "`!painel_op`\n"
@@ -2161,10 +2162,11 @@ SATCOM_TEAM_SIZE = 5
 SATCOM_SECONDARY_DELAY = 180  # 3 minutos até ativar missão secundária
 SATCOM_SECONDARY_SECONDS = 900  # 15 minutos para missão secundária do acampamento
 
-# ---------- PROTOCOLO HVT / VALIDAÇÃO ANTECIPADA ----------
-MIN_VALIDATION_SECONDS = 600  # 10 minutos mínimos antes de validar códigos finais
-EARLY_VALIDATION_MISSIONS = {"mission_1", "mission_2", "mission_3"}
-EARLY_VALIDATION_TYPES = {"complete", "decryption"}
+# ---------- HVT / OBJETIVO SECUNDÁRIO ----------
+# HVT é uma missão secundária sem timer: capturar o operador prioritário e extrair na base.
+MIN_VALIDATION_SECONDS = 600  # mantido por compatibilidade, sem bloqueio HVT ativo
+EARLY_VALIDATION_MISSIONS = set()
+EARLY_VALIDATION_TYPES = set()
 
 # ---------- CORES DOS EMBEDS MILSIM ----------
 MILSIM_COLOR_MAIN_MISSION = discord.Color.from_rgb(255, 255, 255)  # branco
@@ -3133,6 +3135,9 @@ async def advance_both_teams_to_next_mission(old_mission: str):
             seconds=MISSION_TIME_LIMITS[milsim_state["teams"][t]["current"]]
         )
 
+        if t == "azul":
+            select_hvt_targets_for_mission()
+
         await send_team_embed_with_status_last(t, NEXT_MISSIONS[old_mission][t]())
 
     for t in ["azul", "vermelho"]:
@@ -3566,6 +3571,9 @@ milsim_state = {
     "captured_players": [],
     "hvt": {
         "targets": {"azul": None, "vermelho": None},
+        "captured": {"azul": None, "vermelho": None},
+        "extracted": {"azul": False, "vermelho": False},
+        "used_targets": {"azul": [], "vermelho": []},
         "early_validation_unlocked": {"azul": False, "vermelho": False}
     },
     "mission_branch": None,
@@ -3586,15 +3594,63 @@ milsim_state = {
 }
 
 
-def select_hvt_targets_for_operation():
-    """Seleciona um HVT aleatório de cada equipa para a operação atual."""
-    azul_hvt = random.choice(list(AZUL_OPERATOR_CODES.keys()))
-    vermelho_hvt = random.choice(list(VERMELHO_OPERATOR_CODES.keys()))
+def _choose_hvt_code(codes: dict, previous_code: str = None, used_codes=None):
+    used_codes = set(used_codes or [])
+    captured = set(milsim_state.get("captured_players", []))
+
+    # Prioridade: não repetir HVTs já usados nesta operação e evitar capturados ativos.
+    available = [
+        code for code in codes.keys()
+        if code not in used_codes and code not in captured and code != previous_code
+    ]
+
+    # Fallback: se todos já foram usados/capturados, evita pelo menos repetir o HVT anterior.
+    if not available:
+        available = [code for code in codes.keys() if code not in captured and code != previous_code]
+
+    # Último fallback de segurança.
+    if not available:
+        available = [code for code in codes.keys() if code != previous_code]
+
+    if not available:
+        available = list(codes.keys())
+
+    return random.choice(available)
+
+
+def select_hvt_targets_for_mission():
+    """Seleciona HVTs novos por missão e garante que não repetem na mesma operação, quando possível."""
+    hvt_memory = milsim_state.get("hvt", {})
+    previous_targets = hvt_memory.get("targets", {})
+    used_targets = hvt_memory.get("used_targets", {"azul": [], "vermelho": []})
+
+    azul_used = list(used_targets.get("azul", []))
+    vermelho_used = list(used_targets.get("vermelho", []))
+
+    azul_hvt = _choose_hvt_code(AZUL_OPERATOR_CODES, previous_targets.get("azul"), azul_used)
+    vermelho_hvt = _choose_hvt_code(VERMELHO_OPERATOR_CODES, previous_targets.get("vermelho"), vermelho_used)
+
+    if azul_hvt not in azul_used:
+        azul_used.append(azul_hvt)
+    if vermelho_hvt not in vermelho_used:
+        vermelho_used.append(vermelho_hvt)
 
     milsim_state["hvt"] = {
         "targets": {
             "azul": azul_hvt,
             "vermelho": vermelho_hvt,
+        },
+        "captured": {
+            "azul": None,
+            "vermelho": None,
+        },
+        "extracted": {
+            "azul": False,
+            "vermelho": False,
+        },
+        "used_targets": {
+            "azul": azul_used,
+            "vermelho": vermelho_used,
         },
         "early_validation_unlocked": {
             "azul": False,
@@ -3603,6 +3659,11 @@ def select_hvt_targets_for_operation():
     }
 
     return milsim_state["hvt"]
+
+
+def select_hvt_targets_for_operation():
+    # Mantido por compatibilidade: agora o HVT é renovado por missão.
+    return select_hvt_targets_for_mission()
 
 
 def format_hvt_line(team: str) -> str:
@@ -3678,40 +3739,61 @@ async def guard_early_validation(ctx, team: str, data: dict) -> bool:
 
 
 def apply_early_validation_note_to_embed(team: str, embed: discord.Embed):
+    """Adiciona o HVT como objetivo secundário da missão, sem timer e sem bloquear códigos."""
     current = milsim_state.get("teams", {}).get(team, {}).get("current")
     phase = milsim_state.get("teams", {}).get(team, {}).get("phase")
 
-    # Remove versões antigas para não duplicar o campo quando o embed é editado.
+    # Remove versões antigas para não duplicar campos quando o embed é editado.
     kept_fields = []
+    hidden_names = (
+        "⛔ PROTOCOLO DE VALIDAÇÃO",
+        "🎯 HVT INIMIGO",
+        "🎯 OBJETIVO SECUNDÁRIO — HVT",
+        "📦 EXTRAÇÃO HVT",
+    )
     for field in embed.fields:
-        if field.name not in ("⛔ PROTOCOLO DE VALIDAÇÃO", "🎯 HVT INIMIGO"):
+        if field.name not in hidden_names:
             kept_fields.append({"name": field.name, "value": field.value, "inline": field.inline})
 
     embed.clear_fields()
     for field in kept_fields:
         embed.add_field(name=field["name"], value=field["value"], inline=field["inline"])
 
-    if phase != "mission" or current not in EARLY_VALIDATION_MISSIONS:
+    if phase != "mission" or not current:
         return embed
 
     hvt_code = get_enemy_hvt_for_team(team)
     hvt_text = f"`{hvt_code}` — **{ALL_OPERATOR_CODES.get(hvt_code, 'HVT')}**" if hvt_code else "HVT inimigo ainda não identificado"
 
+    hvt_state = milsim_state.get("hvt", {})
+    captured_code = hvt_state.get("captured", {}).get(team)
+    extracted = hvt_state.get("extracted", {}).get(team)
+
+    if extracted:
+        status = "✅ HVT extraído. Objetivo secundário concluído."
+    elif captured_code:
+        status = "🚛 HVT capturado. Transportar até ao HQ e usar `!extracaohtv CODIGO-OPERADOR`."
+    else:
+        status = "Ativo — capturar o HVT inimigo e extrair até ao HQ."
+
     embed.add_field(
-        name="⛔ PROTOCOLO DE VALIDAÇÃO",
+        name="🎯 OBJETIVO SECUNDÁRIO — HVT",
         value=(
-            "▸ Tempo mínimo operacional para validar código final: **10 MINUTOS**\n"
-            "▸ Antes dos 10 minutos, a validação só é autorizada com captura do HVT inimigo"
+            f"▸ Alvo prioritário: {hvt_text}\n"
+            "▸ Captura só após colocação de algemas no jogador\n"
+            "▸ Registar captura com `!codigo CODIGO-OPERADOR`\n"
+            "▸ Transportar até ao HQ/base da vossa Task Force\n"
+            "▸ Confirmar extração na base com `!extracaohtv CODIGO-OPERADOR`\n"
+            "▸ Sem timer — objetivo secundário opcional"
         ),
         inline=False
     )
     embed.add_field(
-        name="🎯 HVT INIMIGO",
-        value=hvt_text,
+        name="📦 ESTADO HVT",
+        value=status,
         inline=False
     )
     return embed
-
 
 def aplicar_cor_milsim(embed: discord.Embed):
     """Aplica a paleta visual da Operação Duality aos embeds principais."""
@@ -5168,7 +5250,14 @@ async def start_op(ctx):
     milsim_state["decryption"] = {"active": False, "cancelled": False, "team": None, "mission": None}
     milsim_state["mission3_route"] = {"vermelho_step": 0}
     milsim_state["captured_players"] = []
-    select_hvt_targets_for_operation()
+    milsim_state["hvt"] = {
+        "targets": {"azul": None, "vermelho": None},
+        "captured": {"azul": None, "vermelho": None},
+        "extracted": {"azul": False, "vermelho": False},
+        "used_targets": {"azul": [], "vermelho": []},
+        "early_validation_unlocked": {"azul": False, "vermelho": False}
+    }
+    select_hvt_targets_for_mission()
     milsim_state["mission_branch"] = None
 
     for team in ["azul", "vermelho"]:
@@ -5188,7 +5277,7 @@ async def start_op(ctx):
             discord.Color.dark_gold(),
             [
                 {"name": "⏱️ INÍCIO DA OPERAÇÃO", "value": "**T-60 SEGUNDOS**", "inline": False},
-                {"name": "⛔ PROTOCOLO DE VALIDAÇÃO", "value": "Códigos finais das missões principais exigem **10 minutos mínimos** de operação. Antes disso, só a captura do HVT inimigo autoriza validação antecipada.", "inline": False}
+                {"name": "🎯 OBJETIVO SECUNDÁRIO HVT", "value": "Em cada missão será identificado um operador prioritário inimigo. Captura só após algemar o jogador. Registar com `!codigo CODIGO-OPERADOR`, transportar até ao HQ e confirmar extração com `!extracaohtv CODIGO-OPERADOR`. Sem timer.", "inline": False}
             ]
         ))
 
@@ -5264,6 +5353,10 @@ async def codigo(ctx, codigo: str):
         return await ctx.send("⚠️ A operação ainda não está ativa.")
 
     codigo = codigo.upper().strip()
+
+    # Captura de operador/HVT: só deve ser registada após colocação de algemas no jogador.
+    if codigo in ALL_OPERATOR_CODES:
+        return await process_operator_capture(ctx, codigo)
 
     if codigo not in MISSION_CODES:
         return await ctx.send("❌ Código inválido ou intel comprometida.")
@@ -5815,15 +5908,14 @@ async def codigos_operadores(ctx):
         [
             {"name": "🔵 Task Force Azul", "value": "\n".join([f"`{code}` — {name}" for code, name in AZUL_OPERATOR_CODES.items()]), "inline": False},
             {"name": "🔴 Task Force Vermelha", "value": "\n".join([f"`{code}` — {name}" for code, name in VERMELHO_OPERATOR_CODES.items()]), "inline": False},
-            {"name": "📌 Uso", "value": "`!capturar CODIGO-OPERADOR`", "inline": False}
+            {"name": "📌 Uso", "value": "Captura: `!codigo CODIGO-OPERADOR`\nExtração: `!extracaohtv CODIGO-OPERADOR`", "inline": False}
         ],
         footer="COMANDO CENTRAL • CÓDIGOS DE OPERADOR"
     )
     await ctx.send(embed=embed)
 
 
-@bot.command()
-async def capturar(ctx, codigo_operador: str):
+async def process_operator_capture(ctx, codigo_operador: str):
     team = milsim_team_from_channel(ctx.channel.id)
 
     if not team:
@@ -5846,34 +5938,94 @@ async def capturar(ctx, codigo_operador: str):
     if codigo_operador not in enemy_codes:
         return await ctx.send("❌ Esse operador não pertence à equipa inimiga.", delete_after=10)
 
+    hvt_state = milsim_state.setdefault("hvt", {})
+    hvt_state.setdefault("captured", {"azul": None, "vermelho": None})
+    hvt_state.setdefault("extracted", {"azul": False, "vermelho": False})
+
+    operator_name = ALL_OPERATOR_CODES[codigo_operador]
+    enemy = milsim_enemy(team)
+    enemy_hvt = get_enemy_hvt_for_team(team)
+    hvt_captured = codigo_operador == enemy_hvt
+
+    if hvt_captured:
+        # O HVT pode ser capturado várias vezes durante a mesma missão.
+        # Apenas a extração é limitada a uma única confirmação por missão.
+        already_extracted = bool(hvt_state["extracted"].get(team))
+
+        if codigo_operador not in milsim_state.get("captured_players", []):
+            milsim_state.setdefault("captured_players", []).append(codigo_operador)
+
+        hvt_state["captured"][team] = codigo_operador
+
+        if already_extracted:
+            title = "🎯 HVT CAPTURADO — EXTRAÇÃO JÁ CONCLUÍDA"
+            status_value = "HVT capturado novamente, mas o objetivo secundário desta missão já foi concluído."
+            order_value = "O operador deve regressar ao ciclo normal de respawn conforme as regras em campo."
+            confirm_value = "Nova extração bloqueada: só é permitida 1 extração HVT por missão."
+            enemy_situation = "O HVT foi capturado novamente, mas a extração secundária desta missão já foi concluída."
+            log_suffix = "Extração já concluída nesta missão."
+        else:
+            title = "🎯 HVT CAPTURADO — EXTRAÇÃO NECESSÁRIA"
+            status_value = "HVT sob custódia temporária. Captura registada após colocação de algemas."
+            order_value = "Transportar o HVT algemado até ao HQ/base da vossa Task Force."
+            confirm_value = "Quando chegarem à base, usar `!extracaohtv CODIGO-OPERADOR` para concluir o objetivo secundário."
+            enemy_situation = "O inimigo iniciou transporte do HVT para extração."
+            log_suffix = "Extração pendente."
+
+        await send_team_embed_with_status_last(
+            team,
+            tactical_embed(
+                title,
+                f"Operador prioritário inimigo confirmado: **{operator_name}**\nCódigo: `{codigo_operador}`",
+                discord.Color.dark_red(),
+                [
+                    {"name": "📦 ESTADO", "value": status_value, "inline": False},
+                    {"name": "🚛 ORDEM", "value": order_value, "inline": False},
+                    {"name": "✅ CONFIRMAÇÃO", "value": confirm_value, "inline": False},
+                    {"name": "⏱️ TIMER", "value": "Sem timer — objetivo secundário opcional.", "inline": True},
+                ],
+                footer="COMANDO CENTRAL • OBJETIVO SECUNDÁRIO HVT"
+            )
+        )
+
+        await milsim_send_to_team(
+            enemy,
+            embed=tactical_embed(
+                "⚠️ HVT COMPROMETIDO",
+                f"Um operador prioritário da vossa Task Force foi capturado.\n\nCódigo comprometido: `{codigo_operador}`",
+                discord.Color.orange(),
+                [
+                    {"name": "📍 SITUAÇÃO", "value": enemy_situation, "inline": False},
+                    {"name": "🛡️ ORDEM", "value": "Intercetar o grupo de escolta antes de chegar ao HQ inimigo." if not already_extracted else "Operador autorizado a regressar ao respawn conforme as regras em campo.", "inline": False},
+                ],
+                footer="COMANDO CENTRAL • ALERTA HVT"
+            )
+        )
+
+        await milsim_log(f"🎯 **{team.upper()}** capturou o HVT `{codigo_operador}` ({operator_name}). {log_suffix}")
+        await update_status_panel()
+        return
+
     if codigo_operador in milsim_state.get("captured_players", []):
         return await ctx.send("⚠️ Esse operador já foi capturado anteriormente.", delete_after=10)
 
     milsim_state.setdefault("captured_players", []).append(codigo_operador)
     milsim_state["scores"][team] += 5
 
-    operator_name = ALL_OPERATOR_CODES[codigo_operador]
-    enemy = milsim_enemy(team)
-
-    enemy_hvt = get_enemy_hvt_for_team(team)
-    hvt_captured = codigo_operador == enemy_hvt
-    if hvt_captured:
-        milsim_state.setdefault("hvt", {}).setdefault("early_validation_unlocked", {})[team] = True
-
     await send_team_embed_with_status_last(
         team,
         tactical_embed(
             "🪪 OPERADOR CAPTURADO",
-            f"Operador inimigo confirmado: **{operator_name}**\\nCódigo: `{codigo_operador}`",
+            f"Operador inimigo confirmado: **{operator_name}**\nCódigo: `{codigo_operador}`",
             discord.Color.dark_red(),
             [
                 {
                     "name": "📡 INTEL RECUPERADA",
-                    "value": "▸ Identificação operacional confirmada\\n▸ Operador removido temporariamente do terreno\\n▸ Deve regressar à base e aguardar próxima janela de respawn",
+                    "value": "▸ Captura registada após colocação de algemas\n▸ Identificação operacional confirmada\n▸ Operador removido temporariamente do terreno\n▸ Deve regressar à base e aguardar próxima janela de respawn",
                     "inline": False
                 },
                 {"name": "🏆 Pontos", "value": "**+5 pontos atribuídos**", "inline": True},
-                {"name": "🎯 HVT", "value": "✅ Validação antecipada desbloqueada" if hvt_captured else "Operador não prioritário", "inline": True}
+                {"name": "🎯 HVT", "value": "Operador não prioritário", "inline": True}
             ],
             footer="COMANDO CENTRAL • CAPTURA DE OPERADOR"
         )
@@ -5883,7 +6035,7 @@ async def capturar(ctx, codigo_operador: str):
         enemy,
         embed=tactical_embed(
             "⚠️ OPERADOR COMPROMETIDO",
-            f"Um operador da vossa equipa foi capturado.\\n\\nCódigo comprometido: `{codigo_operador}`",
+            f"Um operador da vossa equipa foi capturado.\n\nCódigo comprometido: `{codigo_operador}`",
             discord.Color.orange(),
             [
                 {"name": "📍 ORDEM", "value": "O operador capturado deve regressar à base e aguardar próxima janela de respawn.", "inline": False}
@@ -5892,25 +6044,90 @@ async def capturar(ctx, codigo_operador: str):
         )
     )
 
-    if hvt_captured:
-        await milsim_send_to_team(
-            team,
-            embed=tactical_embed(
-                "🎯 HVT CAPTURADO — VALIDAÇÃO AUTORIZADA",
-                "O operador prioritário inimigo foi capturado. A validação antecipada de códigos finais está agora autorizada para a vossa Task Force.",
-                discord.Color.green(),
-                [
-                    {"name": "🪪 Operador", "value": f"`{codigo_operador}` — **{operator_name}**", "inline": False},
-                    {"name": "⏱️ Protocolo", "value": "Tempo mínimo operacional de **10 minutos** contornado por captura HVT.", "inline": False}
-                ],
-                footer="COMANDO CENTRAL • PROTOCOLO HVT"
-            )
-        )
-        await milsim_log(f"🎯 HVT capturado por **{team.upper()}**: `{codigo_operador}` ({operator_name}). Validação antecipada desbloqueada.")
-
     await milsim_log(f"🪪 **{team.upper()}** capturou `{codigo_operador}` ({operator_name}). +5 pontos.")
     await update_status_panel()
 
+
+@bot.command()
+async def capturar(ctx, codigo_operador: str):
+    # Comando antigo mantido por compatibilidade.
+    # Regra oficial atual: capturar após algemar usando !codigo CODIGO-OPERADOR.
+    await process_operator_capture(ctx, codigo_operador)
+
+@bot.command(name="extracaohtv", aliases=["extrairhvt", "extracaohvt", "extracao_hvt", "extrair_hvt", "extraçãohtv", "extraçãohvt", "extrcãohtv"])
+async def extracaohtv(ctx, codigo_operador: str = None):
+    team = milsim_team_from_channel(ctx.channel.id)
+
+    if not team:
+        return await ctx.send("⚠️ Este comando só pode ser usado no canal da tua equipa.", delete_after=10)
+
+    if not milsim_state["active"]:
+        return await ctx.send("⚠️ A operação não está ativa.", delete_after=10)
+
+    if not codigo_operador:
+        return await ctx.send("⚠️ Uso correto: `!extracaohtv CODIGO-OPERADOR`\nA extração só pode ser registada depois de levar o HVT até à base.", delete_after=12)
+
+    codigo_operador = codigo_operador.upper().strip()
+
+    if codigo_operador not in ALL_OPERATOR_CODES:
+        return await ctx.send("❌ Código de operador inválido.", delete_after=10)
+
+    hvt_state = milsim_state.setdefault("hvt", {})
+    hvt_state.setdefault("captured", {"azul": None, "vermelho": None})
+    hvt_state.setdefault("extracted", {"azul": False, "vermelho": False})
+
+    enemy_hvt = get_enemy_hvt_for_team(team)
+    captured_code = hvt_state["captured"].get(team)
+
+    if hvt_state["extracted"].get(team):
+        return await ctx.send("⚠️ O HVT desta missão já foi extraído pela tua Task Force. Só é permitido extrair uma vez por missão.", delete_after=10)
+
+    if codigo_operador != enemy_hvt:
+        return await ctx.send("⚠️ Esse código não corresponde ao HVT inimigo ativo desta missão.", delete_after=10)
+
+    if captured_code != codigo_operador:
+        return await ctx.send("⚠️ Este HVT ainda não está registado como capturado. Primeiro algema o jogador e usa `!codigo CODIGO-OPERADOR`.", delete_after=12)
+
+    operator_name = ALL_OPERATOR_CODES.get(codigo_operador, "HVT")
+    enemy = milsim_enemy(team)
+
+    hvt_state["captured"][team] = None
+    hvt_state["extracted"][team] = True
+
+    # O HVT volta ao ciclo normal de respawn depois da extração.
+    if codigo_operador in milsim_state.get("captured_players", []):
+        milsim_state["captured_players"].remove(codigo_operador)
+
+    await send_team_embed_with_status_last(
+        team,
+        tactical_embed(
+            "✅ HVT EXTRAÍDO — OBJETIVO SECUNDÁRIO CONCLUÍDO",
+            f"O operador prioritário foi entregue no HQ da Task Force.\n\n`{codigo_operador}` — **{operator_name}**",
+            discord.Color.green(),
+            [
+                {"name": "📦 ESTADO", "value": "Extração confirmada na base.", "inline": True},
+                {"name": "🔄 RESPAWN", "value": "O operador extraído pode regressar ao respawn da própria equipa.", "inline": False},
+                {"name": "⏱️ TIMER", "value": "Sem timer — objetivo secundário encerrado.", "inline": True},
+            ],
+            footer="COMANDO CENTRAL • HVT EXTRACTION"
+        )
+    )
+
+    await milsim_send_to_team(
+        enemy,
+        embed=tactical_embed(
+            "📡 HVT EXTRAÍDO PELO INIMIGO",
+            f"O operador prioritário `{codigo_operador}` — **{operator_name}** foi extraído pelo inimigo.",
+            discord.Color.red(),
+            [
+                {"name": "🔄 ORDEM AO OPERADOR", "value": "Regressar ao ponto de respawn da própria Task Force e aguardar a próxima janela de renascimento.", "inline": False}
+            ],
+            footer="COMANDO CENTRAL • HVT COMPROMETIDO"
+        )
+    )
+
+    await milsim_log(f"✅ **{team.upper()}** extraiu o HVT `{codigo_operador}` ({operator_name}). Operador autorizado a regressar ao respawn.")
+    await update_status_panel()
 
 @bot.command()
 async def opstatus(ctx):
@@ -6091,9 +6308,15 @@ async def gm_next(ctx):
             next_number = int(old_mission.split("_")[1]) + 1
             milsim_state["teams"][t]["current"] = f"mission_{next_number}"
 
-        milsim_state["mission_end_times"][t] = datetime.now(timezone.utc) + timedelta(
+        milsim_state["teams"][t]["completed_codes"] = []
+        mission_start = datetime.now(timezone.utc)
+        milsim_state.setdefault("mission_start_times", {})[t] = mission_start
+        milsim_state["mission_end_times"][t] = mission_start + timedelta(
             seconds=MISSION_TIME_LIMITS[milsim_state["teams"][t]["current"]]
         )
+
+        if t == "azul":
+            select_hvt_targets_for_mission()
 
         await send_team_embed_with_status_last(t, NEXT_MISSIONS[old_mission][t]())
 
