@@ -2466,19 +2466,7 @@ def get_operational_note_for_embed(embed: discord.Embed):
 
 
 def apply_operational_note_to_embed(embed: discord.Embed):
-    existing = any((field.name or "") == "📌 NOTA OPERACIONAL" for field in getattr(embed, "fields", []))
-    if existing:
-        return embed
-
-    note = get_operational_note_for_embed(embed)
-    if not note:
-        return embed
-
-    embed.add_field(
-        name="📌 NOTA OPERACIONAL",
-        value=note,
-        inline=False
-    )
+    # NOTA OPERACIONAL removida dos embeds por pedido operacional.
     return embed
 
 
@@ -3014,6 +3002,17 @@ def remove_estado_missao_field(embed: discord.Embed):
     return embed
 
 
+def simplify_failed_mission_embed(embed: discord.Embed):
+    title = (embed.title or "").upper()
+    if "MISSÃO FRACASSADA" not in title and "MISSAO FRACASSADA" not in title:
+        return embed
+
+    # Em embeds de missão fracassada deve aparecer apenas o motivo/ordem de retirada.
+    # Remove objetivos, notas operacionais e qualquer detalhe herdado da missão original.
+    embed.clear_fields()
+    return embed
+
+
 async def send_team_embed_plain(team: str, embed: discord.Embed):
     await force_archive_current_mission_embed(team, "Nova transmissão operacional emitida.")
     await purge_team_status_panels(team)
@@ -3024,6 +3023,7 @@ async def send_team_embed_plain(team: str, embed: discord.Embed):
         return None
 
     clean_embed = remove_estado_missao_field(embed.copy())
+    clean_embed = simplify_failed_mission_embed(clean_embed)
     clean_embed = aplicar_cor_milsim(clean_embed)
 
     msg = await channel.send(embed=clean_embed)
@@ -3045,7 +3045,9 @@ async def send_team_embed_with_status_last(team: str, embed: discord.Embed, esta
     if not channel:
         return None
 
-    msg = await channel.send(embed=build_mission_embed_with_status(team, embed, estado))
+    final_embed = build_mission_embed_with_status(team, embed, estado)
+    final_embed = simplify_failed_mission_embed(final_embed)
+    msg = await channel.send(embed=final_embed)
     milsim_state.setdefault("mission_message_ids", {})[team] = msg.id
 
     await finish_team_channel_after_new_milsim_embed(team)
@@ -4923,24 +4925,8 @@ async def respawn_now(ctx):
 
 
 async def send_regroup_two_minute_notice(team: str):
-    color = discord.Color.blue() if team == "azul" else discord.Color.red()
-    emoji = "🔵" if team == "azul" else "🔴"
-    name = "TASK FORCE AZUL" if team == "azul" else "TASK FORCE VERMELHA"
-
-    await milsim_send_to_team(
-        team,
-        embed=tactical_embed(
-            f"⚠️ ALERTA OPERACIONAL — {emoji} {name}",
-            "O período de reorganização aproxima-se do fim.\n\n"
-            "Finalizem reabastecimento, confirmem comunicações e preparem mobilização imediata.",
-            color,
-            [
-                {"name": "📍 ORDEM", "value": "▸ Reorganizar unidade\n▸ Verificar equipamento\n▸ Confirmar munições\n▸ Aguardar transmissão do comando"},
-                {"name": "⏱️ NOVAS ORDENS", "value": "**Em 2 minutos**"}
-            ],
-            footer="COMANDO CENTRAL • REAGRUPAMENTO OPERACIONAL"
-        )
-    )
+    # Aviso dos últimos 2 minutos de descanso/reagrupamento removido.
+    return
 
 
 
@@ -5464,10 +5450,9 @@ async def set_both_teams_to_regroup_after_objective(winning_team: str, mission_n
         enemy,
         tactical_embed(
             f"⚠️ Ordem de Retirada - Missão Fracassada! ({mission_label})",
-            "📡 Regressem de imediato ao HQ, reorganizem a equipa e preparem-se para novas ordens.\n\n"
+            "📡 Regressem de imediato ao HQ e reorganizem a equipa.\n\n"
             "📌 **Motivo**\n"
-            f"{enemy_title}\n{enemy_reason}\n\n"
-            "Estejam em alerta e aguardem novas ordens!",
+            f"{enemy_title}\n{enemy_reason}",
             enemy_color,
             footer="COMANDO CENTRAL • ORDEM DE RETIRADA"
         )
