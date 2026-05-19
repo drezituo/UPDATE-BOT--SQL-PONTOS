@@ -2483,12 +2483,102 @@ def apply_operational_note_to_embed(embed: discord.Embed):
 
 
 
+
+def get_clear_objective_for_embed(embed: discord.Embed):
+    title = (embed.title or "").upper()
+    desc = (embed.description or "").upper()
+    combined = title + "\n" + desc
+
+    if "MISSÃO 01" in combined and "SECURE DRIVES" in combined and "TASK FORCE AZUL" in combined:
+        return 'Encontra os 5 discos e trás para a base.\n\nAbre os discos e no interior de um deles terá o código de validação.\n\nValida o código para finalizar a missão.'
+
+    if "MISSÃO 01" in combined and "SECURE DRIVES" in combined and "TASK FORCE VERMELHA" in combined:
+        return 'Captura a caixa segura, trás para a base e procura o código de validação gravado na caixa.\n\nValida o código para finalizar a missão.'
+
+    if ("DATA TRANSFER" in combined or "SIGNAL KEY" in combined) and "TASK FORCE AZUL" in combined:
+        return 'Com o disco identificado leva a caixa ao bunker.\n\nProcura o ponto exato para começar a transmissão de dados.\n\nNo local terás o código de validação.\n\nValida o código.'
+
+    if ("SIGNAL BREAK" in combined or "SIGNAL KEY" in combined or "DATA TRANSFER" in combined) and "TASK FORCE VERMELHA" in combined:
+        return 'Tenta cortar/sabotar o envio de dados.\n\nO código para validação está no bunker no ponto onde se encontra a caixa.\n\nValida o código para sabotar a transmissão.'
+
+    if "RECOVER FRAGMENTS" in combined and "TASK FORCE AZUL" in combined:
+        return 'Procura 3 CDs.\n\nCada CD tem parte do código de validação.\n\nAssim que decifrares o código volta para a base e valida para finalizar a missão.'
+
+    if "DENY RECOVERY" in combined and "TASK FORCE VERMELHA" in combined:
+        return 'Defende os locais onde estão os CDs com partes do código.\n\nNão podes tocar nos CDs.\n\nApenas proteger o local.'
+
+    if "CONVOY RUN" in combined and "TASK FORCE VERMELHA" in combined:
+        return 'Segue o mapa recebido com os locais onde terão os códigos de validação.\n\nValida os códigos para teres acesso aos próximos até ao depósito.'
+
+    if "INTERCEPT CONVOY" in combined and "TASK FORCE AZUL" in combined:
+        return 'Captura a caixa, trás para a base e procura o código gravado na caixa para validar.\n\nValida o código para finalizar missão.'
+
+    if "SATCOM BREACH" in combined and "TASK FORCE VERMELHA" in combined:
+        return 'A equipa destacada procura o SATCOM onde vai ter junto o código de ativação.\n\nValida o código para dar início ao hack.'
+
+    if ("SATCOM COMPROMETIDO" in combined or "SATCOM EM RISCO" in combined or "INTERFERÊNCIAS DETETADAS" in combined) and "TASK FORCE AZUL" in combined:
+        return 'A equipa destacada deve procurar o SATCOM onde terá junto o código para interromper o hack.\n\nValida o código para finalizar a missão.'
+
+    if "DEFESA DO ACAMPAMENTO" in combined and "TASK FORCE VERMELHA" in combined:
+        return 'Defender a caixa de suprimentos do acampamento.'
+
+    if "EMBOSCADA AO ACAMPAMENTO" in combined and "TASK FORCE AZUL" in combined:
+        return 'Captura a caixa de suprimentos trás para a base e procura código gravado para validação.\n\nValida o código para finalizar a missão.'
+
+    return None
+
+
+def apply_clear_objective_to_embed(embed: discord.Embed):
+    objective = get_clear_objective_for_embed(embed)
+    if not objective:
+        return embed
+
+    kept_fields = []
+    replaced = False
+
+    for field in embed.fields:
+        field_name = field.name or ""
+
+        if field_name in ("🎯 OBJETIVOS", "🎯 OBJETIVO", "📌 OBJETIVO DA MISSÃO"):
+            kept_fields.append({
+                "name": "📌 OBJETIVO DA MISSÃO",
+                "value": objective,
+                "inline": False
+            })
+            replaced = True
+        else:
+            kept_fields.append({
+                "name": field.name,
+                "value": field.value,
+                "inline": field.inline
+            })
+
+    if not replaced:
+        kept_fields.append({
+            "name": "📌 OBJETIVO DA MISSÃO",
+            "value": objective,
+            "inline": False
+        })
+
+    embed.clear_fields()
+
+    for field in kept_fields:
+        embed.add_field(
+            name=field["name"],
+            value=field["value"],
+            inline=field["inline"]
+        )
+
+    return embed
+
+
 def build_mission_embed_with_status(team: str, embed: discord.Embed, estado: str = None):
     # Limpa campos automáticos antigos.
     # O "Estado da Missão" foi removido dos embeds porque estava a ficar desatualizado/bugado.
     final_embed = embed.copy()
     _remove_mission_status_fields(final_embed)
     final_embed = apply_operational_note_to_embed(final_embed)
+    final_embed = apply_clear_objective_to_embed(final_embed)
     return aplicar_cor_milsim(final_embed)
 
 def build_team_status_embed(team: str):
@@ -3793,7 +3883,7 @@ def build_satcom_red_initial_embed():
         [
             {"name": "👥 OPERADORES SATCOM DESTACADOS", "value": format_operator_list(selected, "vermelho"), "inline": False},
             {"name": "📦 OPERADORES SECUNDÁRIOS", "value": format_operator_list(secondary, "vermelho"), "inline": False},
-            {"name": "🎯 OBJETIVO", "value": "▸ Infiltrar terminal SATCOM\n▸ Iniciar hack com o código físico\n▸ Após início, defender posição durante 10 minutos", "inline": False},
+            {"name": "📌 OBJETIVO DA MISSÃO", "value": "▸ Infiltrar terminal SATCOM\n▸ Iniciar hack com o código físico\n▸ Após início, defender posição durante 10 minutos", "inline": False},
             {"name": "⚠️ REGRA CRÍTICA", "value": "A missão SATCOM só termina se o hack completar por tempo ou se a Azul cancelar o hack. Sem respawn. Operadores SATCOM não podem interferir na secundária.", "inline": False},
         ],
         footer="COMANDO CENTRAL • OPERAÇÃO SATCOM 5x5",
@@ -3808,7 +3898,7 @@ def build_satcom_blue_active_embed():
         discord.Color.light_grey(),
         [
             {"name": "👥 OPERADORES AUTORIZADOS", "value": format_operator_list(selected, "azul"), "inline": False},
-            {"name": "🎯 OBJETIVO", "value": "▸ Localizar terminal SATCOM\n▸ Romper defesa inimiga\n▸ Validar cancelamento do hack com o código físico", "inline": False},
+            {"name": "📌 OBJETIVO DA MISSÃO", "value": "▸ Localizar terminal SATCOM\n▸ Romper defesa inimiga\n▸ Validar cancelamento do hack com o código físico", "inline": False},
             {"name": "⚠️ CONDIÇÃO DE FIM", "value": "A missão termina apenas se a Azul cancelar o hack ou se o timer do hack chegar a 00:00. Sem respawn. Operadores SATCOM não podem interferir na secundária.", "inline": False},
         ],
         footer="COMANDO CENTRAL • SATCOM EM RISCO",
@@ -3893,9 +3983,7 @@ async def activate_satcom_secondary_missions():
                 "A equipa secundária Vermelha deve defender a área e impedir a extração da caixa pela Task Force Azul."
             )
             objective = (
-                "▸ Defender acampamento\\n"
-                "▸ Proteger caixa de suprimentos\\n"
-                "▸ Impedir captura e extração inimiga\\n"
+                "Defender a caixa de suprimentos do acampamento. e extração inimiga\\n"
                 "▸ Resistir durante 15 minutos"
             )
             win_condition = "A Vermelha vence se a Azul não validar `CACHE-777` antes do fim do tempo."
@@ -3908,7 +3996,7 @@ async def activate_satcom_secondary_missions():
                 color,
                 [
                     {"name": "👥 OPERADORES SECUNDÁRIOS", "value": format_operator_list(secondary, t), "inline": False},
-                    {"name": "🎯 OBJETIVO", "value": objective, "inline": False},
+                    {"name": "📌 OBJETIVO DA MISSÃO", "value": objective, "inline": False},
                     {"name": "⏱️ TEMPO", "value": "**15 minutos**", "inline": True},
                     {"name": "⚠️ MORTE SÚBITA", "value": "Após atendimento médico, se o operador voltar a ser eliminado, fica fora até à próxima missão. Sem respawn.", "inline": False},
                     {"name": "🚫 RESTRIÇÃO", "value": "Operadores da secundária não podem interferir na SATCOM. Operadores SATCOM não podem interferir na secundária.", "inline": False},
@@ -4298,7 +4386,7 @@ MISSION_CODES = {
             discord.Color.blue(),
             [
                 {"name": "👥 OPERADORES DESIGNADOS", "value": "▸ Player1\n▸ Player2\n▸ Player3\n▸ Player4\n▸ Player5", "inline": False},
-                {"name": "🎯 OBJETIVOS", "value": "▸ Localizar origem das interferências\n▸ Eliminar operadores hostis\n▸ Interromper hackeamento\n▸ Recuperar controlo das comunicações", "inline": False},
+                {"name": "📌 OBJETIVO DA MISSÃO", "value": "▸ Localizar origem das interferências\n▸ Eliminar operadores hostis\n▸ Interromper hackeamento\n▸ Recuperar controlo das comunicações", "inline": False},
                 {"name": "📡 ORDEM", "value": "Cada minuto perdido aproxima o inimigo da vitória operacional. Encontrem-nos antes que seja tarde.", "inline": False}
             ]
         )
@@ -4367,13 +4455,13 @@ NEXT_MISSIONS = {
             discord.Color.blue(),
             (
                 [
-                    {"name": "🎯 OBJETIVOS", "value": "▸ Transportar a caixa segura até ao BUNKER\n▸ Ativar uplink militar\n▸ Iniciar transmissão para a central\n▸ Defender o terminal durante toda a sequência", "inline": False},
+                    {"name": "📌 OBJETIVO DA MISSÃO", "value": "▸ Transportar a caixa segura até ao BUNKER\n▸ Ativar uplink militar\n▸ Iniciar transmissão para a central\n▸ Defender o terminal durante toda a sequência", "inline": False},
                     {"name": "⚠️ REGRAS OPERACIONAIS", "value": "▸ A caixa deve permanecer junto do terminal\n▸ O uplink demora 10 minutos até concluir\n▸ Se o terminal cair, a transmissão poderá falhar", "inline": False},
                     {"name": "📡 ORDEM", "value": "Segurem o BUNKER. Defendam o terminal. E enviem os dados antes que seja tarde.", "inline": False}
                 ]
                 if milsim_state.get("mission_branch") != "compromised" else
                 [
-                    {"name": "🎯 OBJETIVOS", "value": "▸ Recuperar fragmento no BUNKER\n▸ Recuperar fragmento no CQB\n▸ Recuperar fragmento no ACAMPAMENTO\n▸ Reconstruir parcialmente a inteligência", "inline": False},
+                    {"name": "📌 OBJETIVO DA MISSÃO", "value": "▸ Recuperar fragmento no BUNKER\n▸ Recuperar fragmento no CQB\n▸ Recuperar fragmento no ACAMPAMENTO\n▸ Reconstruir parcialmente a inteligência", "inline": False},
                     {"name": "📡 ORDEM", "value": "Não deixem que esta operação termine aqui. Movam-se rápido e recuperem o que ainda resta.", "inline": False}
                 ]
             )
@@ -4388,13 +4476,13 @@ NEXT_MISSIONS = {
             discord.Color.red(),
             (
                 [
-                    {"name": "🎯 OBJETIVOS", "value": "▸ Infiltrar o BUNKER\n▸ Interromper a transmissão\n▸ Destruir ou recuperar a caixa segura\n▸ Impedir envio dos dados", "inline": False},
+                    {"name": "📌 OBJETIVO DA MISSÃO", "value": "▸ Infiltrar o BUNKER\n▸ Interromper a transmissão\n▸ Destruir ou recuperar a caixa segura\n▸ Impedir envio dos dados", "inline": False},
                     {"name": "📡 INTEL", "value": "O uplink demora 10 minutos até concluir. Esse é o vosso tempo limite. Cada minuto perdido aproxima a Azul da vitória operacional.", "inline": False},
                     {"name": "📍 ORDEM", "value": "Cortem a transmissão.", "inline": False}
                 ]
                 if milsim_state.get("mission_branch") != "compromised" else
                 [
-                    {"name": "🎯 OBJETIVOS", "value": "▸ Impedir recolha dos fragmentos\n▸ Defender zonas críticas\n▸ Atrasar recuperação da inteligência", "inline": False},
+                    {"name": "📌 OBJETIVO DA MISSÃO", "value": "▸ Impedir recolha dos fragmentos\n▸ Defender zonas críticas\n▸ Atrasar recuperação da inteligência", "inline": False},
                     {"name": "📍 ORDEM", "value": "Acabem com isto de vez.", "inline": False}
                 ]
             )
@@ -4406,7 +4494,7 @@ NEXT_MISSIONS = {
             "〔 TASK FORCE AZUL 〕\n\nUma unidade Vermelha está a transportar material crítico através do complexo operacional. Acreditamos que a carga contém equipamento capaz de alterar o rumo da operação.\n\nA Vermelha irá defender a carga com tudo o que tem. Ataquem rápido, criem confusão e não deixem o comboio escapar.",
             discord.Color.blue(),
             [
-                {"name": "🎯 OBJETIVOS", "value": "▸ Localizar o transporte inimigo\n▸ Intercetar a carga\n▸ Eliminar escoltas\n▸ Capturar o material\n▸ Levar a carga até ao BUNKER", "inline": False},
+                {"name": "📌 OBJETIVO DA MISSÃO", "value": "▸ Localizar o transporte inimigo\n▸ Intercetar a carga\n▸ Eliminar escoltas\n▸ Capturar o material\n▸ Levar a carga até ao BUNKER", "inline": False},
                 {"name": "⚠️ REGRAS OPERACIONAIS", "value": "▸ O operador da carga não pode correr\n▸ Se eliminado, a carga permanece no terreno", "inline": False}
             ]
         ),
@@ -4415,7 +4503,7 @@ NEXT_MISSIONS = {
             "〔 TASK FORCE VERMELHA 〕\n\nMaterial operacional altamente sensível precisa de atravessar o complexo através de uma rota obrigatória. A rota foi comprometida. Interceção inimiga é esperada a qualquer momento.\n\nReconhecimento indica movimentação Azul nos flancos do percurso. Esperem emboscadas, ataques rápidos e combate constante até à extração final.",
             discord.Color.red(),
             [
-                {"name": "🎯 OBJETIVOS", "value": "▸ Proteger a carga\n▸ Validar os 5 checkpoints obrigatórios\n▸ Manter integridade do transporte\n▸ Concluir extração final", "inline": False},
+                {"name": "📌 OBJETIVO DA MISSÃO", "value": "▸ Proteger a carga\n▸ Validar os 5 checkpoints obrigatórios\n▸ Manter integridade do transporte\n▸ Concluir extração final", "inline": False},
                 {"name": "⚠️ REGRAS OPERACIONAIS", "value": "▸ O operador da carga não pode correr\n▸ Se eliminado, a carga permanece no local\n▸ A rota deve ser seguida por ordem. Devem validar 5 checkpoints antes da extração final", "inline": False},
                 {"name": "📍 ORDEM", "value": "Mantenham o comboio em movimento.", "inline": False}
             ]
@@ -4436,7 +4524,7 @@ NEXT_MISSIONS = {
             discord.Color.red(),
             [
                 {"name": "👥 OPERADORES DESIGNADOS", "value": "▸ Player1\n▸ Player2\n▸ Player3\n▸ Player4\n▸ Player5", "inline": False},
-                {"name": "🎯 OBJETIVOS", "value": "▸ Infiltrar estação SATCOM\n▸ Iniciar hackeamento\n▸ Defender terminal até conclusão", "inline": False},
+                {"name": "📌 OBJETIVO DA MISSÃO", "value": "▸ Infiltrar estação SATCOM\n▸ Iniciar hackeamento\n▸ Defender terminal até conclusão", "inline": False},
                 {"name": "⚠️ REGRAS OPERACIONAIS", "value": "▸ Apenas os operadores designados abandonam a base\n▸ Evitar deteção prematura\n▸ Manter silêncio rádio sempre que possível", "inline": False},
                 {"name": "📡 ORDEM", "value": "Movam-se sem serem vistos.", "inline": False}
             ]
@@ -4449,7 +4537,7 @@ NEXT_MISSIONS = {
             discord.Color.dark_gold(),
             [
                 {"name": "📍 TERMINAIS ELETRÓNICOS", "value": "▸ ALPHA — FLANCO ESQUERDO\n▸ BRAVO — CENTRO DO CQB\n▸ CHARLIE — FLANCO DIREITO", "inline": False},
-                {"name": "🎯 OBJETIVOS", "value": "▸ Ativar terminais para a vossa equipa\n▸ Manter os timers a contar a vosso favor\n▸ Parar os timers inimigos\n▸ Dominar o CQB até ao final da operação", "inline": False},
+                {"name": "📌 OBJETIVO DA MISSÃO", "value": "▸ Ativar terminais para a vossa equipa\n▸ Manter os timers a contar a vosso favor\n▸ Parar os timers inimigos\n▸ Dominar o CQB até ao final da operação", "inline": False},
                 {"name": "⚙️ MECÂNICA", "value": "Cada terminal possui um dispositivo timer eletrónico. Os operadores devem ativar o timer da sua equipa e, sempre que possível, parar o timer inimigo.", "inline": False}
             ]
         ),
@@ -4459,7 +4547,7 @@ NEXT_MISSIONS = {
             discord.Color.dark_gold(),
             [
                 {"name": "📍 TERMINAIS ELETRÓNICOS", "value": "▸ ALPHA — FLANCO ESQUERDO\n▸ BRAVO — CENTRO DO CQB\n▸ CHARLIE — FLANCO DIREITO", "inline": False},
-                {"name": "🎯 OBJETIVOS", "value": "▸ Ativar terminais para a vossa equipa\n▸ Manter os timers a contar a vosso favor\n▸ Parar os timers inimigos\n▸ Dominar o CQB até ao final da operação", "inline": False},
+                {"name": "📌 OBJETIVO DA MISSÃO", "value": "▸ Ativar terminais para a vossa equipa\n▸ Manter os timers a contar a vosso favor\n▸ Parar os timers inimigos\n▸ Dominar o CQB até ao final da operação", "inline": False},
                 {"name": "⚙️ MECÂNICA", "value": "Cada terminal possui um dispositivo timer eletrónico. Os operadores devem ativar o timer da sua equipa e, sempre que possível, parar o timer inimigo.", "inline": False}
             ]
         )
@@ -4478,7 +4566,7 @@ NEXT_MISSIONS_ALT = {
             discord.Color.blue(),
             [
                 {
-                    "name": "🎯 OBJETIVOS",
+                    "name": "📌 OBJETIVO DA MISSÃO",
                     "value": (
                         "▸ Recuperar fragmento no BUNKER\n"
                         "▸ Recuperar fragmento no CQB\n"
@@ -4508,7 +4596,7 @@ NEXT_MISSIONS_ALT = {
             discord.Color.red(),
             [
                 {
-                    "name": "🎯 OBJETIVOS",
+                    "name": "📌 OBJETIVO DA MISSÃO",
                     "value": (
                         "▸ Impedir recolha dos fragmentos\n"
                         "▸ Defender setores críticos\n"
@@ -4928,7 +5016,7 @@ async def start_op(ctx):
             "〔 TASK FORCE AZUL 〕\n\nReconhecimento de drones confirmou a existência de 5 discos rígidos escondidos no interior do complexo CQB. Apenas um contém a verdadeira inteligência operacional. Os restantes foram criados para atrasar qualquer tentativa de extração inimiga.\n\nCada corredor pode esconder uma emboscada. Cada porta pode conter contacto inimigo. O sucesso desta missão irá desbloquear acesso direto à inteligência principal da operação.",
             discord.Color.blue(),
             [
-                {"name": "🎯 OBJETIVOS", "value": "▸ Localizar os 5 discos rígidos\n▸ Guardar todo o material na caixa segura\n▸ Regressar ao HQ com a caixa intacta\n▸ Identificar o disco verdadeiro", "inline": False},
+                {"name": "📌 OBJETIVO DA MISSÃO", "value": "▸ Localizar os 5 discos rígidos\n▸ Guardar todo o material na caixa segura\n▸ Regressar ao HQ com a caixa intacta\n▸ Identificar o disco verdadeiro", "inline": False},
                 {"name": "⚠️ REGRAS OPERACIONAIS", "value": "▸ O operador da caixa não pode correr\n▸ Caso seja eliminado, a caixa permanece no local\n▸ O conteúdo não pode cair nas mãos inimigas", "inline": False},
                 {"name": "📡 ORDEM", "value": "Movam-se rápido. Mantenham a caixa segura. E não deixem ninguém para trás.", "inline": False}
             ]
@@ -4942,7 +5030,7 @@ async def start_op(ctx):
             "〔 TASK FORCE VERMELHA 〕\n\nForças Azuis iniciaram uma operação de recuperação de inteligência dentro do setor CQB. Interceptámos comunicações que confirmam a existência de uma caixa segura contendo dados altamente sensíveis.\n\nA Azul irá tentar mover-se rapidamente antes que consigamos fechar o perímetro. Não lhes deem tempo. Não lhes deem espaço. Não permitam que a inteligência saia do CQB.",
             discord.Color.red(),
             [
-                {"name": "🎯 OBJETIVOS", "value": "▸ Localizar forças Azuis\n▸ Intercetar a caixa segura\n▸ Impedir extração inimiga\n▸ Comprometer o conteúdo da caixa", "inline": False},
+                {"name": "📌 OBJETIVO DA MISSÃO", "value": "▸ Localizar forças Azuis\n▸ Intercetar a caixa segura\n▸ Impedir extração inimiga\n▸ Comprometer o conteúdo da caixa", "inline": False},
                 {"name": "⚠️ REGRAS OPERACIONAIS", "value": "▸ A caixa só pode ser comprometida dentro da base Vermelha\n▸ A destruição da inteligência é prioridade máxima", "inline": False},
                 {"name": "📡 ORDEM", "value": "Interceção autorizada.", "inline": False}
             ]
@@ -5719,6 +5807,8 @@ async def limpar_timers_auto():
 
     await cleanup_team_timer_panels("azul")
     await cleanup_team_timer_panels("vermelho")
+    await cleanup_secondary_timer_panels("azul")
+    await cleanup_secondary_timer_panels("vermelho")
     await create_team_timer_panel("azul")
     await create_team_timer_panel("vermelho")
 
