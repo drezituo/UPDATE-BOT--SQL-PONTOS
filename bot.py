@@ -2161,6 +2161,11 @@ SATCOM_TEAM_SIZE = 5
 SATCOM_SECONDARY_DELAY = 180  # 3 minutos até ativar missão secundária
 SATCOM_SECONDARY_SECONDS = 900  # 15 minutos para missão secundária do acampamento
 
+# ---------- PROTOCOLO HVT / VALIDAÇÃO ANTECIPADA ----------
+MIN_VALIDATION_SECONDS = 600  # 10 minutos mínimos antes de validar códigos finais
+EARLY_VALIDATION_MISSIONS = {"mission_1", "mission_2", "mission_3"}
+EARLY_VALIDATION_TYPES = {"complete", "decryption"}
+
 # ---------- CORES DOS EMBEDS MILSIM ----------
 MILSIM_COLOR_MAIN_MISSION = discord.Color.from_rgb(255, 255, 255)  # branco
 MILSIM_COLOR_SUCCESS = discord.Color.green()
@@ -2567,6 +2572,7 @@ def build_mission_embed_with_status(team: str, embed: discord.Embed, estado: str
     _remove_mission_status_fields(final_embed)
     final_embed = apply_operational_note_to_embed(final_embed)
     final_embed = apply_clear_objective_to_embed(final_embed)
+    final_embed = apply_early_validation_note_to_embed(team, final_embed)
     return aplicar_cor_milsim(final_embed)
 
 def build_team_status_embed(team: str):
@@ -3121,7 +3127,9 @@ async def advance_both_teams_to_next_mission(old_mission: str):
             # Missão 4 sem respawn wave.
 
         milsim_state["teams"][t]["completed_codes"] = []
-        milsim_state["mission_end_times"][t] = datetime.now(timezone.utc) + timedelta(
+        mission_start = datetime.now(timezone.utc)
+        milsim_state.setdefault("mission_start_times", {})[t] = mission_start
+        milsim_state["mission_end_times"][t] = mission_start + timedelta(
             seconds=MISSION_TIME_LIMITS[milsim_state["teams"][t]["current"]]
         )
 
@@ -3518,6 +3526,7 @@ milsim_state = {
     "timeout_resolution_active": False,
     "scores": {"azul": 0, "vermelho": 0},
     "mission_end_times": {"azul": None, "vermelho": None},
+    "mission_start_times": {"azul": None, "vermelho": None},
     "regroup_notice_sent": {"azul": False, "vermelho": False},
     "status_panel_message_id": None,
     "team_status_panel_message_ids": {"azul": None, "vermelho": None},
@@ -3555,6 +3564,10 @@ milsim_state = {
         }
     },
     "captured_players": [],
+    "hvt": {
+        "targets": {"azul": None, "vermelho": None},
+        "early_validation_unlocked": {"azul": False, "vermelho": False}
+    },
     "mission_branch": None,
     "satcom": {
         "hack_active": False,
@@ -3571,6 +3584,133 @@ milsim_state = {
         "secondary": {"azul": [], "vermelho": []}
     }
 }
+
+
+def select_hvt_targets_for_operation():
+    """Seleciona um HVT aleatório de cada equipa para a operação atual."""
+    azul_hvt = random.choice(list(AZUL_OPERATOR_CODES.keys()))
+    vermelho_hvt = random.choice(list(VERMELHO_OPERATOR_CODES.keys()))
+
+    milsim_state["hvt"] = {
+        "targets": {
+            "azul": azul_hvt,
+            "vermelho": vermelho_hvt,
+        },
+        "early_validation_unlocked": {
+            "azul": False,
+            "vermelho": False,
+        }
+    }
+
+    return milsim_state["hvt"]
+
+
+def format_hvt_line(team: str) -> str:
+    code = milsim_state.get("hvt", {}).get("targets", {}).get(team)
+    if not code:
+        return "HVT ainda não identificado"
+    return f"`{code}` — **{ALL_OPERATOR_CODES.get(code, 'OPERADOR DESCONHECIDO')}**"
+
+
+def get_enemy_hvt_for_team(team: str):
+    enemy = milsim_enemy(team)
+    return milsim_state.get("hvt", {}).get("targets", {}).get(enemy)
+
+
+def mission_elapsed_seconds(team: str) -> int:
+    start_time = milsim_state.get("mission_start_times", {}).get(team)
+    if start_time:
+        if start_time.tzinfo is None:
+            start_time = start_time.replace(tzinfo=timezone.utc)
+        return max(0, int((datetime.now(timezone.utc) - start_time).total_seconds()))
+
+    current = milsim_state.get("teams", {}).get(team, {}).get("current")
+    end_time = milsim_state.get("mission_end_times", {}).get(team)
+    limit = MISSION_TIME_LIMITS.get(current)
+    if end_time and limit:
+        if end_time.tzinfo is None:
+            end_time = end_time.replace(tzinfo=timezone.utc)
+        remaining = max(0, int((end_time - datetime.now(timezone.utc)).total_seconds()))
+        return max(0, limit - remaining)
+
+    return MIN_VALIDATION_SECONDS
+
+
+def early_validation_unlocked(team: str) -> bool:
+    return bool(milsim_state.get("hvt", {}).get("early_validation_unlocked", {}).get(team))
+
+
+def should_apply_early_validation_lock(data: dict) -> bool:
+    return (
+        data.get("mission") in EARLY_VALIDATION_MISSIONS
+        and data.get("type") in EARLY_VALIDATION_TYPES
+    )
+
+
+async def guard_early_validation(ctx, team: str, data: dict) -> bool:
+    """Retorna True quando deve bloquear a validação do código."""
+    if not should_apply_early_validation_lock(data):
+        return False
+
+    elapsed = mission_elapsed_seconds(team)
+    if elapsed >= MIN_VALIDATION_SECONDS or early_validation_unlocked(team):
+        return False
+
+    remaining = MIN_VALIDATION_SECONDS - elapsed
+    minutes = remaining // 60
+    seconds = remaining % 60
+    hvt_code = get_enemy_hvt_for_team(team)
+    hvt_text = f"`{hvt_code}` — **{ALL_OPERATOR_CODES.get(hvt_code, 'HVT')}**" if hvt_code else "HVT inimigo"
+
+    await ctx.send(embed=tactical_embed(
+        "⛔ VALIDAÇÃO ANTECIPADA BLOQUEADA",
+        "O código está correto, mas o protocolo de validação ainda não autorizou conclusão antecipada da missão.",
+        discord.Color.orange(),
+        [
+            {"name": "⏱️ TEMPO MÍNIMO OPERACIONAL", "value": "**10 MINUTOS**", "inline": True},
+            {"name": "⌛ Tempo restante", "value": f"**{minutes:02d}:{seconds:02d}**", "inline": True},
+            {"name": "🎯 DESBLOQUEIO ANTECIPADO", "value": f"Capturar o HVT inimigo: {hvt_text}", "inline": False},
+            {"name": "📡 ORDEM", "value": "Aguardem autorização operacional ou confirmem captura do operador prioritário.", "inline": False},
+        ],
+        footer="COMANDO CENTRAL • PROTOCOLO HVT"
+    ), delete_after=20)
+    return True
+
+
+def apply_early_validation_note_to_embed(team: str, embed: discord.Embed):
+    current = milsim_state.get("teams", {}).get(team, {}).get("current")
+    phase = milsim_state.get("teams", {}).get(team, {}).get("phase")
+
+    # Remove versões antigas para não duplicar o campo quando o embed é editado.
+    kept_fields = []
+    for field in embed.fields:
+        if field.name not in ("⛔ PROTOCOLO DE VALIDAÇÃO", "🎯 HVT INIMIGO"):
+            kept_fields.append({"name": field.name, "value": field.value, "inline": field.inline})
+
+    embed.clear_fields()
+    for field in kept_fields:
+        embed.add_field(name=field["name"], value=field["value"], inline=field["inline"])
+
+    if phase != "mission" or current not in EARLY_VALIDATION_MISSIONS:
+        return embed
+
+    hvt_code = get_enemy_hvt_for_team(team)
+    hvt_text = f"`{hvt_code}` — **{ALL_OPERATOR_CODES.get(hvt_code, 'HVT')}**" if hvt_code else "HVT inimigo ainda não identificado"
+
+    embed.add_field(
+        name="⛔ PROTOCOLO DE VALIDAÇÃO",
+        value=(
+            "▸ Tempo mínimo operacional para validar código final: **10 MINUTOS**\n"
+            "▸ Antes dos 10 minutos, a validação só é autorizada com captura do HVT inimigo"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="🎯 HVT INIMIGO",
+        value=hvt_text,
+        inline=False
+    )
+    return embed
 
 
 def aplicar_cor_milsim(embed: discord.Embed):
@@ -4995,6 +5135,7 @@ async def start_op(ctx):
     milsim_state["timeout_resolution_active"] = False
     milsim_state["scores"] = {"azul": 0, "vermelho": 0}
     milsim_state["mission_end_times"] = {"azul": None, "vermelho": None}
+    milsim_state["mission_start_times"] = {"azul": None, "vermelho": None}
     milsim_state["regroup_notice_sent"] = {"azul": False, "vermelho": False}
     milsim_state["status_panel_message_id"] = None
     milsim_state["team_status_panel_message_ids"] = {"azul": None, "vermelho": None}
@@ -5027,6 +5168,7 @@ async def start_op(ctx):
     milsim_state["decryption"] = {"active": False, "cancelled": False, "team": None, "mission": None}
     milsim_state["mission3_route"] = {"vermelho_step": 0}
     milsim_state["captured_players"] = []
+    select_hvt_targets_for_operation()
     milsim_state["mission_branch"] = None
 
     for team in ["azul", "vermelho"]:
@@ -5045,14 +5187,17 @@ async def start_op(ctx):
             "〔 TRANSMISSÃO GLOBAL 〕\n\nEscutem com atenção operadores.\n\nNas últimas horas foi confirmada atividade militar clandestina dentro do complexo industrial abandonado no setor norte. Reconhecimento aéreo identificou movimentações relacionadas com inteligência militar, servidores SATCOM e armazenamento de dados classificados capazes de comprometer operações em larga escala.\n\nA partir deste momento, todas as equipas entram em prontidão máxima, todas as frequências entram em modo operacional e qualquer inteligência recuperada tem prioridade absoluta.\n\nHoje não existem reforços. Não existe evacuação. E não existe segunda oportunidade.\n\nO sucesso desta operação poderá decidir o controlo total da região.\n\nPreparem equipamento. Sincronizem rádios. Confirmem munições.",
             discord.Color.dark_gold(),
             [
-                {"name": "⏱️ INÍCIO DA OPERAÇÃO", "value": "**T-60 SEGUNDOS**", "inline": False}
+                {"name": "⏱️ INÍCIO DA OPERAÇÃO", "value": "**T-60 SEGUNDOS**", "inline": False},
+                {"name": "⛔ PROTOCOLO DE VALIDAÇÃO", "value": "Códigos finais das missões principais exigem **10 minutos mínimos** de operação. Antes disso, só a captura do HVT inimigo autoriza validação antecipada.", "inline": False}
             ]
         ))
 
     await asyncio.sleep(60)
 
+    mission_start = datetime.now(timezone.utc)
     for t in ["azul", "vermelho"]:
-        milsim_state["mission_end_times"][t] = datetime.now(timezone.utc) + timedelta(seconds=MISSION_TIME_LIMITS["mission_1"])
+        milsim_state["mission_start_times"][t] = mission_start
+        milsim_state["mission_end_times"][t] = mission_start + timedelta(seconds=MISSION_TIME_LIMITS["mission_1"])
 
     await send_team_embed_with_status_last(
         "azul",
@@ -5140,6 +5285,9 @@ async def codigo(ctx, codigo: str):
 
     if team_state["current"] != data["mission"]:
         return await ctx.send("⚠️ Código correto, mas fora da fase operacional atual.")
+
+    if await guard_early_validation(ctx, team, data):
+        return
 
     if data.get("type") == "checkpoint":
         expected_step = milsim_state["mission3_route"]["vermelho_step"] + 1
@@ -5707,6 +5855,11 @@ async def capturar(ctx, codigo_operador: str):
     operator_name = ALL_OPERATOR_CODES[codigo_operador]
     enemy = milsim_enemy(team)
 
+    enemy_hvt = get_enemy_hvt_for_team(team)
+    hvt_captured = codigo_operador == enemy_hvt
+    if hvt_captured:
+        milsim_state.setdefault("hvt", {}).setdefault("early_validation_unlocked", {})[team] = True
+
     await send_team_embed_with_status_last(
         team,
         tactical_embed(
@@ -5719,7 +5872,8 @@ async def capturar(ctx, codigo_operador: str):
                     "value": "▸ Identificação operacional confirmada\\n▸ Operador removido temporariamente do terreno\\n▸ Deve regressar à base e aguardar próxima janela de respawn",
                     "inline": False
                 },
-                {"name": "🏆 Pontos", "value": "**+5 pontos atribuídos**", "inline": True}
+                {"name": "🏆 Pontos", "value": "**+5 pontos atribuídos**", "inline": True},
+                {"name": "🎯 HVT", "value": "✅ Validação antecipada desbloqueada" if hvt_captured else "Operador não prioritário", "inline": True}
             ],
             footer="COMANDO CENTRAL • CAPTURA DE OPERADOR"
         )
@@ -5737,6 +5891,22 @@ async def capturar(ctx, codigo_operador: str):
             footer="COMANDO CENTRAL • ALERTA DE CAPTURA"
         )
     )
+
+    if hvt_captured:
+        await milsim_send_to_team(
+            team,
+            embed=tactical_embed(
+                "🎯 HVT CAPTURADO — VALIDAÇÃO AUTORIZADA",
+                "O operador prioritário inimigo foi capturado. A validação antecipada de códigos finais está agora autorizada para a vossa Task Force.",
+                discord.Color.green(),
+                [
+                    {"name": "🪪 Operador", "value": f"`{codigo_operador}` — **{operator_name}**", "inline": False},
+                    {"name": "⏱️ Protocolo", "value": "Tempo mínimo operacional de **10 minutos** contornado por captura HVT.", "inline": False}
+                ],
+                footer="COMANDO CENTRAL • PROTOCOLO HVT"
+            )
+        )
+        await milsim_log(f"🎯 HVT capturado por **{team.upper()}**: `{codigo_operador}` ({operator_name}). Validação antecipada desbloqueada.")
 
     await milsim_log(f"🪪 **{team.upper()}** capturou `{codigo_operador}` ({operator_name}). +5 pontos.")
     await update_status_panel()
