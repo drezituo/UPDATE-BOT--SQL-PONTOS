@@ -2572,6 +2572,12 @@ def build_mission_embed_with_status(team: str, embed: discord.Embed, estado: str
     # O "Estado da Missão" foi removido dos embeds porque estava a ficar desatualizado/bugado.
     final_embed = embed.copy()
     _remove_mission_status_fields(final_embed)
+
+    # Embeds de fim/arquivo não devem receber objetivos, protocolo de validação nem HVT.
+    if is_retreat_or_archived_embed(final_embed):
+        final_embed = strip_retreat_embed_fields(final_embed)
+        return aplicar_cor_milsim(final_embed)
+
     final_embed = apply_operational_note_to_embed(final_embed)
     final_embed = apply_clear_objective_to_embed(final_embed)
     final_embed = apply_early_validation_note_to_embed(team, final_embed)
@@ -2660,10 +2666,12 @@ async def refresh_team_status_panel(team: str):
 
 
 def build_inactive_mission_embed(team: str, embed: discord.Embed, reason: str = "Missão encerrada"):
-    # Arquiva a mensagem sem adicionar "Estado da Missão" nem "Motivo".
+    # Arquiva a mensagem sem adicionar "Estado da Missão" nem "Motivo"
+    # e remove objetivos/protocolo/HVT para não poluir ordens de retirada.
     final_embed = embed.copy()
     _remove_mission_status_fields(final_embed)
     final_embed.set_footer(text="COMANDO CENTRAL • MISSÃO ARQUIVADA")
+    final_embed = strip_retreat_embed_fields(final_embed)
     return final_embed
 
 
@@ -2702,10 +2710,12 @@ async def archive_all_mission_embeds(reason: str = "Missão encerrada"):
 
 
 def build_inactive_mission_embed(team: str, embed: discord.Embed, reason: str = "Missão encerrada"):
-    # Arquiva a mensagem sem adicionar "Estado da Missão" nem "Motivo".
+    # Arquiva a mensagem sem adicionar "Estado da Missão" nem "Motivo"
+    # e remove objetivos/protocolo/HVT para não poluir ordens de retirada.
     final_embed = embed.copy()
     _remove_mission_status_fields(final_embed)
     final_embed.set_footer(text="COMANDO CENTRAL • MISSÃO ARQUIVADA")
+    final_embed = strip_retreat_embed_fields(final_embed)
     return final_embed
 
 
@@ -3021,6 +3031,59 @@ def simplify_failed_mission_embed(embed: discord.Embed):
     return embed
 
 
+def is_retreat_or_archived_embed(embed: discord.Embed) -> bool:
+    title = (embed.title or "").upper()
+    footer = (embed.footer.text if embed.footer else "").upper()
+    return any(marker in title or marker in footer for marker in (
+        "ORDEM DE RETIRADA",
+        "MISSÃO ARQUIVADA",
+        "MISSAO ARQUIVADA",
+        "TEMPO ESGOTADO",
+        "MISSÃO BEM SUCEDIDA",
+        "MISSAO BEM SUCEDIDA",
+        "MISSÃO FRACASSADA",
+        "MISSAO FRACASSADA",
+    ))
+
+
+def strip_retreat_embed_fields(embed: discord.Embed):
+    """Remove campos de briefing/objetivos dos embeds de fim de missão.
+
+    Ordens de retirada, missões cumpridas, fracassadas, tempo ultrapassado
+    e embeds arquivados devem mostrar apenas a mensagem final/motivo.
+    """
+    if not is_retreat_or_archived_embed(embed):
+        return embed
+
+    hidden_names = (
+        "📌 OBJETIVO DA MISSÃO",
+        "🎯 OBJETIVO DA MISSÃO",
+        "🎯 OBJETIVOS",
+        "🎯 OBJETIVO",
+        "⛔ PROTOCOLO DE VALIDAÇÃO",
+        "🎯 HVT INIMIGO",
+        "🎯 OBJETIVO SECUNDÁRIO — HVT",
+        "📦 EXTRAÇÃO HVT",
+        "📦 ESTADO HVT",
+        "📌 NOTA OPERACIONAL",
+    )
+
+    kept_fields = []
+    for field in embed.fields:
+        name_upper = (field.name or "").upper()
+        if field.name in hidden_names:
+            continue
+        if "OBJETIVO" in name_upper or "PROTOCOLO DE VALIDAÇÃO" in name_upper or "HVT" in name_upper or "NOTA OPERACIONAL" in name_upper:
+            continue
+        kept_fields.append({"name": field.name, "value": field.value, "inline": field.inline})
+
+    embed.clear_fields()
+    for field in kept_fields:
+        embed.add_field(name=field["name"], value=field["value"], inline=field["inline"])
+
+    return embed
+
+
 async def send_team_embed_plain(team: str, embed: discord.Embed):
     await force_archive_current_mission_embed(team, "Nova transmissão operacional emitida.")
     await purge_team_status_panels(team)
@@ -3032,6 +3095,7 @@ async def send_team_embed_plain(team: str, embed: discord.Embed):
 
     clean_embed = remove_estado_missao_field(embed.copy())
     clean_embed = simplify_failed_mission_embed(clean_embed)
+    clean_embed = strip_retreat_embed_fields(clean_embed)
     clean_embed = aplicar_cor_milsim(clean_embed)
 
     msg = await channel.send(embed=clean_embed)
@@ -3055,6 +3119,7 @@ async def send_team_embed_with_status_last(team: str, embed: discord.Embed, esta
 
     final_embed = build_mission_embed_with_status(team, embed, estado)
     final_embed = simplify_failed_mission_embed(final_embed)
+    final_embed = strip_retreat_embed_fields(final_embed)
     msg = await channel.send(embed=final_embed)
     milsim_state.setdefault("mission_message_ids", {})[team] = msg.id
 
