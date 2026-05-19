@@ -2484,54 +2484,6 @@ def apply_operational_note_to_embed(embed: discord.Embed):
 
 
 
-def get_clear_objective_for_embed(embed: discord.Embed):
-    title = (embed.title or "").upper()
-    desc = (embed.description or "").upper()
-    combined = title + "\n" + desc
-
-    if "MISSÃO 01" in combined and "SECURE DRIVES" in combined and "TASK FORCE AZUL" in combined:
-        return 'Encontra os 5 discos e trás para a base.\n\nAbre os discos e no interior de um deles terá o código de validação.\n\nValida o código para finalizar a missão.'
-
-    if "MISSÃO 01" in combined and "SECURE DRIVES" in combined and "TASK FORCE VERMELHA" in combined:
-        return 'Captura a caixa segura, trás para a base e procura o código de validação gravado na caixa.\n\nValida o código para finalizar a missão.'
-
-    if ("DATA TRANSFER" in combined or "SIGNAL KEY" in combined) and "TASK FORCE AZUL" in combined:
-        return 'Com o disco identificado leva a caixa ao bunker.\n\nProcura o ponto exato para começar a transmissão de dados.\n\nNo local terás o código de validação.\n\nValida o código.'
-
-    if ("SIGNAL BREAK" in combined or "SIGNAL KEY" in combined or "DATA TRANSFER" in combined) and "TASK FORCE VERMELHA" in combined:
-        return 'Tenta cortar/sabotar o envio de dados.\n\nO código para validação está no bunker no ponto onde se encontra a caixa.\n\nValida o código para sabotar a transmissão.'
-
-    if "RECOVER FRAGMENTS" in combined and "TASK FORCE AZUL" in combined:
-        return 'Procura 3 CDs.\n\nCada CD tem parte do código de validação.\n\nAssim que decifrares o código volta para a base e valida para finalizar a missão.'
-
-    if "DENY RECOVERY" in combined and "TASK FORCE VERMELHA" in combined:
-        return 'Defende os locais onde estão os CDs com partes do código.\n\nNão podes tocar nos CDs.\n\nApenas proteger o local.'
-
-    if "CONVOY RUN" in combined and "TASK FORCE VERMELHA" in combined:
-        return 'Segue o mapa recebido com os locais onde terão os códigos de validação.\n\nValida os códigos para teres acesso aos próximos até ao depósito.'
-
-    if "INTERCEPT CONVOY" in combined and "TASK FORCE AZUL" in combined:
-        return 'Captura a caixa, trás para a base e procura o código gravado na caixa para validar.\n\nValida o código para finalizar missão.'
-
-    if "SATCOM BREACH" in combined and "TASK FORCE VERMELHA" in combined:
-        return 'A equipa destacada procura o SATCOM onde vai ter junto o código de ativação.\n\nValida o código para dar início ao hack.'
-
-    if ("SATCOM COMPROMETIDO" in combined or "SATCOM EM RISCO" in combined or "INTERFERÊNCIAS DETETADAS" in combined) and "TASK FORCE AZUL" in combined:
-        return 'A equipa destacada deve procurar o SATCOM onde terá junto o código para interromper o hack.\n\nValida o código para finalizar a missão.'
-
-    if "DEFESA DO ACAMPAMENTO" in combined and "TASK FORCE VERMELHA" in combined:
-        return 'Defender a caixa de suprimentos do acampamento.'
-
-    if "EMBOSCADA AO ACAMPAMENTO" in combined and "TASK FORCE AZUL" in combined:
-        return 'Captura a caixa de suprimentos trás para a base e procura código gravado para validação.\n\nValida o código para finalizar a missão.'
-
-    return None
-
-
-def apply_clear_objective_to_embed(embed: discord.Embed):
-    objective = get_clear_objective_for_embed(embed)
-    if not objective:
-        return embed
 
     kept_fields = []
     replaced = False
@@ -2568,6 +2520,84 @@ def apply_clear_objective_to_embed(embed: discord.Embed):
             value=field["value"],
             inline=field["inline"]
         )
+
+    return embed
+
+
+
+def get_clear_objective_for_embed(embed: discord.Embed):
+    title = (embed.title or "").upper()
+    desc = (embed.description or "").upper()
+    combined = title + "\n" + desc
+
+    if "MISSÃO 01" in combined and "SECURE DRIVES" in combined and "TASK FORCE AZUL" in combined:
+        return '▸ Localizar a intel e guardar na caixa segura\n▸ Transportar até à base\n▸ Abrir os discos e procurar o código de validação\n▸ Validar o código para finalizar a missão'
+
+    if "MISSÃO 01" in combined and ("INTERCEPT PROTOCOL" in combined or "SECURE DRIVES" in combined) and "TASK FORCE VERMELHA" in combined:
+        return '▸ Localizar a Task Force Azul\n▸ Intercetar a caixa segura\n▸ Transportar até à base\n▸ Validar o código gravado na caixa para finalizar a missão'
+
+    if ("DATA TRANSFER" in combined or "SIGNAL KEY" in combined) and "TASK FORCE AZUL" in combined:
+        return '▸ Transportar a caixa segura até ao bunker\n▸ Localizar o ponto exato para começar a transmissão de dados\n▸ Validar o código de ativação da transmissão\n\n(Código de ativação junto ao ponto)'
+
+    if ("SIGNAL BREAK" in combined or "SIGNAL KEY" in combined or "DATA TRANSFER" in combined) and "TASK FORCE VERMELHA" in combined:
+        return '▸ Localizar a Task Force Azul\n▸ Infiltrar o bunker\n▸ Cortar/sabotar o envio de dados\n▸ Validar o código para sabotar a transmissão\n\n(Código junto da caixa)'
+
+    if "RECOVER FRAGMENTS" in combined and "TASK FORCE AZUL" in combined:
+        return '▸ Localizar partes da intel perdida\n(CDs com partes do código de ativação)\n\n▸ Voltar à base, decifrar o código de ativação e validar o código para finalizar a missão'
+
+    if "DENY RECOVERY" in combined and "TASK FORCE VERMELHA" in combined:
+        return '▸ Localizar partes da intel perdida\n(CDs com partes do código de ativação)\n\n▸ Intercetar a Task Force Azul\n▸ Defender o local\n\n(Task Force Vermelha não tem autorização para recuperar CDs, apenas impedir que a Task Force Azul registe provas)'
+
+    if "CONVOY RUN" in combined and "TASK FORCE VERMELHA" in combined:
+        return '▸ Transportar a caixa até ao último ponto\n▸ Validar os códigos nos pontos designados'
+
+    if "INTERCEPT CONVOY" in combined and "TASK FORCE AZUL" in combined:
+        return '▸ Intercetar a caixa\n▸ Extrair a caixa até à base\n▸ Validar o código gravado na caixa para finalizar a missão'
+
+    if "SATCOM BREACH" in combined and "TASK FORCE VERMELHA" in combined:
+        return '▸ Procurar o SATCOM (CQB)\n▸ Validar o código de ativação do hack\n\n(Código junto ao SATCOM)\n\n▸ Intercetar a Task Force Azul até à finalização do hack (10 min)'
+
+    if ("SATCOM COMPROMETIDO" in combined or "SATCOM EM RISCO" in combined or "INTERFERÊNCIAS DETETADAS" in combined) and "TASK FORCE AZUL" in combined:
+        return '▸ Localizar o SATCOM (CQB)\n▸ Intercetar a Task Force Vermelha\n▸ Sabotar/interromper o hack\n\n(Código junto ao SATCOM)'
+
+    if "DEFESA DO ACAMPAMENTO" in combined and "TASK FORCE VERMELHA" in combined:
+        return '▸ Localizar a caixa de suprimentos\n(Acampamento — não mover a caixa)\n\n▸ Vigiar o local e eliminar ameaças\n\n(Não sair do perímetro do acampamento)'
+
+    if "EMBOSCADA AO ACAMPAMENTO" in combined and "TASK FORCE AZUL" in combined:
+        return '▸ Localizar o acampamento\n▸ Eliminar a Task Force Vermelha\n▸ Localizar a caixa de suprimentos\n▸ Extrair até à base\n▸ Validar o código gravado na caixa para finalizar a missão'
+
+    if "TOTAL DOMINATION" in combined and "TASK FORCE VERMELHA" in combined:
+        return '▸ Localizar dispositivos (timers)\n▸ Validar equipa (colocar timer para a Task Force Vermelha)\n▸ Dominar zonas'
+
+    if "TOTAL DOMINATION" in combined and "TASK FORCE AZUL" in combined:
+        return '▸ Localizar dispositivos (timers)\n▸ Validar equipa (colocar timer para a Task Force Azul)\n▸ Dominar zonas'
+
+    return None
+
+
+def apply_clear_objective_to_embed(embed: discord.Embed):
+    objective = get_clear_objective_for_embed(embed)
+    if not objective:
+        return embed
+
+    kept_fields = []
+    replaced = False
+
+    for field in embed.fields:
+        field_name = field.name or ""
+        if field_name in ("🎯 OBJETIVOS", "🎯 OBJETIVO", "📌 OBJETIVO DA MISSÃO"):
+            kept_fields.append({"name": "📌 OBJETIVO DA MISSÃO", "value": objective, "inline": False})
+            replaced = True
+        else:
+            kept_fields.append({"name": field.name, "value": field.value, "inline": field.inline})
+
+    if not replaced:
+        kept_fields.append({"name": "📌 OBJETIVO DA MISSÃO", "value": objective, "inline": False})
+
+    embed.clear_fields()
+
+    for field in kept_fields:
+        embed.add_field(name=field["name"], value=field["value"], inline=field["inline"])
 
     return embed
 
