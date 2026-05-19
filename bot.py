@@ -4895,6 +4895,58 @@ async def milsim_start_decryption(team: str):
     await update_status_panel()
 
 
+
+async def launch_initial_missions_after_delay():
+    try:
+        await asyncio.sleep(60)
+
+        for t in ["azul", "vermelho"]:
+            milsim_state["mission_end_times"][t] = datetime.now(timezone.utc) + timedelta(seconds=MISSION_TIME_LIMITS["mission_1"])
+
+        await send_team_embed_with_status_last(
+            "azul",
+            tactical_embed(
+                "🔵 MISSÃO 01 — SECURE DRIVES",
+                "〔 TASK FORCE AZUL 〕\n\nReconhecimento de drones confirmou a existência de 5 discos rígidos escondidos no interior do complexo CQB. Apenas um contém a verdadeira inteligência operacional. Os restantes foram criados para atrasar qualquer tentativa de extração inimiga.\n\nCada corredor pode esconder uma emboscada. Cada porta pode conter contacto inimigo. O sucesso desta missão irá desbloquear acesso direto à inteligência principal da operação.",
+                discord.Color.blue(),
+                [
+                    {"name": "📌 OBJETIVO DA MISSÃO", "value": "▸ Localizar os 5 discos rígidos\n▸ Guardar todo o material na caixa segura\n▸ Regressar ao HQ com a caixa intacta\n▸ Identificar o disco verdadeiro", "inline": False},
+                    {"name": "⚠️ REGRAS OPERACIONAIS", "value": "▸ O operador da caixa não pode correr\n▸ Caso seja eliminado, a caixa permanece no local\n▸ O conteúdo não pode cair nas mãos inimigas", "inline": False},
+                    {"name": "📡 ORDEM", "value": "Movam-se rápido. Mantenham a caixa segura. E não deixem ninguém para trás.", "inline": False}
+                ]
+            )
+        )
+
+        await send_team_embed_with_status_last(
+            "vermelho",
+            tactical_embed(
+                "🔴 MISSÃO 01 — INTERCEPT PROTOCOL",
+                "〔 TASK FORCE VERMELHA 〕\n\nForças Azuis iniciaram uma operação de recuperação de inteligência dentro do setor CQB. Interceptámos comunicações que confirmam a existência de uma caixa segura contendo dados altamente sensíveis.\n\nA Azul irá tentar mover-se rapidamente antes que consigamos fechar o perímetro. Não lhes deem tempo. Não lhes deem espaço. Não permitam que a inteligência saia do CQB.",
+                discord.Color.red(),
+                [
+                    {"name": "📌 OBJETIVO DA MISSÃO", "value": "▸ Localizar forças Azuis\n▸ Intercetar a caixa segura\n▸ Impedir extração inimiga\n▸ Comprometer o conteúdo da caixa", "inline": False},
+                    {"name": "⚠️ REGRAS OPERACIONAIS", "value": "▸ A caixa só pode ser comprometida dentro da base Vermelha\n▸ A destruição da inteligência é prioridade máxima", "inline": False},
+                    {"name": "📡 ORDEM", "value": "Interceção autorizada.", "inline": False}
+                ]
+            )
+        )
+
+        await create_team_timer_panel("azul")
+        await create_team_timer_panel("vermelho")
+        await create_team_status_panel("azul")
+        await create_team_status_panel("vermelho")
+
+        asyncio.create_task(mission_timer("azul", "mission_1"))
+        asyncio.create_task(mission_timer("vermelho", "mission_1"))
+        await update_status_panel()
+
+    except Exception as e:
+        print(f"❌ Erro ao lançar missões iniciais: {repr(e)}")
+        try:
+            await milsim_log(f"❌ Erro ao lançar missões iniciais: `{repr(e)}`")
+        except Exception:
+            pass
+
 @bot.command()
 async def start_op(ctx):
     if ctx.channel.id != GM_CHANNEL_ID:
@@ -4961,50 +5013,10 @@ async def start_op(ctx):
             ]
         ))
 
-    await asyncio.sleep(60)
-
-    for t in ["azul", "vermelho"]:
-        milsim_state["mission_end_times"][t] = datetime.now(timezone.utc) + timedelta(seconds=MISSION_TIME_LIMITS["mission_1"])
-
-    await send_team_embed_with_status_last(
-        "azul",
-        tactical_embed(
-            "🔵 MISSÃO 01 — SECURE DRIVES",
-            "〔 TASK FORCE AZUL 〕\n\nReconhecimento de drones confirmou a existência de 5 discos rígidos escondidos no interior do complexo CQB. Apenas um contém a verdadeira inteligência operacional. Os restantes foram criados para atrasar qualquer tentativa de extração inimiga.\n\nCada corredor pode esconder uma emboscada. Cada porta pode conter contacto inimigo. O sucesso desta missão irá desbloquear acesso direto à inteligência principal da operação.",
-            discord.Color.blue(),
-            [
-                {"name": "📌 OBJETIVO DA MISSÃO", "value": "▸ Localizar os 5 discos rígidos\n▸ Guardar todo o material na caixa segura\n▸ Regressar ao HQ com a caixa intacta\n▸ Identificar o disco verdadeiro", "inline": False},
-                {"name": "⚠️ REGRAS OPERACIONAIS", "value": "▸ O operador da caixa não pode correr\n▸ Caso seja eliminado, a caixa permanece no local\n▸ O conteúdo não pode cair nas mãos inimigas", "inline": False},
-                {"name": "📡 ORDEM", "value": "Movam-se rápido. Mantenham a caixa segura. E não deixem ninguém para trás.", "inline": False}
-            ]
-        )
-    )
-
-    await send_team_embed_with_status_last(
-        "vermelho",
-        tactical_embed(
-            "🔴 MISSÃO 01 — INTERCEPT PROTOCOL",
-            "〔 TASK FORCE VERMELHA 〕\n\nForças Azuis iniciaram uma operação de recuperação de inteligência dentro do setor CQB. Interceptámos comunicações que confirmam a existência de uma caixa segura contendo dados altamente sensíveis.\n\nA Azul irá tentar mover-se rapidamente antes que consigamos fechar o perímetro. Não lhes deem tempo. Não lhes deem espaço. Não permitam que a inteligência saia do CQB.",
-            discord.Color.red(),
-            [
-                {"name": "📌 OBJETIVO DA MISSÃO", "value": "▸ Localizar forças Azuis\n▸ Intercetar a caixa segura\n▸ Impedir extração inimiga\n▸ Comprometer o conteúdo da caixa", "inline": False},
-                {"name": "⚠️ REGRAS OPERACIONAIS", "value": "▸ A caixa só pode ser comprometida dentro da base Vermelha\n▸ A destruição da inteligência é prioridade máxima", "inline": False},
-                {"name": "📡 ORDEM", "value": "Interceção autorizada.", "inline": False}
-            ]
-        )
-    )
-
-    await create_team_timer_panel("azul")
-    await create_team_timer_panel("vermelho")
-    await create_team_status_panel("azul")
-    await create_team_status_panel("vermelho")
-
-    asyncio.create_task(mission_timer("azul", "mission_1"))
-    asyncio.create_task(mission_timer("vermelho", "mission_1"))
-    await update_status_panel()
+    asyncio.create_task(launch_initial_missions_after_delay())
 
     await milsim_log("🎖️ Operação DUALITY iniciada.")
-    await ctx.send("✅ Operação iniciada.")
+    await ctx.send("✅ Briefing enviado. As missões serão transmitidas em 60 segundos.")
 
 
 
