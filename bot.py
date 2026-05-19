@@ -2919,10 +2919,21 @@ async def cleanup_team_timer_panels(team: str, limit: int = 100):
                 footer = embed.footer.text if embed.footer else ""
                 description = embed.description or ""
 
+                # Timer principal apenas.
+                # Não apagar o timer da missão secundária, que também começa por "⏱️ TIMER".
+                is_secondary_timer = (
+                    title.startswith("⏱️ TIMER — MISSÃO SECUNDÁRIA")
+                    or "TIMER SECUNDÁRIO" in footer
+                    or "Painel separado de tempo da missão secundária" in description
+                )
+
                 is_timer = (
-                    title.startswith("⏱️ TIMER")
-                    or "TIMER OPERACIONAL" in footer
-                    or "Painel separado de tempo operacional" in description
+                    not is_secondary_timer
+                    and (
+                        title.startswith("⏱️ TIMER")
+                        or "TIMER OPERACIONAL" in footer
+                        or "Painel separado de tempo operacional" in description
+                    )
                 )
 
                 if is_timer:
@@ -4748,6 +4759,45 @@ def build_respawn_panel_embed():
     return embed
 
 
+async def cleanup_respawn_panel_duplicates(limit: int = 100):
+    """Remove painéis antigos/duplicados de ressurgimento no Comando Central.
+
+    O painel de respawn deve comportar-se como os timers principais: existe apenas
+    uma mensagem ativa, que é editada. Se o ID se perder ou o Discord falhar um
+    fetch, limpamos painéis antigos antes de criar um novo.
+    """
+    channel = milsim_get_channel(COMANDO_CHANNEL_ID)
+    if not channel:
+        return
+
+    respawn = milsim_state.setdefault("respawn", {})
+    keep_message_id = respawn.get("panel_message_id")
+    newest_kept = False
+
+    try:
+        async for msg in channel.history(limit=limit):
+            if msg.author.id != bot.user.id:
+                continue
+
+            if not msg.embeds:
+                continue
+
+            embed = msg.embeds[0]
+            title = embed.title or ""
+            if "PAINEL DE RESSURGIMENTO" not in title:
+                continue
+
+            # Mantém a mensagem rastreada se ela ainda existir; apaga duplicados.
+            if keep_message_id and msg.id == keep_message_id and not newest_kept:
+                newest_kept = True
+                continue
+
+            await msg.delete()
+
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+
+
 async def update_respawn_panel():
     current_mission = milsim_state["teams"]["azul"].get("current")
     if not respawn_allowed_for_mission(current_mission):
@@ -4765,8 +4815,13 @@ async def update_respawn_panel():
             msg = await channel.fetch_message(message_id)
             await msg.edit(embed=build_respawn_panel_embed())
             return
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        except discord.NotFound:
             respawn["panel_message_id"] = None
+        except (discord.Forbidden, discord.HTTPException):
+            # Não criar uma nova mensagem se foi apenas falha temporária/permissão.
+            return
+
+    await cleanup_respawn_panel_duplicates()
 
     try:
         msg = await channel.send(embed=build_respawn_panel_embed())
@@ -4820,6 +4875,8 @@ async def start_respawn_cycle(mission_name: str):
     old_task = respawn.get("task")
     if old_task and not old_task.done():
         old_task.cancel()
+
+    await cleanup_respawn_panel_duplicates()
 
     now = datetime.now(timezone.utc)
     respawn["active"] = True
@@ -5809,10 +5866,17 @@ async def limpar_timers_auto():
 
     await cleanup_team_timer_panels("azul")
     await cleanup_team_timer_panels("vermelho")
-    await cleanup_secondary_timer_panels("azul")
-    await cleanup_secondary_timer_panels("vermelho")
     await create_team_timer_panel("azul")
     await create_team_timer_panel("vermelho")
+
+    # Se a missão secundária da Missão 4 estiver ativa, o timer secundário
+    # também deve ser recriado como o timer principal.
+    satcom = milsim_state.get("satcom", {})
+    if satcom.get("secondary_active") and not satcom.get("secondary_completed"):
+        await cleanup_secondary_timer_panels("azul")
+        await cleanup_secondary_timer_panels("vermelho")
+        await create_secondary_timer_panel("azul")
+        await create_secondary_timer_panel("vermelho")
 
 
 @bot.command()
@@ -5826,10 +5890,21 @@ async def limpar_timers(ctx):
     await cleanup_team_timer_panels("azul")
     await cleanup_team_timer_panels("vermelho")
 
+    satcom = milsim_state.get("satcom", {})
+    secondary_running = satcom.get("secondary_active") and not satcom.get("secondary_completed")
+
+    if secondary_running:
+        await cleanup_secondary_timer_panels("azul")
+        await cleanup_secondary_timer_panels("vermelho")
+
     # Recriar apenas se houver operação ativa.
     if milsim_state.get("active"):
         await create_team_timer_panel("azul")
         await create_team_timer_panel("vermelho")
+
+        if secondary_running:
+            await create_secondary_timer_panel("azul")
+            await create_secondary_timer_panel("vermelho")
 
     await ctx.send("✅ Timers operacionais limpos/recriados.", delete_after=10)
 
