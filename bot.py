@@ -3815,10 +3815,15 @@ def apply_early_validation_note_to_embed(team: str, embed: discord.Embed):
         "🎯 HVT INIMIGO",
         "🎯 OBJETIVO SECUNDÁRIO — HVT",
         "📦 EXTRAÇÃO HVT",
+        "📦 ESTADO HVT",
     )
     for field in embed.fields:
-        if field.name not in hidden_names:
-            kept_fields.append({"name": field.name, "value": field.value, "inline": field.inline})
+        name_upper = (field.name or "").upper()
+        # Remove qualquer versão anterior dos campos HVT antes de voltar a adicionar.
+        # Isto impede que o campo "📦 ESTADO HVT" se duplique sempre que o embed é atualizado.
+        if field.name in hidden_names or "HVT" in name_upper:
+            continue
+        kept_fields.append({"name": field.name, "value": field.value, "inline": field.inline})
 
     embed.clear_fields()
     for field in kept_fields:
