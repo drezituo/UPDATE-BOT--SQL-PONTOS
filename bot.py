@@ -2164,9 +2164,11 @@ SATCOM_SECONDARY_SECONDS = 900  # 15 minutos para missão secundária do acampam
 
 # ---------- HVT / OBJETIVO SECUNDÁRIO ----------
 # HVT é uma missão secundária sem timer: capturar o operador prioritário e extrair na base.
-MIN_VALIDATION_SECONDS = 600  # mantido por compatibilidade, sem bloqueio HVT ativo
-EARLY_VALIDATION_MISSIONS = set()
-EARLY_VALIDATION_TYPES = set()
+# Além disso, durante os primeiros 10 minutos, a validação final fica bloqueada,
+# exceto se a equipa capturar o HVT inimigo. Isto evita que missões acabem demasiado rápido.
+MIN_VALIDATION_SECONDS = 600  # 10 minutos mínimos antes de validar objetivos finais
+EARLY_VALIDATION_MISSIONS = {"mission_1", "mission_2", "mission_3", "mission_4", "final"}
+EARLY_VALIDATION_TYPES = {"complete", "end"}
 
 # ---------- CORES DOS EMBEDS MILSIM ----------
 MILSIM_COLOR_MAIN_MISSION = discord.Color.from_rgb(255, 255, 255)  # branco
@@ -2216,6 +2218,19 @@ MISSION_TIME_LIMITS = {
     "mission_4": 1800,
     "final": 1500
 }
+
+# Missões principais onde o HVT aparece como objetivo secundário opcional.
+# Ordens de retirada/arquivos/falhas/sucessos são limpos e não mostram HVT.
+MAIN_HVT_MISSIONS = set(MISSION_TIME_LIMITS.keys())
+
+
+def hvt_should_show_for_team(team: str) -> bool:
+    team_state = milsim_state.get("teams", {}).get(team, {})
+    return (
+        milsim_state.get("active")
+        and team_state.get("phase") == "mission"
+        and team_state.get("current") in MAIN_HVT_MISSIONS
+    )
 
 def mission4_all_objectives_finished():
     satcom = milsim_state.get("satcom", {})
@@ -3004,6 +3019,7 @@ async def force_archive_current_mission_embed(team: str, reason: str = "Nova fas
         # Ao arquivar embeds antigos, removemos campos operacionais temporários.
         # O Estado da Missão deve aparecer apenas nos embeds das missões principais.
         old_embed.set_footer(text="COMANDO CENTRAL • MISSÃO ARQUIVADA")
+        old_embed = strip_retreat_embed_fields(old_embed)
 
         await msg.edit(embed=old_embed)
     except (discord.NotFound, discord.Forbidden, discord.HTTPException):
@@ -3767,6 +3783,8 @@ def early_validation_unlocked(team: str) -> bool:
 
 
 def should_apply_early_validation_lock(data: dict) -> bool:
+    # Aplica apenas a códigos que concluem/encerram objetivos principais.
+    # Não bloqueia checkpoints, início de transmissão, SATCOM hack, sabotagens técnicas ou missão secundária.
     return (
         data.get("mission") in EARLY_VALIDATION_MISSIONS
         and data.get("type") in EARLY_VALIDATION_TYPES
@@ -3804,7 +3822,7 @@ async def guard_early_validation(ctx, team: str, data: dict) -> bool:
 
 
 def apply_early_validation_note_to_embed(team: str, embed: discord.Embed):
-    """Adiciona o HVT como objetivo secundário da missão, sem timer e sem bloquear códigos."""
+    """Adiciona HVT como objetivo secundário e explica o protocolo dos 10 minutos em missões ativas."""
     current = milsim_state.get("teams", {}).get(team, {}).get("current")
     phase = milsim_state.get("teams", {}).get(team, {}).get("phase")
 
@@ -3829,7 +3847,7 @@ def apply_early_validation_note_to_embed(team: str, embed: discord.Embed):
     for field in kept_fields:
         embed.add_field(name=field["name"], value=field["value"], inline=field["inline"])
 
-    if phase != "mission" or not current:
+    if not hvt_should_show_for_team(team):
         return embed
 
     hvt_code = get_enemy_hvt_for_team(team)
@@ -3847,13 +3865,27 @@ def apply_early_validation_note_to_embed(team: str, embed: discord.Embed):
         status = "Ativo — capturar o HVT inimigo e extrair até ao HQ."
 
     embed.add_field(
+        name="⛔ PROTOCOLO DE VALIDAÇÃO",
+        value=(
+            "▸ Tempo mínimo operacional: **10 MINUTOS**\n"
+            "▸ Antes dos 10 minutos, a validação final fica bloqueada\n"
+            "▸ Para validar antes do tempo mínimo, capturar o HVT inimigo\n"
+            "▸ Após os 10 minutos, a validação final fica autorizada normalmente"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
         name="🎯 OBJETIVO SECUNDÁRIO — HVT",
         value=(
             f"▸ Alvo prioritário: {hvt_text}\n"
             "▸ Captura só após colocação de algemas no jogador\n"
             "▸ Registar captura com `!codigo CODIGO-OPERADOR`\n"
+            "▸ A captura desbloqueia validação antecipada antes dos 10 minutos\n"
             "▸ Transportar até ao HQ/base da vossa Task Force\n"
             "▸ Confirmar extração na base com `!extracaohtv CODIGO-OPERADOR`\n"
+            "▸ Capturas podem repetir durante a missão\n"
+            "▸ Só é permitida 1 extração HVT por missão\n"
             "▸ Sem timer — objetivo secundário opcional"
         ),
         inline=False
@@ -6026,6 +6058,7 @@ async def process_operator_capture(ctx, codigo_operador: str):
             milsim_state.setdefault("captured_players", []).append(codigo_operador)
 
         hvt_state["captured"][team] = codigo_operador
+        hvt_state.setdefault("early_validation_unlocked", {"azul": False, "vermelho": False})[team] = True
 
         if already_extracted:
             title = "🎯 HVT CAPTURADO — EXTRAÇÃO JÁ CONCLUÍDA"
@@ -6038,9 +6071,9 @@ async def process_operator_capture(ctx, codigo_operador: str):
             title = "🎯 HVT CAPTURADO — EXTRAÇÃO NECESSÁRIA"
             status_value = "HVT sob custódia temporária. Captura registada após colocação de algemas."
             order_value = "Transportar o HVT algemado até ao HQ/base da vossa Task Force."
-            confirm_value = "Quando chegarem à base, usar `!extracaohtv CODIGO-OPERADOR` para concluir o objetivo secundário."
-            enemy_situation = "O inimigo iniciou transporte do HVT para extração."
-            log_suffix = "Extração pendente."
+            confirm_value = "Validação antecipada desbloqueada. Quando chegarem à base, usar `!extracaohtv CODIGO-OPERADOR` para concluir o objetivo secundário."
+            enemy_situation = "O inimigo capturou o HVT, desbloqueou validação antecipada e iniciou transporte para extração."
+            log_suffix = "Validação antecipada desbloqueada. Extração pendente."
 
         await send_team_embed_with_status_last(
             team,
