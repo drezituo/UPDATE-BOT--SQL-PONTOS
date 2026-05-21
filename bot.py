@@ -2466,15 +2466,10 @@ MAIN_HVT_MISSIONS = set(MISSION_TIME_LIMITS.keys())
 
 def hvt_should_show_for_team(team: str) -> bool:
     team_state = milsim_state.get("teams", {}).get(team, {})
-    phase = team_state.get("phase")
-    current = team_state.get("current")
-
-    # O HVT é objetivo secundário de TODAS as missões principais enquanto a missão está ativa.
-    # Fica fora apenas de janelas de reagrupamento/descanso/fim para não contaminar embeds de retirada.
     return (
         milsim_state.get("active")
-        and current in MAIN_HVT_MISSIONS
-        and phase not in ("regroup", "rest", "failed", "ended")
+        and team_state.get("phase") == "mission"
+        and team_state.get("current") in MAIN_HVT_MISSIONS
     )
 
 def mission4_all_objectives_finished():
@@ -2931,6 +2926,29 @@ def build_inactive_mission_embed(team: str, embed: discord.Embed, reason: str = 
     # para consulta histórica: objetivos, protocolo e HVT ficam no embed.
     final_embed = embed.copy()
     _remove_mission_status_fields(final_embed)
+
+    # Garante snapshot completo: se por algum motivo o briefing ativo ainda
+    # não tinha o bloco HVT/protocolo, adiciona antes de arquivar.
+    # Não aplicamos isto a ordens de retirada/sucesso/falha/tempo esgotado,
+    # porque esses embeds finais devem continuar limpos.
+    title = (final_embed.title or "").upper()
+    current_name = mission_display_name(milsim_state.get("teams", {}).get(team, {}).get("current", "")).upper()
+    if (
+        current_name and current_name in title
+        and not any(marker in title for marker in (
+            "ORDEM DE RETIRADA",
+            "TEMPO ESGOTADO",
+            "MISSÃO BEM SUCEDIDA",
+            "MISSAO BEM SUCEDIDA",
+            "MISSÃO FRACASSADA",
+            "MISSAO FRACASSADA",
+            "HVT CAPTURADO",
+            "HVT EXTRAÍDO",
+            "HVT EXTRAIDO",
+        ))
+    ):
+        final_embed = apply_early_validation_note_to_embed(team, final_embed, force=True)
+
     final_embed.set_footer(text="COMANDO CENTRAL • MISSÃO ARQUIVADA")
     return final_embed
 
@@ -2974,6 +2992,29 @@ def build_inactive_mission_embed(team: str, embed: discord.Embed, reason: str = 
     # para consulta histórica: objetivos, protocolo e HVT ficam no embed.
     final_embed = embed.copy()
     _remove_mission_status_fields(final_embed)
+
+    # Garante snapshot completo: se por algum motivo o briefing ativo ainda
+    # não tinha o bloco HVT/protocolo, adiciona antes de arquivar.
+    # Não aplicamos isto a ordens de retirada/sucesso/falha/tempo esgotado,
+    # porque esses embeds finais devem continuar limpos.
+    title = (final_embed.title or "").upper()
+    current_name = mission_display_name(milsim_state.get("teams", {}).get(team, {}).get("current", "")).upper()
+    if (
+        current_name and current_name in title
+        and not any(marker in title for marker in (
+            "ORDEM DE RETIRADA",
+            "TEMPO ESGOTADO",
+            "MISSÃO BEM SUCEDIDA",
+            "MISSAO BEM SUCEDIDA",
+            "MISSÃO FRACASSADA",
+            "MISSAO FRACASSADA",
+            "HVT CAPTURADO",
+            "HVT EXTRAÍDO",
+            "HVT EXTRAIDO",
+        ))
+    ):
+        final_embed = apply_early_validation_note_to_embed(team, final_embed, force=True)
+
     final_embed.set_footer(text="COMANDO CENTRAL • MISSÃO ARQUIVADA")
     return final_embed
 
@@ -3257,14 +3298,7 @@ async def force_archive_current_mission_embed(team: str, reason: str = "Nova fas
         if not msg.embeds:
             return
 
-        old_embed = msg.embeds[0].copy()
-        _remove_mission_status_fields(old_embed)
-
-        # Ao arquivar embeds antigos, mantemos a informação operacional visível
-        # para consulta histórica. Remove-se apenas o campo bugado/desatualizado
-        # de Estado da Missão.
-        old_embed.set_footer(text="COMANDO CENTRAL • MISSÃO ARQUIVADA")
-
+        old_embed = build_inactive_mission_embed(team, msg.embeds[0], reason)
         await msg.edit(embed=old_embed)
     except (discord.NotFound, discord.Forbidden, discord.HTTPException):
         pass
@@ -3718,22 +3752,25 @@ async def handle_mission_timeout_failsafe(mission_name: str):
     for t in ["azul", "vermelho"]:
         color = discord.Color.blue() if t == "azul" else discord.Color.red()
         embed = tactical_embed(
-            "⏱️ TEMPO ESGOTADO — REAGRUPAMENTO E REFILL",
-            "A janela operacional da **MISSÃO 1** terminou sem objetivo validado.\n\n"
-            "Nenhuma força conseguiu concluir a missão dentro do tempo. O COMANDO CENTRAL autorizou uma janela curta de reagrupamento, hidratação e reabastecimento antes da próxima transmissão.\n\n"
-            "A operação seguirá para **RECOVER FRAGMENTS** após o refill.",
+            "⚠️ FALHA OPERACIONAL — INTEL PERDIDA",
+            "Nenhuma Task Force conseguiu assegurar a caixa segura antes do encerramento da janela operacional.\n\n"
+            "Durante a retirada das unidades, parte da inteligência foi destruída e fragmentada no terreno.\n\n"
+            "Parte da inteligência operacional foi perdida durante a retirada das unidades.\n\n"
+            "O COMANDO CENTRAL está a reorganizar a operação e novas ordens serão transmitidas após o reagrupamento.\n\n"
+            "Antes da próxima transmissão, todas as unidades têm autorização para reagrupamento, refill e reorganização.",
             color,
             [
-                {"name": "📌 Resultado", "value": "Objetivo não concluído dentro do tempo operacional.", "inline": False},
-                {"name": "📍 Ordem", "value": "Regressar ao HQ, reorganizar unidade, fazer refill e preparar nova missão.", "inline": False},
+                {"name": "📌 Resultado", "value": "Nenhuma equipa concluiu o objetivo principal da Missão 1.", "inline": False},
+                {"name": "📡 Nova Diretriz", "value": "A operação seguirá para **RECOVER FRAGMENTS** após o refill.", "inline": False},
+                {"name": "📍 Ordem", "value": "Regressar à base, reorganizar unidade, fazer refill e aguardar novas ordens.", "inline": False},
                 {"name": "⏱️ Novas Ordens em", "value": f"**{format_time_remaining(t)}**", "inline": True}
             ],
-            footer="COMANDO CENTRAL • REAGRUPAMENTO E REFILL"
+            footer="COMANDO CENTRAL • FAILSAFE OPERACIONAL"
         )
 
         await send_team_embed_plain(t, embed)
 
-    await milsim_log("⏱️ Missão 1 terminou sem objetivo validado. Reagrupamento/refill ativado antes de RECOVER FRAGMENTS.")
+    await milsim_log("⚠️ Missão 1 terminou sem objetivo validado. Failsafe ativado: 5 minutos de refill antes de RECOVER FRAGMENTS.")
     await update_status_panel()
 
     # Não avançar já para a Missão 2.
@@ -4084,8 +4121,13 @@ async def guard_early_validation(ctx, team: str, data: dict) -> bool:
     return True
 
 
-def apply_early_validation_note_to_embed(team: str, embed: discord.Embed):
-    """Adiciona HVT como objetivo secundário e explica o protocolo dos 10 minutos em missões ativas."""
+def apply_early_validation_note_to_embed(team: str, embed: discord.Embed, force: bool = False):
+    """Adiciona HVT como objetivo secundário e explica o protocolo dos 10 minutos.
+
+    Normalmente só adiciona em missões ativas. Com force=True é usado para
+    arquivar uma missão como snapshot completo, mantendo o HVT visível mesmo
+    que a fase já tenha mudado para reagrupamento/descanso.
+    """
     current = milsim_state.get("teams", {}).get(team, {}).get("current")
     phase = milsim_state.get("teams", {}).get(team, {}).get("phase")
 
@@ -4110,13 +4152,8 @@ def apply_early_validation_note_to_embed(team: str, embed: discord.Embed):
     for field in kept_fields:
         embed.add_field(name=field["name"], value=field["value"], inline=field["inline"])
 
-    if not hvt_should_show_for_team(team):
+    if not force and not hvt_should_show_for_team(team):
         return embed
-
-    # Garantia extra: se por algum motivo a missão arrancou sem HVT selecionado,
-    # seleciona imediatamente antes de construir o briefing.
-    if not get_enemy_hvt_for_team(team):
-        select_hvt_targets_for_mission()
 
     hvt_code = get_enemy_hvt_for_team(team)
     hvt_text = f"`{hvt_code}` — **{ALL_OPERATOR_CODES.get(hvt_code, 'HVT')}**" if hvt_code else "HVT inimigo ainda não identificado"
@@ -5280,8 +5317,20 @@ async def milsim_send_to_team(team: str, embed=None, content=None):
     if canal:
         if embed:
             await prepare_team_channel_for_new_milsim_embed(team)
-            embed = apply_medical_rules_to_embed(embed)
-            msg = await canal.send(embed=embed)
+
+            # Embeds de missão enviados por esta função também devem receber
+            # protocolo/HVT, tal como send_team_embed_with_status_last.
+            # Alertas HVT/resultados continuam limpos e paralelos.
+            if is_hvt_or_capture_alert_embed(embed):
+                final_embed = aplicar_cor_milsim(embed.copy())
+            else:
+                final_embed = build_mission_embed_with_status(team, embed)
+                final_embed = simplify_failed_mission_embed(final_embed)
+                final_embed = strip_retreat_embed_fields(final_embed)
+
+            final_embed = apply_medical_rules_to_embed(final_embed)
+            msg = await canal.send(embed=final_embed)
+            milsim_state.setdefault("mission_message_ids", {})[team] = msg.id
             await finish_team_channel_after_new_milsim_embed(team)
             return msg
         elif content:
@@ -5627,6 +5676,7 @@ async def start_op(ctx):
         "used_targets": {"azul": [], "vermelho": []},
         "early_validation_unlocked": {"azul": False, "vermelho": False}
     }
+    select_hvt_targets_for_mission()
     milsim_state["mission_branch"] = None
 
     for team in ["azul", "vermelho"]:
@@ -5636,9 +5686,6 @@ async def start_op(ctx):
             "regrouped": False,
             "completed_codes": []
         }
-
-    # HVT da Missão 1 só é escolhido depois de ambas as equipas estarem em estado de missão.
-    select_hvt_targets_for_mission()
 
     comando = milsim_get_channel(COMANDO_CHANNEL_ID)
 
