@@ -2588,7 +2588,8 @@ def build_mission_embed_with_status(team: str, embed: discord.Embed, estado: str
     final_embed = embed.copy()
     _remove_mission_status_fields(final_embed)
 
-    # Embeds de fim/arquivo não devem receber objetivos, protocolo de validação nem HVT.
+    # Embeds de retirada/fim não devem receber objetivos, protocolo de validação nem HVT.
+    # Missões arquivadas mantêm a informação operacional para consulta histórica.
     if is_retreat_or_archived_embed(final_embed):
         final_embed = strip_retreat_embed_fields(final_embed)
         return aplicar_cor_milsim(final_embed)
@@ -2681,12 +2682,11 @@ async def refresh_team_status_panel(team: str):
 
 
 def build_inactive_mission_embed(team: str, embed: discord.Embed, reason: str = "Missão encerrada"):
-    # Arquiva a mensagem sem adicionar "Estado da Missão" nem "Motivo"
-    # e remove objetivos/protocolo/HVT para não poluir ordens de retirada.
+    # Arquiva a missão mantendo a informação operacional visível
+    # para consulta histórica: objetivos, protocolo e HVT ficam no embed.
     final_embed = embed.copy()
     _remove_mission_status_fields(final_embed)
     final_embed.set_footer(text="COMANDO CENTRAL • MISSÃO ARQUIVADA")
-    final_embed = strip_retreat_embed_fields(final_embed)
     return final_embed
 
 
@@ -2725,12 +2725,11 @@ async def archive_all_mission_embeds(reason: str = "Missão encerrada"):
 
 
 def build_inactive_mission_embed(team: str, embed: discord.Embed, reason: str = "Missão encerrada"):
-    # Arquiva a mensagem sem adicionar "Estado da Missão" nem "Motivo"
-    # e remove objetivos/protocolo/HVT para não poluir ordens de retirada.
+    # Arquiva a missão mantendo a informação operacional visível
+    # para consulta histórica: objetivos, protocolo e HVT ficam no embed.
     final_embed = embed.copy()
     _remove_mission_status_fields(final_embed)
     final_embed.set_footer(text="COMANDO CENTRAL • MISSÃO ARQUIVADA")
-    final_embed = strip_retreat_embed_fields(final_embed)
     return final_embed
 
 
@@ -3016,10 +3015,10 @@ async def force_archive_current_mission_embed(team: str, reason: str = "Nova fas
         old_embed = msg.embeds[0].copy()
         _remove_mission_status_fields(old_embed)
 
-        # Ao arquivar embeds antigos, removemos campos operacionais temporários.
-        # O Estado da Missão deve aparecer apenas nos embeds das missões principais.
+        # Ao arquivar embeds antigos, mantemos a informação operacional visível
+        # para consulta histórica. Remove-se apenas o campo bugado/desatualizado
+        # de Estado da Missão.
         old_embed.set_footer(text="COMANDO CENTRAL • MISSÃO ARQUIVADA")
-        old_embed = strip_retreat_embed_fields(old_embed)
 
         await msg.edit(embed=old_embed)
     except (discord.NotFound, discord.Forbidden, discord.HTTPException):
@@ -3052,8 +3051,6 @@ def is_retreat_or_archived_embed(embed: discord.Embed) -> bool:
     footer = (embed.footer.text if embed.footer else "").upper()
     return any(marker in title or marker in footer for marker in (
         "ORDEM DE RETIRADA",
-        "MISSÃO ARQUIVADA",
-        "MISSAO ARQUIVADA",
         "TEMPO ESGOTADO",
         "MISSÃO BEM SUCEDIDA",
         "MISSAO BEM SUCEDIDA",
@@ -3065,8 +3062,9 @@ def is_retreat_or_archived_embed(embed: discord.Embed) -> bool:
 def strip_retreat_embed_fields(embed: discord.Embed):
     """Remove campos de briefing/objetivos dos embeds de fim de missão.
 
-    Ordens de retirada, missões cumpridas, fracassadas, tempo ultrapassado
-    e embeds arquivados devem mostrar apenas a mensagem final/motivo.
+    Ordens de retirada, missões cumpridas, fracassadas e tempo ultrapassado
+    devem mostrar apenas a mensagem final/motivo.
+    Missões arquivadas mantêm os objetivos/protocolo/HVT para histórico.
     """
     if not is_retreat_or_archived_embed(embed):
         return embed
