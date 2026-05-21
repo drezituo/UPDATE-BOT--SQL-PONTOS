@@ -2828,6 +2828,12 @@ def build_mission_embed_with_status(team: str, embed: discord.Embed, estado: str
     final_embed = embed.copy()
     _remove_mission_status_fields(final_embed)
 
+    # Alertas HVT/captura/extração são mensagens paralelas.
+    # Nunca devem receber protocolo de validação, objetivos da missão nem bloco HVT completo.
+    if is_hvt_or_capture_alert_embed(final_embed):
+        final_embed = strip_hvt_alert_extra_fields(final_embed)
+        return aplicar_cor_milsim(final_embed)
+
     # Embeds de retirada/fim não devem receber objetivos, protocolo de validação nem HVT.
     # Missões arquivadas mantêm a informação operacional para consulta histórica.
     if is_retreat_or_archived_embed(final_embed):
@@ -2926,29 +2932,6 @@ def build_inactive_mission_embed(team: str, embed: discord.Embed, reason: str = 
     # para consulta histórica: objetivos, protocolo e HVT ficam no embed.
     final_embed = embed.copy()
     _remove_mission_status_fields(final_embed)
-
-    # Garante snapshot completo: se por algum motivo o briefing ativo ainda
-    # não tinha o bloco HVT/protocolo, adiciona antes de arquivar.
-    # Não aplicamos isto a ordens de retirada/sucesso/falha/tempo esgotado,
-    # porque esses embeds finais devem continuar limpos.
-    title = (final_embed.title or "").upper()
-    current_name = mission_display_name(milsim_state.get("teams", {}).get(team, {}).get("current", "")).upper()
-    if (
-        current_name and current_name in title
-        and not any(marker in title for marker in (
-            "ORDEM DE RETIRADA",
-            "TEMPO ESGOTADO",
-            "MISSÃO BEM SUCEDIDA",
-            "MISSAO BEM SUCEDIDA",
-            "MISSÃO FRACASSADA",
-            "MISSAO FRACASSADA",
-            "HVT CAPTURADO",
-            "HVT EXTRAÍDO",
-            "HVT EXTRAIDO",
-        ))
-    ):
-        final_embed = apply_early_validation_note_to_embed(team, final_embed, force=True)
-
     final_embed.set_footer(text="COMANDO CENTRAL • MISSÃO ARQUIVADA")
     return final_embed
 
@@ -2992,29 +2975,6 @@ def build_inactive_mission_embed(team: str, embed: discord.Embed, reason: str = 
     # para consulta histórica: objetivos, protocolo e HVT ficam no embed.
     final_embed = embed.copy()
     _remove_mission_status_fields(final_embed)
-
-    # Garante snapshot completo: se por algum motivo o briefing ativo ainda
-    # não tinha o bloco HVT/protocolo, adiciona antes de arquivar.
-    # Não aplicamos isto a ordens de retirada/sucesso/falha/tempo esgotado,
-    # porque esses embeds finais devem continuar limpos.
-    title = (final_embed.title or "").upper()
-    current_name = mission_display_name(milsim_state.get("teams", {}).get(team, {}).get("current", "")).upper()
-    if (
-        current_name and current_name in title
-        and not any(marker in title for marker in (
-            "ORDEM DE RETIRADA",
-            "TEMPO ESGOTADO",
-            "MISSÃO BEM SUCEDIDA",
-            "MISSAO BEM SUCEDIDA",
-            "MISSÃO FRACASSADA",
-            "MISSAO FRACASSADA",
-            "HVT CAPTURADO",
-            "HVT EXTRAÍDO",
-            "HVT EXTRAIDO",
-        ))
-    ):
-        final_embed = apply_early_validation_note_to_embed(team, final_embed, force=True)
-
     final_embed.set_footer(text="COMANDO CENTRAL • MISSÃO ARQUIVADA")
     return final_embed
 
@@ -3298,7 +3258,14 @@ async def force_archive_current_mission_embed(team: str, reason: str = "Nova fas
         if not msg.embeds:
             return
 
-        old_embed = build_inactive_mission_embed(team, msg.embeds[0], reason)
+        old_embed = msg.embeds[0].copy()
+        _remove_mission_status_fields(old_embed)
+
+        # Ao arquivar embeds antigos, mantemos a informação operacional visível
+        # para consulta histórica. Remove-se apenas o campo bugado/desatualizado
+        # de Estado da Missão.
+        old_embed.set_footer(text="COMANDO CENTRAL • MISSÃO ARQUIVADA")
+
         await msg.edit(embed=old_embed)
     except (discord.NotFound, discord.Forbidden, discord.HTTPException):
         pass
@@ -3416,6 +3383,51 @@ def is_hvt_or_capture_alert_embed(embed: discord.Embed) -> bool:
     )
     return any(marker in title or marker in footer for marker in markers)
 
+def strip_hvt_alert_extra_fields(embed: discord.Embed) -> discord.Embed:
+    """Mantém os alertas HVT/captura limpos.
+
+    Remove campos que pertencem apenas ao briefing principal da missão
+    caso algum fluxo tente reaproveitar/enriquecer estes embeds.
+    """
+    if not embed.fields:
+        return embed
+
+    blocked_markers = (
+        "PROTOCOLO DE VALIDAÇÃO",
+        "OBJETIVO SECUNDÁRIO",
+        "OBJETIVO DA MISSÃO",
+        "ESTADO HVT",
+        "HVT INIMIGO",
+        "NOTA OPERACIONAL",
+    )
+
+    kept_fields = []
+    for field in embed.fields:
+        name_upper = (field.name or "").upper()
+        value_upper = (field.value or "").upper()
+
+        if any(marker in name_upper for marker in blocked_markers):
+            continue
+
+        # Segurança extra: remove campos-tutorial longos do HVT secundário.
+        if (
+            "CAPTURAS PODEM REPETIR" in value_upper
+            or "SÓ É PERMITIDA 1 EXTRAÇÃO" in value_upper
+            or "TEMPO MÍNIMO OPERACIONAL" in value_upper
+            or "VALIDAÇÃO FINAL FICA BLOQUEADA" in value_upper
+            or "REGISTAR CAPTURA COM" in value_upper
+        ):
+            continue
+
+        kept_fields.append({"name": field.name, "value": field.value, "inline": field.inline})
+
+    embed.clear_fields()
+    for field in kept_fields:
+        embed.add_field(name=field["name"], value=field["value"], inline=field["inline"])
+
+    return embed
+
+
 async def send_team_embed_with_status_last(team: str, embed: discord.Embed, estado: str = None):
     channel = milsim_channel_for_team(team)
     if not channel:
@@ -3424,7 +3436,8 @@ async def send_team_embed_with_status_last(team: str, embed: discord.Embed, esta
     # Capturas/extrações HVT são alertas paralelos.
     # Não arquivam a missão atual, não viram embed principal e não recebem campos de missão/protocolo.
     if is_hvt_or_capture_alert_embed(embed):
-        clean_embed = aplicar_cor_milsim(embed.copy())
+        clean_embed = strip_hvt_alert_extra_fields(embed.copy())
+        clean_embed = aplicar_cor_milsim(clean_embed)
         return await channel.send(embed=clean_embed)
 
     # Arquivar visualmente o embed operacional anterior antes de enviar nova missão/descanso/reagrupamento.
@@ -4121,13 +4134,8 @@ async def guard_early_validation(ctx, team: str, data: dict) -> bool:
     return True
 
 
-def apply_early_validation_note_to_embed(team: str, embed: discord.Embed, force: bool = False):
-    """Adiciona HVT como objetivo secundário e explica o protocolo dos 10 minutos.
-
-    Normalmente só adiciona em missões ativas. Com force=True é usado para
-    arquivar uma missão como snapshot completo, mantendo o HVT visível mesmo
-    que a fase já tenha mudado para reagrupamento/descanso.
-    """
+def apply_early_validation_note_to_embed(team: str, embed: discord.Embed):
+    """Adiciona HVT como objetivo secundário e explica o protocolo dos 10 minutos em missões ativas."""
     current = milsim_state.get("teams", {}).get(team, {}).get("current")
     phase = milsim_state.get("teams", {}).get(team, {}).get("phase")
 
@@ -4152,7 +4160,7 @@ def apply_early_validation_note_to_embed(team: str, embed: discord.Embed, force:
     for field in kept_fields:
         embed.add_field(name=field["name"], value=field["value"], inline=field["inline"])
 
-    if not force and not hvt_should_show_for_team(team):
+    if not hvt_should_show_for_team(team):
         return embed
 
     hvt_code = get_enemy_hvt_for_team(team)
@@ -5317,20 +5325,19 @@ async def milsim_send_to_team(team: str, embed=None, content=None):
     if canal:
         if embed:
             await prepare_team_channel_for_new_milsim_embed(team)
+            embed = apply_medical_rules_to_embed(embed)
 
-            # Embeds de missão enviados por esta função também devem receber
-            # protocolo/HVT, tal como send_team_embed_with_status_last.
-            # Alertas HVT/resultados continuam limpos e paralelos.
+            # Alertas HVT/captura/extração devem ser limpos e paralelos.
+            # Não recebem campos de briefing, protocolo ou objetivo secundário.
             if is_hvt_or_capture_alert_embed(embed):
-                final_embed = aplicar_cor_milsim(embed.copy())
+                embed = strip_hvt_alert_extra_fields(embed)
+                embed = aplicar_cor_milsim(embed)
+            elif get_clear_objective_for_embed(embed):
+                embed = build_mission_embed_with_status(team, embed)
             else:
-                final_embed = build_mission_embed_with_status(team, embed)
-                final_embed = simplify_failed_mission_embed(final_embed)
-                final_embed = strip_retreat_embed_fields(final_embed)
+                embed = aplicar_cor_milsim(embed)
 
-            final_embed = apply_medical_rules_to_embed(final_embed)
-            msg = await canal.send(embed=final_embed)
-            milsim_state.setdefault("mission_message_ids", {})[team] = msg.id
+            msg = await canal.send(embed=embed)
             await finish_team_channel_after_new_milsim_embed(team)
             return msg
         elif content:
@@ -6150,6 +6157,11 @@ async def advance_milsim_phase(old_mission: str):
 
         await force_archive_current_mission_embed(t, "Nova fase operacional iniciada.")
         await purge_team_status_panels(t)
+
+        # Novo HVT por missão. Seleciona uma única vez antes de enviar os briefings
+        # para impedir que a Missão 2/Missões seguintes herdem o HVT anterior.
+        if t == "azul":
+            select_hvt_targets_for_mission()
 
         if old_mission == "mission_3":
             if not milsim_state.get("satcom", {}).get("selected", {}).get("azul"):
