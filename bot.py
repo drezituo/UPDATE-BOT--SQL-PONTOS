@@ -2466,10 +2466,15 @@ MAIN_HVT_MISSIONS = set(MISSION_TIME_LIMITS.keys())
 
 def hvt_should_show_for_team(team: str) -> bool:
     team_state = milsim_state.get("teams", {}).get(team, {})
+    phase = team_state.get("phase")
+    current = team_state.get("current")
+
+    # O HVT é objetivo secundário de TODAS as missões principais enquanto a missão está ativa.
+    # Fica fora apenas de janelas de reagrupamento/descanso/fim para não contaminar embeds de retirada.
     return (
         milsim_state.get("active")
-        and team_state.get("phase") == "mission"
-        and team_state.get("current") in MAIN_HVT_MISSIONS
+        and current in MAIN_HVT_MISSIONS
+        and phase not in ("regroup", "rest", "failed", "ended")
     )
 
 def mission4_all_objectives_finished():
@@ -3713,25 +3718,22 @@ async def handle_mission_timeout_failsafe(mission_name: str):
     for t in ["azul", "vermelho"]:
         color = discord.Color.blue() if t == "azul" else discord.Color.red()
         embed = tactical_embed(
-            "⚠️ FALHA OPERACIONAL — INTEL PERDIDA",
-            "Nenhuma Task Force conseguiu assegurar a caixa segura antes do encerramento da janela operacional.\n\n"
-            "Durante a retirada das unidades, parte da inteligência foi destruída e fragmentada no terreno.\n\n"
-            "Parte da inteligência operacional foi perdida durante a retirada das unidades.\n\n"
-            "O COMANDO CENTRAL está a reorganizar a operação e novas ordens serão transmitidas após o reagrupamento.\n\n"
-            "Antes da próxima transmissão, todas as unidades têm autorização para reagrupamento, refill e reorganização.",
+            "⏱️ TEMPO ESGOTADO — REAGRUPAMENTO E REFILL",
+            "A janela operacional da **MISSÃO 1** terminou sem objetivo validado.\n\n"
+            "Nenhuma força conseguiu concluir a missão dentro do tempo. O COMANDO CENTRAL autorizou uma janela curta de reagrupamento, hidratação e reabastecimento antes da próxima transmissão.\n\n"
+            "A operação seguirá para **RECOVER FRAGMENTS** após o refill.",
             color,
             [
-                {"name": "📌 Resultado", "value": "Nenhuma equipa concluiu o objetivo principal da Missão 1.", "inline": False},
-                {"name": "📡 Nova Diretriz", "value": "A operação seguirá para **RECOVER FRAGMENTS** após o refill.", "inline": False},
-                {"name": "📍 Ordem", "value": "Regressar à base, reorganizar unidade, fazer refill e aguardar novas ordens.", "inline": False},
+                {"name": "📌 Resultado", "value": "Objetivo não concluído dentro do tempo operacional.", "inline": False},
+                {"name": "📍 Ordem", "value": "Regressar ao HQ, reorganizar unidade, fazer refill e preparar nova missão.", "inline": False},
                 {"name": "⏱️ Novas Ordens em", "value": f"**{format_time_remaining(t)}**", "inline": True}
             ],
-            footer="COMANDO CENTRAL • FAILSAFE OPERACIONAL"
+            footer="COMANDO CENTRAL • REAGRUPAMENTO E REFILL"
         )
 
         await send_team_embed_plain(t, embed)
 
-    await milsim_log("⚠️ Missão 1 terminou sem objetivo validado. Failsafe ativado: 5 minutos de refill antes de RECOVER FRAGMENTS.")
+    await milsim_log("⏱️ Missão 1 terminou sem objetivo validado. Reagrupamento/refill ativado antes de RECOVER FRAGMENTS.")
     await update_status_panel()
 
     # Não avançar já para a Missão 2.
@@ -4110,6 +4112,11 @@ def apply_early_validation_note_to_embed(team: str, embed: discord.Embed):
 
     if not hvt_should_show_for_team(team):
         return embed
+
+    # Garantia extra: se por algum motivo a missão arrancou sem HVT selecionado,
+    # seleciona imediatamente antes de construir o briefing.
+    if not get_enemy_hvt_for_team(team):
+        select_hvt_targets_for_mission()
 
     hvt_code = get_enemy_hvt_for_team(team)
     hvt_text = f"`{hvt_code}` — **{ALL_OPERATOR_CODES.get(hvt_code, 'HVT')}**" if hvt_code else "HVT inimigo ainda não identificado"
@@ -5620,7 +5627,6 @@ async def start_op(ctx):
         "used_targets": {"azul": [], "vermelho": []},
         "early_validation_unlocked": {"azul": False, "vermelho": False}
     }
-    select_hvt_targets_for_mission()
     milsim_state["mission_branch"] = None
 
     for team in ["azul", "vermelho"]:
@@ -5630,6 +5636,9 @@ async def start_op(ctx):
             "regrouped": False,
             "completed_codes": []
         }
+
+    # HVT da Missão 1 só é escolhido depois de ambas as equipas estarem em estado de missão.
+    select_hvt_targets_for_mission()
 
     comando = milsim_get_channel(COMANDO_CHANNEL_ID)
 
