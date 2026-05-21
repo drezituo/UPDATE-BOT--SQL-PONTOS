@@ -3120,16 +3120,39 @@ async def send_team_embed_plain(team: str, embed: discord.Embed):
     return msg
 
 
+
+
+def is_hvt_or_capture_alert_embed(embed: discord.Embed) -> bool:
+    """Embeds de captura/extração HVT são alertas operacionais, não briefings de missão.
+    Não devem receber objetivos, protocolo de validação, HVT secundário nem substituir o embed principal.
+    """
+    title = (embed.title or "").upper()
+    footer = (embed.footer.text if embed.footer else "").upper()
+    markers = (
+        "HVT",
+        "CAPTURA DE OPERADOR",
+        "OPERADOR CAPTURADO",
+        "OPERADOR COMPROMETIDO",
+        "ALERTA DE CAPTURA",
+    )
+    return any(marker in title or marker in footer for marker in markers)
+
 async def send_team_embed_with_status_last(team: str, embed: discord.Embed, estado: str = None):
+    channel = milsim_channel_for_team(team)
+    if not channel:
+        return None
+
+    # Capturas/extrações HVT são alertas paralelos.
+    # Não arquivam a missão atual, não viram embed principal e não recebem campos de missão/protocolo.
+    if is_hvt_or_capture_alert_embed(embed):
+        clean_embed = aplicar_cor_milsim(embed.copy())
+        return await channel.send(embed=clean_embed)
+
     # Arquivar visualmente o embed operacional anterior antes de enviar nova missão/descanso/reagrupamento.
     await force_archive_current_mission_embed(team, "Nova transmissão operacional emitida.")
 
     await purge_team_status_panels(team)
     await cleanup_team_timer_panels(team)
-
-    channel = milsim_channel_for_team(team)
-    if not channel:
-        return None
 
     final_embed = build_mission_embed_with_status(team, embed, estado)
     final_embed = simplify_failed_mission_embed(final_embed)
@@ -6083,7 +6106,6 @@ async def process_operator_capture(ctx, codigo_operador: str):
                     {"name": "📦 ESTADO", "value": status_value, "inline": False},
                     {"name": "🚛 ORDEM", "value": order_value, "inline": False},
                     {"name": "✅ CONFIRMAÇÃO", "value": confirm_value, "inline": False},
-                    {"name": "⏱️ TIMER", "value": "Sem timer — objetivo secundário opcional.", "inline": True},
                 ],
                 footer="COMANDO CENTRAL • OBJETIVO SECUNDÁRIO HVT"
             )
@@ -6206,9 +6228,9 @@ async def extracaohtv(ctx, codigo_operador: str = None):
             f"O operador prioritário foi entregue no HQ da Task Force.\n\n`{codigo_operador}` — **{operator_name}**",
             discord.Color.green(),
             [
-                {"name": "📦 ESTADO", "value": "Extração confirmada na base.", "inline": True},
+                {"name": "📦 ESTADO", "value": "Extração confirmada na base.", "inline": False},
                 {"name": "🔄 RESPAWN", "value": "O operador extraído pode regressar ao respawn da própria equipa.", "inline": False},
-                {"name": "⏱️ TIMER", "value": "Sem timer — objetivo secundário encerrado.", "inline": True},
+                {"name": "📡 ORDEM OPERACIONAL", "value": "Objetivo secundário encerrado. Continuem a missão principal.", "inline": False},
             ],
             footer="COMANDO CENTRAL • HVT EXTRACTION"
         )
