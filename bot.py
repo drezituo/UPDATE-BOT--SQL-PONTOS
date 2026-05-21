@@ -322,17 +322,22 @@ def calcular_pontos_equipa_sync(equipa_id: int):
 
 # ---------- EMBEDS INSCRIÇÕES ----------
 async def criar_embed_inscricao_pendente(ctx, nome: str, expira_em: datetime, membro_jogador: discord.Member = None):
-    avatar_url = await obter_avatar_url_jogador(ctx.guild, nome, membro_jogador)
-    jogador_valor = await obter_valor_jogador_embed(ctx.guild, nome, membro_jogador)
+    # Esta função aceita tanto comandos tradicionais (ctx) como botões/modais (interaction).
+    guild = ctx.guild
+    channel = ctx.channel
+    autor = ctx.author if hasattr(ctx, "author") else ctx.user
+
+    avatar_url = await obter_avatar_url_jogador(guild, nome, membro_jogador)
+    jogador_valor = await obter_valor_jogador_embed(guild, nome, membro_jogador)
 
     embed = discord.Embed(
-        title=f"🎟️ Inscrição - {ctx.channel.name}",
+        title=f"🎟️ Inscrição - {channel.name}",
         color=discord.Color.orange(),
         timestamp=discord.utils.utcnow()
     )
     embed.set_thumbnail(url=avatar_url)
     embed.add_field(name="👤 Jogador", value=jogador_valor, inline=True)
-    embed.add_field(name="📝 Autor da inscrição", value=ctx.author.mention, inline=True)
+    embed.add_field(name="📝 Autor da inscrição", value=autor.mention, inline=True)
     embed.add_field(name="📌 Estado", value="⏳ Inscrição por finalizar", inline=False)
     embed.add_field(name="⏰ Expira", value=f"<t:{int(expira_em.timestamp())}:F>", inline=True)
     embed.add_field(name="⌛ Tempo restante", value=f"<t:{int(expira_em.timestamp())}:R>", inline=True)
@@ -437,7 +442,7 @@ async def atualizar_embed_estado(channel: discord.Thread):
             pass
 
     try:
-        new_msg = await channel.send(embed=embed)
+        new_msg = await channel.send(embed=embed, view=InscricoesView())
     except (discord.Forbidden, discord.HTTPException):
         cursor.close()
         conn.close()
@@ -574,6 +579,9 @@ async def on_ready():
     print(f"guilds: {bot.intents.guilds}")
     print("===============================")
 
+    # Regista os botões persistentes das inscrições.
+    bot.add_view(InscricoesView())
+
     if not verificar_inscricoes.is_running():
         verificar_inscricoes.start()
 
@@ -609,6 +617,238 @@ async def on_command_error(ctx, error):
         await ctx.send(f"Erro: `{repr(error)}`", delete_after=15)
     except Exception:
         pass
+
+
+
+# =========================
+# 🎟️ BOTÕES / MODAIS DE INSCRIÇÕES
+# =========================
+class InscricaoModal(discord.ui.Modal, title="Inscrição no jogo"):
+    nome = discord.ui.TextInput(
+        label="Nome do jogador",
+        placeholder="Escreve aqui o teu nome",
+        min_length=3,
+        max_length=50
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await criar_inscricao_interaction(interaction, str(self.nome))
+
+
+class CancelarInscricaoModal(discord.ui.Modal, title="Cancelar inscrição"):
+    nome = discord.ui.TextInput(
+        label="Nome da inscrição",
+        placeholder="Escreve o nome que queres cancelar",
+        min_length=3,
+        max_length=50
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await cancelar_inscricao_interaction(interaction, str(self.nome))
+
+
+class InscricoesView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Inscrever",
+        emoji="🎟️",
+        style=discord.ButtonStyle.green,
+        custom_id="inscricoes:inscrever"
+    )
+    async def botao_inscrever(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(InscricaoModal())
+
+    @discord.ui.button(
+        label="Cancelar inscrição",
+        emoji="❌",
+        style=discord.ButtonStyle.red,
+        custom_id="inscricoes:cancelar"
+    )
+    async def botao_cancelar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(CancelarInscricaoModal())
+
+
+async def criar_inscricao_interaction(interaction: discord.Interaction, nome: str):
+    nome = normalizar_nome(nome)
+
+    if not is_thread_channel(interaction.channel):
+        return await interaction.response.send_message(
+            "⚠️ Este botão só pode ser usado dentro da thread do jogo.",
+            ephemeral=True
+        )
+
+    if len(nome) < 3:
+        return await interaction.response.send_message("⚠️ Nome inválido.", ephemeral=True)
+
+    dados = obter_thread_config(interaction.channel.id)
+    if not dados:
+        return await interaction.response.send_message(
+            "⚠️ As inscrições não estão ativas nesta thread.",
+            ephemeral=True
+        )
+
+    abertas, limite, _, _ = dados
+
+    if not abertas:
+        return await interaction.response.send_message(
+            "🛑 As inscrições estão fechadas nesta thread.",
+            ephemeral=True
+        )
+
+    validas = contar_inscricoes_validas(interaction.channel.id)
+    if validas is None:
+        return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
+
+    if validas >= limite:
+        return await interaction.response.send_message(
+            f"⚠️ Este jogo já atingiu o limite de **{limite} jogadores**.",
+            ephemeral=True
+        )
+
+    conn = get_connection()
+    if not conn:
+        return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
+
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT 1
+        FROM inscricoes_jogos
+        WHERE thread_id = %s
+          AND LOWER(nome_jogador) = LOWER(%s)
+          AND estado IN ('pendente_pagamento', 'pago')
+    """, (interaction.channel.id, nome))
+
+    if cursor.fetchone():
+        cursor.close()
+        conn.close()
+        return await interaction.response.send_message(
+            "⚠️ Já existe uma inscrição com esse nome neste jogo.",
+            ephemeral=True
+        )
+
+    criado_em = utc_now()
+    expira_em = criado_em + timedelta(hours=HORAS_PAGAMENTO)
+
+    membro_jogador = interaction.user if isinstance(interaction.user, discord.Member) else None
+    embed = await criar_embed_inscricao_pendente(interaction, nome, expira_em, membro_jogador)
+    msg = await interaction.channel.send(embed=embed)
+
+    try:
+        cursor.execute("""
+            INSERT INTO inscricoes_jogos (
+                thread_id, message_id, user_id, nome_jogador,
+                estado, criado_em, expira_em, aviso_30min_enviado
+            )
+            VALUES (%s, %s, %s, %s, 'pendente_pagamento', %s, %s, FALSE)
+        """, (
+            interaction.channel.id,
+            msg.id,
+            interaction.user.id,
+            nome,
+            criado_em,
+            expira_em
+        ))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        try:
+            await msg.delete()
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+            pass
+        cursor.close()
+        conn.close()
+        print(f"Erro ao inserir inscrição por botão: {e}")
+        return await interaction.response.send_message("⚠️ Erro ao criar a inscrição.", ephemeral=True)
+
+    cursor.close()
+    conn.close()
+
+    await interaction.response.send_message(
+        f"✅ Inscrição criada para **{nome}**.",
+        ephemeral=True
+    )
+
+    await atualizar_embed_estado(interaction.channel)
+
+
+async def cancelar_inscricao_interaction(interaction: discord.Interaction, nome: str):
+    nome = normalizar_nome(nome)
+
+    if not is_thread_channel(interaction.channel):
+        return await interaction.response.send_message(
+            "⚠️ Este botão só pode ser usado dentro da thread do jogo.",
+            ephemeral=True
+        )
+
+    if len(nome) < 3:
+        return await interaction.response.send_message("⚠️ Nome inválido.", ephemeral=True)
+
+    conn = get_connection()
+    if not conn:
+        return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
+
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT id, message_id, nome_jogador, user_id
+        FROM inscricoes_jogos
+        WHERE thread_id = %s
+          AND LOWER(nome_jogador) = LOWER(%s)
+          AND user_id = %s
+          AND estado IN ('pendente_pagamento', 'pago')
+        ORDER BY id DESC
+        LIMIT 1
+    """, (interaction.channel.id, nome, interaction.user.id))
+
+    row = cursor.fetchone()
+
+    if not row:
+        cursor.close()
+        conn.close()
+        return await interaction.response.send_message(
+            "⚠️ Não encontrei uma inscrição ativa tua com esse nome nesta thread.",
+            ephemeral=True
+        )
+
+    inscricao_id, message_id, nome_jogador, user_id = row
+
+    cursor.execute("""
+        UPDATE inscricoes_jogos
+        SET estado = 'cancelado'
+        WHERE id = %s
+    """, (inscricao_id,))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    autor_inscricao_mention = f"<@{user_id}>"
+    cancelado_por = interaction.user.mention
+    membro_jogador = interaction.user if isinstance(interaction.user, discord.Member) else None
+
+    try:
+        msg = await interaction.channel.fetch_message(message_id)
+        embed = await criar_embed_inscricao_cancelada(
+            interaction.guild,
+            interaction.channel.name,
+            nome_jogador,
+            autor_inscricao_mention,
+            cancelado_por,
+            membro_jogador
+        )
+        await msg.edit(embed=embed)
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        pass
+
+    await interaction.response.send_message(
+        f"✅ A inscrição de **{nome_jogador}** foi cancelada.",
+        ephemeral=True
+    )
+
+    await atualizar_embed_estado(interaction.channel)
 
 
 # =========================
