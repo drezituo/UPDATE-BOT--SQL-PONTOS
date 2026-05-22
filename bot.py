@@ -2401,6 +2401,8 @@ SATCOM_HACK_SECONDS = 600      # 10 minutos de hack SATCOM
 SATCOM_TEAM_SIZE = 5
 SATCOM_SECONDARY_DELAY = 180  # 3 minutos até ativar missão secundária
 SATCOM_SECONDARY_SECONDS = 900  # 15 minutos para missão secundária do acampamento
+SATCOM_SECONDARY_TRANSPORT_UNLOCK_SECONDS = 600  # 10 minutos até a caixa poder iniciar transporte
+SATCOM_SECONDARY_TRANSPORT_CODE = "TRANSPORT-404"  # código para iniciar transporte da caixa
 
 # ---------- HVT / OBJETIVO SECUNDÁRIO ----------
 # HVT é uma missão secundária sem timer: capturar o operador prioritário e extrair na base.
@@ -3929,7 +3931,10 @@ milsim_state = {
         "secondary_completed": False,
         "secondary_winner": None,
         "secondary_end_time": None,
+        "secondary_started_at": None,
         "secondary_task": None,
+        "secondary_transport_started": False,
+        "secondary_transport_started_at": None,
         "selected": {"azul": [], "vermelho": []},
         "secondary": {"azul": [], "vermelho": []}
     }
@@ -4553,7 +4558,10 @@ async def activate_satcom_secondary_missions():
     satcom["secondary_active"] = True
     satcom["secondary_completed"] = False
     satcom["secondary_winner"] = None
-    satcom["secondary_end_time"] = datetime.now(timezone.utc) + timedelta(seconds=SATCOM_SECONDARY_SECONDS)
+    satcom["secondary_started_at"] = datetime.now(timezone.utc)
+    satcom["secondary_transport_started"] = False
+    satcom["secondary_transport_started_at"] = None
+    satcom["secondary_end_time"] = satcom["secondary_started_at"] + timedelta(seconds=SATCOM_SECONDARY_SECONDS)
 
     for t in ["azul", "vermelho"]:
         secondary = satcom.get("secondary", {}).get(t, [])
@@ -4587,7 +4595,7 @@ async def activate_satcom_secondary_missions():
                 "▸ Eliminar ameaças dentro da área operacional\\n"
                 "▸ A caixa não pode ser movida e a equipa não deve abandonar o perímetro do acampamento"
             )
-            win_condition = "A Vermelha vence se a Azul não validar `CACHE-777` antes do fim do tempo."
+            win_condition = "A Vermelha vence se a Azul não iniciar transporte e validar `CACHE-777` antes do fim do tempo."
 
         await send_team_embed_with_status_last(
             t,
@@ -5011,6 +5019,29 @@ MISSION_CODES = {
             "❌ HACK SATCOM INTERROMPIDO",
             "A Task Force Azul localizou a estação e cancelou a sequência de intrusão.",
             discord.Color.red()
+        )
+    },
+
+    "TRANSPORT-404": {
+        "team": "azul",
+        "mission": "mission_4",
+        "points": 0,
+        "type": "secondary_transport",
+        "embed": lambda: tactical_embed(
+            "📦 TRANSPORTE DA CAIXA INICIADO",
+            "A Task Force Azul confirmou controlo da caixa de suprimentos no acampamento.\n\nTransporte autorizado. A equipa deve extrair a caixa até à base Azul e validar `CACHE-777` no destino final.",
+            discord.Color.blue(),
+            [
+                {"name": "📍 ORDEM", "value": "Transportar a caixa até à base Azul. Evitar contacto prolongado e proteger o portador.", "inline": False}
+            ]
+        ),
+        "enemy_alert_embed": lambda: tactical_embed(
+            "⚠️ TRANSPORTE INIMIGO INICIADO",
+            "A Task Force Azul iniciou transporte da caixa de suprimentos a partir do acampamento.",
+            discord.Color.red(),
+            [
+                {"name": "📍 ORDEM", "value": "Intercetar a equipa Azul antes da extração final.", "inline": False}
+            ]
         )
     },
 
@@ -5715,6 +5746,138 @@ async def milsim_resolve_sabotage_by_red():
     return False
 
 
+
+
+def satcom_secondary_elapsed_seconds() -> int:
+    satcom = milsim_state.get("satcom", {})
+    started_at = satcom.get("secondary_started_at")
+    if started_at:
+        if started_at.tzinfo is None:
+            started_at = started_at.replace(tzinfo=timezone.utc)
+        return max(0, int((datetime.now(timezone.utc) - started_at).total_seconds()))
+
+    end_time = satcom.get("secondary_end_time")
+    if end_time:
+        if end_time.tzinfo is None:
+            end_time = end_time.replace(tzinfo=timezone.utc)
+        remaining = max(0, int((end_time - datetime.now(timezone.utc)).total_seconds()))
+        return max(0, SATCOM_SECONDARY_SECONDS - remaining)
+
+    return 0
+
+
+async def handle_satcom_secondary_transport_code(ctx, team_state):
+    satcom = milsim_state.get("satcom", {})
+
+    if not satcom.get("secondary_active") or satcom.get("secondary_completed"):
+        return await ctx.send("⚠️ A missão secundária ainda não está ativa ou já terminou.", delete_after=10)
+
+    if satcom.get("secondary_transport_started"):
+        return await ctx.send("⚠️ O transporte da caixa já foi iniciado.", delete_after=10)
+
+    elapsed = satcom_secondary_elapsed_seconds()
+    if elapsed < SATCOM_SECONDARY_TRANSPORT_UNLOCK_SECONDS:
+        remaining = SATCOM_SECONDARY_TRANSPORT_UNLOCK_SECONDS - elapsed
+        minutes = remaining // 60
+        seconds = remaining % 60
+        return await ctx.send(embed=tactical_embed(
+            "⛔ TRANSPORTE BLOQUEADO",
+            "A caixa foi localizada, mas o protocolo de extração ainda não autorizou movimento.",
+            discord.Color.orange(),
+            [
+                {"name": "⏱️ TEMPO MÍNIMO", "value": "**10 MINUTOS** após início da missão secundária", "inline": False},
+                {"name": "⌛ Tempo restante", "value": f"**{minutes:02d}:{seconds:02d}**", "inline": True},
+                {"name": "📡 ORDEM", "value": "Aguardem autorização operacional antes de mover a caixa.", "inline": False},
+            ],
+            footer="COMANDO CENTRAL • PROTOCOLO DE TRANSPORTE"
+        ), delete_after=20)
+
+    satcom["secondary_transport_started"] = True
+    satcom["secondary_transport_started_at"] = datetime.now(timezone.utc)
+    team_state["completed_codes"].append(SATCOM_SECONDARY_TRANSPORT_CODE)
+
+    await milsim_send_to_team(
+        "azul",
+        embed=tactical_embed(
+            "📦 TRANSPORTE DA CAIXA INICIADO",
+            "A caixa de suprimentos foi assegurada no acampamento. Transporte autorizado até à base Azul.",
+            discord.Color.blue(),
+            [
+                {"name": "📍 ORDEM", "value": "Extrair a caixa até à base Azul.", "inline": False},
+                {"name": "🔐 Código final", "value": "Ao chegar à base, validar `CACHE-777`.", "inline": False},
+            ],
+            footer="COMANDO CENTRAL • MISSÃO SECUNDÁRIA"
+        )
+    )
+
+    await milsim_send_to_team(
+        "vermelho",
+        embed=tactical_embed(
+            "⚠️ TRANSPORTE INIMIGO INICIADO",
+            "A Task Force Azul iniciou transporte da caixa de suprimentos a partir do acampamento.",
+            discord.Color.red(),
+            [
+                {"name": "📍 ORDEM", "value": "Intercetar a caixa antes da extração final na base Azul.", "inline": False}
+            ],
+            footer="COMANDO CENTRAL • MISSÃO SECUNDÁRIA"
+        )
+    )
+
+    await milsim_log("📦 TRANSPORT-404 validado pela Azul. Transporte da caixa secundária iniciado.")
+    await update_status_panel()
+
+
+async def handle_satcom_secondary_cache_code(ctx, team_state):
+    satcom = milsim_state.get("satcom", {})
+
+    if not satcom.get("secondary_active") or satcom.get("secondary_completed"):
+        return await ctx.send("⚠️ A missão secundária ainda não está ativa ou já terminou.", delete_after=10)
+
+    if not satcom.get("secondary_transport_started"):
+        return await ctx.send("⚠️ O transporte da caixa ainda não foi iniciado. Primeiro validem `TRANSPORT-404` junto à caixa após os 10 minutos.", delete_after=15)
+
+    satcom["secondary_active"] = False
+    satcom["secondary_completed"] = True
+    satcom["secondary_winner"] = "azul"
+    await delete_all_secondary_timer_panels()
+
+    task = satcom.get("secondary_task")
+    if task and not task.done():
+        task.cancel()
+
+    team_state["completed_codes"].append("CACHE-777")
+    milsim_state["scores"]["azul"] += 10
+
+    await milsim_send_to_team(
+        "azul",
+        embed=tactical_embed(
+            "📦 SECUNDÁRIA CONCLUÍDA — CAIXA EXTRAÍDA",
+            "A caixa de suprimentos Vermelha foi transportada até à base Azul e registada com sucesso.",
+            discord.Color.blue(),
+            [
+                {"name": "🏆 Resultado", "value": "Vitória secundária Azul", "inline": False},
+                {"name": "🏆 Pontos", "value": "**+10 pontos atribuídos**", "inline": True}
+            ],
+            footer="COMANDO CENTRAL • RESULTADO SECUNDÁRIO"
+        )
+    )
+
+    await milsim_send_to_team(
+        "vermelho",
+        embed=tactical_embed(
+            "📦 ACAMPAMENTO COMPROMETIDO",
+            "A Task Force Azul transportou a caixa de suprimentos e validou a extração na base Azul.",
+            discord.Color.red(),
+            [
+                {"name": "📍 Ordem", "value": "Operadores secundários regressam à base e aguardam próxima janela operacional.", "inline": False}
+            ],
+            footer="COMANDO CENTRAL • RESULTADO SECUNDÁRIO"
+        )
+    )
+
+    await milsim_log("📦 CACHE-777 validado pela Azul. Missão secundária vencida pela Azul. +10 pontos.")
+    await update_status_panel()
+
 @bot.command()
 async def codigo(ctx, codigo: str):
     team = milsim_team_from_channel(ctx.channel.id)
@@ -5810,6 +5973,16 @@ async def codigo(ctx, codigo: str):
         team_state["completed_codes"].append(codigo)
         await cancel_satcom_hack()
         return
+
+    if codigo == SATCOM_SECONDARY_TRANSPORT_CODE:
+        if team != "azul":
+            return await ctx.send("❌ Apenas a Task Force Azul pode iniciar o transporte da caixa.", delete_after=10)
+        return await handle_satcom_secondary_transport_code(ctx, team_state)
+
+    if codigo == "CACHE-777":
+        if team != "azul":
+            return await ctx.send("❌ Apenas a Task Force Azul pode validar a extração da caixa.", delete_after=10)
+        return await handle_satcom_secondary_cache_code(ctx, team_state)
 
     team_state["completed_codes"].append(codigo)
 
