@@ -2407,7 +2407,7 @@ SATCOM_SECONDARY_SECONDS = 900  # 15 minutos para missão secundária do acampam
 # Além disso, durante os primeiros 10 minutos, a validação final fica bloqueada,
 # exceto se a equipa capturar o HVT inimigo. Isto evita que missões acabem demasiado rápido.
 MIN_VALIDATION_SECONDS = 600  # 10 minutos mínimos antes de validar objetivos finais
-EARLY_VALIDATION_MISSIONS = {"mission_1", "mission_2", "mission_3", "final"}
+EARLY_VALIDATION_MISSIONS = {"mission_1", "mission_2", "mission_3", "mission_4", "final"}
 EARLY_VALIDATION_TYPES = {"complete", "end"}
 
 # ---------- CORES DOS EMBEDS MILSIM ----------
@@ -2832,11 +2832,6 @@ def build_mission_embed_with_status(team: str, embed: discord.Embed, estado: str
     # Missões arquivadas mantêm a informação operacional para consulta histórica.
     if is_retreat_or_archived_embed(final_embed):
         final_embed = strip_retreat_embed_fields(final_embed)
-        return aplicar_cor_milsim(final_embed)
-
-    # Alertas/eventos operacionais são mensagens informativas, não briefings principais.
-    # Ex.: interferências SATCOM, HVT capturado/extraído, checkpoints, hacks.
-    if is_operational_alert_embed(final_embed):
         return aplicar_cor_milsim(final_embed)
 
     final_embed = apply_operational_note_to_embed(final_embed)
@@ -3382,32 +3377,6 @@ def is_hvt_or_capture_alert_embed(embed: discord.Embed) -> bool:
     )
     return any(marker in title or marker in footer for marker in markers)
 
-def is_operational_alert_embed(embed: discord.Embed) -> bool:
-    """Embeds informativos/alertas não são briefings principais.
-    Não recebem protocolo dos 10 minutos, HVT secundário nem campos extra.
-    """
-    title = (embed.title or "").upper()
-    footer = (embed.footer.text if embed.footer else "").upper()
-    markers = (
-        "INTERFERÊNCIAS DETETADAS",
-        "ALERTA DE INTERFERÊNCIAS",
-        "SATCOM COMPROMETIDO",
-        "SATCOM EM RISCO",
-        "HVT",
-        "CAPTURA",
-        "EXTRAÇÃO",
-        "CHECKPOINT",
-        "ORDEM DE RETIRADA",
-        "MISSÃO BEM SUCEDIDA",
-        "MISSAO BEM SUCEDIDA",
-        "MISSÃO FRACASSADA",
-        "MISSAO FRACASSADA",
-        "TEMPO ESGOTADO",
-        "HACK CANCELADO",
-        "HACK SATCOM",
-    )
-    return any(marker in title or marker in footer for marker in markers)
-
 async def send_team_embed_with_status_last(team: str, embed: discord.Embed, estado: str = None):
     channel = milsim_channel_for_team(team)
     if not channel:
@@ -3509,7 +3478,7 @@ async def advance_both_teams_to_next_mission(old_mission: str):
         )
 
         if t == "azul":
-            select_hvt_targets_for_mission(milsim_state["teams"][t]["current"])
+            select_hvt_targets_for_mission()
 
         await send_team_embed_with_status_last(t, NEXT_MISSIONS[old_mission][t]())
 
@@ -3991,29 +3960,9 @@ def _choose_hvt_code(codes: dict, previous_code: str = None, used_codes=None):
     return random.choice(available)
 
 
-def select_hvt_targets_for_mission(mission_name: str = None):
-    """Seleciona HVTs novos por missão e garante que não repetem na mesma operação, quando possível.
-
-    IMPORTANTE:
-    - O HVT é escolhido UMA vez por missão.
-    - O mesmo par fica fixo durante essa missão.
-    - Ao mudar de missão, é escolhido um novo HVT, evitando repetir os anteriores.
-    """
-    if mission_name is None:
-        mission_name = milsim_state.get("teams", {}).get("azul", {}).get("current")
-
+def select_hvt_targets_for_mission():
+    """Seleciona HVTs novos por missão e garante que não repetem na mesma operação, quando possível."""
     hvt_memory = milsim_state.get("hvt", {})
-
-    # Se já existe HVT selecionado para esta mesma missão, mantém.
-    # Isto impede que updates/edits do embed troquem o HVT durante a missão.
-    if (
-        mission_name
-        and hvt_memory.get("mission") == mission_name
-        and hvt_memory.get("targets", {}).get("azul")
-        and hvt_memory.get("targets", {}).get("vermelho")
-    ):
-        return hvt_memory
-
     previous_targets = hvt_memory.get("targets", {})
     used_targets = hvt_memory.get("used_targets", {"azul": [], "vermelho": []})
 
@@ -4028,13 +3977,7 @@ def select_hvt_targets_for_mission(mission_name: str = None):
     if vermelho_hvt not in vermelho_used:
         vermelho_used.append(vermelho_hvt)
 
-    # Mantém histórico por missão para consulta/debug e para evitar repetir alvos.
-    history = dict(hvt_memory.get("history", {}))
-    if mission_name:
-        history[mission_name] = {"azul": azul_hvt, "vermelho": vermelho_hvt}
-
     milsim_state["hvt"] = {
-        "mission": mission_name,
         "targets": {
             "azul": azul_hvt,
             "vermelho": vermelho_hvt,
@@ -4054,29 +3997,15 @@ def select_hvt_targets_for_mission(mission_name: str = None):
         "early_validation_unlocked": {
             "azul": False,
             "vermelho": False,
-        },
-        "history": history,
+        }
     }
 
     return milsim_state["hvt"]
 
 
-def ensure_hvt_for_current_mission(team: str):
-    """Garante que existe HVT para a missão atual sem o trocar durante a mesma missão."""
-    current = milsim_state.get("teams", {}).get(team, {}).get("current")
-    hvt_state = milsim_state.get("hvt", {})
-
-    if not current:
-        return hvt_state
-
-    if hvt_state.get("mission") != current or not hvt_state.get("targets", {}).get("azul") or not hvt_state.get("targets", {}).get("vermelho"):
-        return select_hvt_targets_for_mission(current)
-
-    return hvt_state
-
 def select_hvt_targets_for_operation():
     # Mantido por compatibilidade: agora o HVT é renovado por missão.
-    return select_hvt_targets_for_mission(milsim_state.get("teams", {}).get("azul", {}).get("current"))
+    return select_hvt_targets_for_mission()
 
 
 def format_hvt_line(team: str) -> str:
@@ -4087,7 +4016,6 @@ def format_hvt_line(team: str) -> str:
 
 
 def get_enemy_hvt_for_team(team: str):
-    ensure_hvt_for_current_mission(team)
     enemy = milsim_enemy(team)
     return milsim_state.get("hvt", {}).get("targets", {}).get(enemy)
 
@@ -4108,9 +4036,7 @@ def mission_elapsed_seconds(team: str) -> int:
         remaining = max(0, int((end_time - datetime.now(timezone.utc)).total_seconds()))
         return max(0, limit - remaining)
 
-    # Se por algum motivo o início da missão não estiver registado, bloqueia por segurança.
-    # Assim códigos finais como EXFIL não passam antes dos 10 minutos por falha de timer.
-    return 0
+    return MIN_VALIDATION_SECONDS
 
 
 def early_validation_unlocked(team: str) -> bool:
@@ -4199,18 +4125,16 @@ def apply_early_validation_note_to_embed(team: str, embed: discord.Embed):
     else:
         status = "Ativo — capturar o HVT inimigo e extrair até ao HQ."
 
-    # SATCOM/Missão 4 não mostra protocolo dos 10 minutos: o próprio hack já é o timer.
-    if current != "mission_4":
-        embed.add_field(
-            name="⛔ PROTOCOLO DE VALIDAÇÃO",
-            value=(
-                "▸ Tempo mínimo operacional: **10 MINUTOS**\n"
-                "▸ Antes dos 10 minutos, a validação final fica bloqueada\n"
-                "▸ Para validar antes do tempo mínimo, capturar o HVT inimigo\n"
-                "▸ Após os 10 minutos, a validação final fica autorizada normalmente"
-            ),
-            inline=False
-        )
+    embed.add_field(
+        name="⛔ PROTOCOLO DE VALIDAÇÃO",
+        value=(
+            "▸ Tempo mínimo operacional: **10 MINUTOS**\n"
+            "▸ Antes dos 10 minutos, a validação final fica bloqueada\n"
+            "▸ Para validar antes do tempo mínimo, capturar o HVT inimigo\n"
+            "▸ Após os 10 minutos, a validação final fica autorizada normalmente"
+        ),
+        inline=False
+    )
 
     embed.add_field(
         name="🎯 OBJETIVO SECUNDÁRIO — HVT",
@@ -5350,10 +5274,6 @@ async def milsim_send_to_team(team: str, embed=None, content=None):
         if embed:
             await prepare_team_channel_for_new_milsim_embed(team)
             embed = apply_medical_rules_to_embed(embed)
-            if not is_operational_alert_embed(embed) and not is_retreat_or_archived_embed(embed):
-                embed = build_mission_embed_with_status(team, embed)
-            else:
-                embed = aplicar_cor_milsim(embed)
             msg = await canal.send(embed=embed)
             await finish_team_channel_after_new_milsim_embed(team)
             return msg
@@ -5700,7 +5620,7 @@ async def start_op(ctx):
         "used_targets": {"azul": [], "vermelho": []},
         "early_validation_unlocked": {"azul": False, "vermelho": False}
     }
-    select_hvt_targets_for_mission("mission_1")
+    select_hvt_targets_for_mission()
     milsim_state["mission_branch"] = None
 
     for team in ["azul", "vermelho"]:
@@ -6759,7 +6679,7 @@ async def gm_next(ctx):
         )
 
         if t == "azul":
-            select_hvt_targets_for_mission(milsim_state["teams"][t]["current"])
+            select_hvt_targets_for_mission()
 
         await send_team_embed_with_status_last(t, NEXT_MISSIONS[old_mission][t]())
 
@@ -6804,6 +6724,344 @@ async def gm_end(ctx):
     await update_status_panel()
     await ctx.send("✅ Operação terminada.")
 
+
+
+
+
+# =========================
+# 🎮 PAINEL / COMANDOS GAME MASTER
+# =========================
+MISSION_NAME_ALIASES = {
+    "1": "mission_1", "01": "mission_1", "m1": "mission_1", "missao1": "mission_1", "missão1": "mission_1", "mission_1": "mission_1",
+    "2": "mission_2", "02": "mission_2", "m2": "mission_2", "missao2": "mission_2", "missão2": "mission_2", "mission_2": "mission_2",
+    "3": "mission_3", "03": "mission_3", "m3": "mission_3", "missao3": "mission_3", "missão3": "mission_3", "mission_3": "mission_3",
+    "4": "mission_4", "04": "mission_4", "m4": "mission_4", "missao4": "mission_4", "missão4": "mission_4", "mission_4": "mission_4",
+    "5": "final", "final": "final", "mf": "final", "missao_final": "final", "missão_final": "final",
+}
+
+MISSION_LABELS = {
+    "mission_1": "MISSÃO 01",
+    "mission_2": "MISSÃO 02",
+    "mission_3": "MISSÃO 03",
+    "mission_4": "MISSÃO 04",
+    "final": "MISSÃO FINAL",
+}
+
+
+def gm_normalize_mission_name(value: str):
+    if not value:
+        return None
+    key = value.lower().strip().replace(" ", "_").replace("-", "_")
+    return MISSION_NAME_ALIASES.get(key)
+
+
+def build_mission_1_embed_for_team(team: str):
+    if team == "azul":
+        return tactical_embed(
+            "🔵 MISSÃO 01 — SECURE DRIVES",
+            "〔 TASK FORCE AZUL 〕\n\nReconhecimento de drones confirmou a existência de 5 discos rígidos escondidos no interior do complexo CQB. Apenas um contém a verdadeira inteligência operacional. Os restantes foram criados para atrasar qualquer tentativa de extração inimiga.\n\nCada corredor pode esconder uma emboscada. Cada porta pode conter contacto inimigo. O sucesso desta missão irá desbloquear acesso direto à inteligência principal da operação.",
+            discord.Color.blue(),
+            [
+                {"name": "📌 OBJETIVO DA MISSÃO", "value": "▸ Recuperar a intel operacional e garantir a sua segurança na caixa segura\n▸ Transportar a caixa até ao HQ para análise da informação recuperada\n▸ Abrir os discos e identificar o código de validação correto\n▸ Validar o código para concluir a operação", "inline": False},
+                {"name": "⚠️ REGRAS OPERACIONAIS", "value": "▸ O operador da caixa não pode correr\n▸ Caso seja eliminado, a caixa permanece no local\n▸ O conteúdo não pode cair nas mãos inimigas", "inline": False},
+                {"name": "📡 ORDEM", "value": "Movam-se rápido. Mantenham a caixa segura. E não deixem ninguém para trás.", "inline": False}
+            ]
+        )
+
+    return tactical_embed(
+        "🔴 MISSÃO 01 — INTERCEPT PROTOCOL",
+        "〔 TASK FORCE VERMELHA 〕\n\nForças Azuis iniciaram uma operação de recuperação de inteligência dentro do setor CQB. Interceptámos comunicações que confirmam a existência de uma caixa segura contendo dados altamente sensíveis.\n\nA Azul irá tentar mover-se rapidamente antes que consigamos fechar o perímetro. Não lhes deem tempo. Não lhes deem espaço. Não permitam que a inteligência saia do CQB.",
+        discord.Color.red(),
+        [
+            {"name": "📌 OBJETIVO DA MISSÃO", "value": "▸ Localizar a Task Force Azul antes da extração da intel\n▸ Intercetar a caixa segura e impedir a retirada da informação\n▸ Transportar a caixa até ao HQ Vermelho\n▸ Validar o código gravado na caixa para concluir a operação", "inline": False},
+            {"name": "⚠️ REGRAS OPERACIONAIS", "value": "▸ A caixa só pode ser comprometida dentro da base Vermelha\n▸ A destruição da inteligência é prioridade máxima", "inline": False},
+            {"name": "📡 ORDEM", "value": "Interceção autorizada.", "inline": False}
+        ]
+    )
+
+
+def build_mission_embed_for_team_by_name(mission_name: str, team: str):
+    if mission_name == "mission_1":
+        return build_mission_1_embed_for_team(team)
+
+    if mission_name == "mission_2":
+        return NEXT_MISSIONS["mission_1"][team]()
+
+    if mission_name == "mission_3":
+        return NEXT_MISSIONS["mission_2"][team]()
+
+    if mission_name == "mission_4":
+        if team == "vermelho":
+            return build_satcom_red_initial_embed()
+        return build_satcom_interference_embed()
+
+    if mission_name == "final":
+        return NEXT_MISSIONS["mission_4"][team]()
+
+    return tactical_embed(
+        "⚠️ MISSÃO DESCONHECIDA",
+        f"Não foi possível construir briefing para `{mission_name}`.",
+        discord.Color.orange()
+    )
+
+
+def reset_mission_runtime_state_for_gm(mission_name: str):
+    now = datetime.now(timezone.utc)
+    milsim_state["active"] = True
+    milsim_state["timeout_resolution_active"] = False
+    milsim_state["mission_end_times"] = milsim_state.get("mission_end_times", {"azul": None, "vermelho": None})
+    milsim_state["mission_start_times"] = milsim_state.get("mission_start_times", {"azul": None, "vermelho": None})
+    milsim_state["regroup_notice_sent"] = {"azul": False, "vermelho": False}
+    milsim_state["rest_seconds"] = {"azul": 0, "vermelho": 0}
+    milsim_state["rest_until"] = {"azul": None, "vermelho": None}
+    milsim_state["rest_ready"] = {"azul": False, "vermelho": False}
+    milsim_state["rest_warned"] = {"azul": False, "vermelho": False}
+
+    for team in ["azul", "vermelho"]:
+        milsim_state["teams"][team] = {
+            "current": mission_name,
+            "phase": "mission",
+            "regrouped": False,
+            "completed_codes": []
+        }
+        milsim_state["mission_start_times"][team] = now
+        milsim_state["mission_end_times"][team] = now + timedelta(seconds=MISSION_TIME_LIMITS.get(mission_name, 1800))
+
+    # Reset de estados especiais para a missão reiniciar limpa.
+    milsim_state["decryption"] = {"active": False, "cancelled": False, "team": None, "mission": None}
+    milsim_state["mission3_route"] = {"vermelho_step": 0}
+    milsim_state["captured_players"] = []
+
+    if mission_name != "mission_4":
+        milsim_state["satcom"] = {
+            "hack_active": False,
+            "hack_completed": False,
+            "hack_cancelled": False,
+            "hack_started_at": None,
+            "hack_ends_at": None,
+            "hack_team": None,
+            "secondary_active": False,
+            "secondary_completed": False,
+            "secondary_winner": None,
+            "secondary_started_at": None,
+            "secondary_ends_at": None,
+        }
+    else:
+        milsim_state.setdefault("satcom", {})
+        milsim_state["satcom"].update({
+            "hack_active": False,
+            "hack_completed": False,
+            "hack_cancelled": False,
+            "hack_started_at": None,
+            "hack_ends_at": None,
+            "hack_team": None,
+            "secondary_active": False,
+            "secondary_completed": False,
+            "secondary_winner": None,
+            "secondary_started_at": None,
+            "secondary_ends_at": None,
+        })
+
+    select_hvt_targets_for_mission()
+
+
+async def gm_restart_mission_core(mission_name: str, announce_channel=None):
+    mission_name = gm_normalize_mission_name(mission_name) or mission_name
+    if mission_name not in MISSION_TIME_LIMITS:
+        return False, "⚠️ Missão inválida. Usa: `mission_1`, `mission_2`, `mission_3`, `mission_4` ou `final`."
+
+    await force_archive_all_current_mission_embeds("Missão reiniciada pelo Game Master.")
+    reset_mission_runtime_state_for_gm(mission_name)
+
+    for team in ["azul", "vermelho"]:
+        await send_team_embed_with_status_last(team, build_mission_embed_for_team_by_name(mission_name, team))
+        await cleanup_team_timer_panels(team)
+        await create_team_timer_panel(team)
+        await create_team_status_panel(team)
+        asyncio.create_task(mission_timer(team, mission_name))
+
+    await update_status_panel()
+    await milsim_log(f"🔁 Game Master reiniciou/forçou {MISSION_LABELS.get(mission_name, mission_name)}.")
+    return True, f"✅ {MISSION_LABELS.get(mission_name, mission_name)} reiniciada/forçada com sucesso."
+
+
+async def gm_new_hvt_core():
+    select_hvt_targets_for_mission()
+    await milsim_log(
+        "🎯 Game Master gerou novo HVT. "
+        f"Azul: {format_hvt_line('azul')} | Vermelho: {format_hvt_line('vermelho')}"
+    )
+    return (
+        "🎯 Novo HVT gerado.\n"
+        f"🔵 HVT Azul: {format_hvt_line('azul')}\n"
+        f"🔴 HVT Vermelho: {format_hvt_line('vermelho')}"
+    )
+
+
+@bot.command(name="gm_restart")
+async def gm_restart(ctx, *, mission_name: str = None):
+    if ctx.channel.id != GM_CHANNEL_ID:
+        return await ctx.send("⚠️ Este comando só pode ser usado no canal GM.", delete_after=10)
+    if not milsim_is_gm(ctx):
+        return await ctx.send("❌ Apenas Game Masters podem usar este comando.", delete_after=10)
+
+    mission_name = mission_name or milsim_state.get("teams", {}).get("azul", {}).get("current", "mission_1")
+    ok, msg = await gm_restart_mission_core(mission_name)
+    await ctx.send(msg, delete_after=15 if ok else 20)
+
+
+@bot.command(name="gm_set")
+async def gm_set(ctx, *, mission_name: str):
+    await gm_restart(ctx, mission_name=mission_name)
+
+
+@bot.command(name="gm_newhvt")
+async def gm_newhvt(ctx):
+    if ctx.channel.id != GM_CHANNEL_ID:
+        return await ctx.send("⚠️ Este comando só pode ser usado no canal GM.", delete_after=10)
+    if not milsim_is_gm(ctx):
+        return await ctx.send("❌ Apenas Game Masters podem usar este comando.", delete_after=10)
+
+    msg = await gm_new_hvt_core()
+    await ctx.send(msg, delete_after=20)
+
+
+@bot.command(name="gm_debug")
+async def gm_debug(ctx):
+    if ctx.channel.id != GM_CHANNEL_ID:
+        return await ctx.send("⚠️ Este comando só pode ser usado no canal GM.", delete_after=10)
+    if not milsim_is_gm(ctx):
+        return await ctx.send("❌ Apenas Game Masters podem usar este comando.", delete_after=10)
+
+    embed = build_operation_status_embed()
+    embed.add_field(
+        name="🎯 HVT",
+        value=(
+            f"🔵 Azul: {format_hvt_line('azul')} | capturado: `{milsim_state.get('hvt', {}).get('captured', {}).get('azul')}` | extraído: `{milsim_state.get('hvt', {}).get('extracted', {}).get('azul')}`\n"
+            f"🔴 Vermelho: {format_hvt_line('vermelho')} | capturado: `{milsim_state.get('hvt', {}).get('captured', {}).get('vermelho')}` | extraído: `{milsim_state.get('hvt', {}).get('extracted', {}).get('vermelho')}`"
+        ),
+        inline=False
+    )
+    await ctx.send(embed=embed)
+
+
+class GMPanelMissionSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="Missão 01", value="mission_1", emoji="🎖️", description="Secure Drives / Intercept Protocol"),
+            discord.SelectOption(label="Missão 02", value="mission_2", emoji="📡", description="Data Transfer / Signal Key"),
+            discord.SelectOption(label="Missão 03", value="mission_3", emoji="🚛", description="Convoy Run / Intercept Convoy"),
+            discord.SelectOption(label="Missão 04", value="mission_4", emoji="📡", description="SATCOM Breach"),
+            discord.SelectOption(label="Missão Final", value="final", emoji="☢️", description="Total Domination"),
+        ]
+        super().__init__(placeholder="Forçar / reiniciar missão específica", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.channel_id != GM_CHANNEL_ID or not milsim_is_gm(interaction):
+            return await interaction.response.send_message("❌ Apenas Game Masters no canal GM.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        ok, msg = await gm_restart_mission_core(self.values[0])
+        await interaction.followup.send(msg, ephemeral=True)
+
+
+class GMControlPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=900)
+        self.add_item(GMPanelMissionSelect())
+
+    async def _run_command(self, interaction: discord.Interaction, command_obj, success_message: str = None):
+        if interaction.channel_id != GM_CHANNEL_ID or not milsim_is_gm(interaction):
+            return await interaction.response.send_message("❌ Apenas Game Masters no canal GM.", ephemeral=True)
+
+        await interaction.response.defer(ephemeral=True)
+
+        class InteractionCtx:
+            def __init__(self, inter):
+                self.interaction = inter
+                self.channel = inter.channel
+                self.author = inter.user
+                self.guild = inter.guild
+            async def send(self, content=None, **kwargs):
+                kwargs.pop("delete_after", None)
+                await self.interaction.followup.send(content=content, **kwargs)
+
+        ctx = InteractionCtx(interaction)
+        callback = getattr(command_obj, "callback", command_obj)
+        await callback(ctx)
+        if success_message:
+            await interaction.followup.send(success_message, ephemeral=True)
+
+    @discord.ui.button(label="🔁 Reiniciar atual", style=discord.ButtonStyle.primary)
+    async def restart_current(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.channel_id != GM_CHANNEL_ID or not milsim_is_gm(interaction):
+            return await interaction.response.send_message("❌ Apenas Game Masters no canal GM.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        current = milsim_state.get("teams", {}).get("azul", {}).get("current", "mission_1")
+        ok, msg = await gm_restart_mission_core(current)
+        await interaction.followup.send(msg, ephemeral=True)
+
+    @discord.ui.button(label="⏭️ Próxima", style=discord.ButtonStyle.green)
+    async def next_mission(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._run_command(interaction, gm_next)
+
+    @discord.ui.button(label="🎯 Novo HVT", style=discord.ButtonStyle.secondary)
+    async def new_hvt(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.channel_id != GM_CHANNEL_ID or not milsim_is_gm(interaction):
+            return await interaction.response.send_message("❌ Apenas Game Masters no canal GM.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        msg = await gm_new_hvt_core()
+        await interaction.followup.send(msg, ephemeral=True)
+
+    @discord.ui.button(label="⏭️ Passar pausa", style=discord.ButtonStyle.secondary)
+    async def skip_rest(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._run_command(interaction, skip_pausa)
+
+    @discord.ui.button(label="🧹 Timers", style=discord.ButtonStyle.secondary)
+    async def clean_timers(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._run_command(interaction, limpar_timers)
+
+    @discord.ui.button(label="⚫ Blackout", style=discord.ButtonStyle.danger)
+    async def blackout(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._run_command(interaction, gm_blackout)
+
+    @discord.ui.button(label="📊 Debug", style=discord.ButtonStyle.secondary)
+    async def debug(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.channel_id != GM_CHANNEL_ID or not milsim_is_gm(interaction):
+            return await interaction.response.send_message("❌ Apenas Game Masters no canal GM.", ephemeral=True)
+        embed = build_operation_status_embed()
+        embed.add_field(
+            name="🎯 HVT",
+            value=(
+                f"🔵 Azul: {format_hvt_line('azul')}\n"
+                f"🔴 Vermelho: {format_hvt_line('vermelho')}"
+            ),
+            inline=False
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="🏁 Terminar", style=discord.ButtonStyle.danger)
+    async def end_operation(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._run_command(interaction, gm_end)
+
+
+@bot.command(name="painel_gm")
+async def painel_gm(ctx):
+    if ctx.channel.id != GM_CHANNEL_ID:
+        return await ctx.send("⚠️ Este comando só pode ser usado no canal GM.", delete_after=10)
+    if not milsim_is_gm(ctx):
+        return await ctx.send("❌ Apenas Game Masters podem usar este comando.", delete_after=10)
+
+    embed = tactical_embed(
+        "🎮 PAINEL GAME MASTER — DUALITY",
+        "Controlo rápido da operação. Usa os botões apenas durante gestão GM.",
+        discord.Color.dark_gold(),
+        [
+            {"name": "🔁 Reiniciar atual", "value": "Reenvia a missão atual, reinicia timers, checkpoints, HVT e estados da missão.", "inline": False},
+            {"name": "🎯 Novo HVT", "value": "Gera novo HVT para a missão em curso.", "inline": False},
+            {"name": "📌 Seletor de missão", "value": "Força/reinicia uma missão específica.", "inline": False},
+        ]
+    )
+    await ctx.send(embed=embed, view=GMControlPanelView())
 
 
 # =========================
