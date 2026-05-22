@@ -5516,7 +5516,17 @@ async def send_regroup_two_minute_notice(team: str):
 
 
 def milsim_is_gm(ctx):
-    return any(role.id == GM_ROLE_ID for role in ctx.author.roles) or ctx.author.guild_permissions.administrator
+    # Suporta tanto comandos normais (ctx.author) como botões/selects (interaction.user).
+    user = getattr(ctx, "author", None) or getattr(ctx, "user", None)
+    if user is None:
+        return False
+
+    perms = getattr(user, "guild_permissions", None)
+    if perms and getattr(perms, "administrator", False):
+        return True
+
+    roles = getattr(user, "roles", []) or []
+    return any(role.id == GM_ROLE_ID for role in roles)
 
 
 async def broadcast_two_minute_regroup_notice():
