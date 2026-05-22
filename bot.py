@@ -3467,6 +3467,7 @@ async def advance_both_teams_to_next_mission(old_mission: str):
 
         if milsim_state["teams"][t]["current"] == "mission_3":
             milsim_state["mission3_route"]["vermelho_step"] = 0
+            milsim_state["mission3_bunker"] = {"active": False, "alert_sent": False, "started_at": None}
 
         if milsim_state["teams"][t]["current"] == "mission_4":
             await stop_respawn_cycle()
@@ -3898,6 +3899,7 @@ milsim_state = {
     "rest_tasks": {"azul": None, "vermelho": None},
     "decryption": {"active": False, "cancelled": False, "team": None, "mission": None},
     "mission3_route": {"vermelho_step": 0},
+    "mission3_bunker": {"active": False, "alert_sent": False, "started_at": None},
     "teams": {
         "azul": {
             "current": "mission_1",
@@ -4932,27 +4934,6 @@ MISSION_CODES = {
     "RED-CP4": {"team": "vermelho", "mission": "mission_3", "points": 0, "type": "checkpoint", "step": 4, "embed": lambda: tactical_embed("✅ CHECKPOINT 4 VALIDADO", "A carga aproxima-se da extração final. Esperem tentativa de interceção máxima.", discord.Color.red(), [{"name": "➡️ PRÓXIMO PASSO", "value": "Último checkpoint antes da extração.", "inline": False}])},
     "RED-CP5": {"team": "vermelho", "mission": "mission_3", "points": 0, "type": "checkpoint", "step": 5, "embed": lambda: tactical_embed("✅ CHECKPOINT 5 VALIDADO", "Rota completa. Procedam para extração final.", discord.Color.red(), [{"name": "➡️ PRÓXIMO PASSO", "value": "Validem a extração final no ponto indicado.", "inline": False}])},
 
-    "GHOST-802": {
-        "team": "azul",
-        "mission": "mission_3",
-        "points": 25,
-        "type": "complete",
-        "embed": lambda: tactical_embed(
-            "📦 CARGA INTERCETADA E DEPOSITADA",
-            "A carga Vermelha foi intercetada, capturada e depositada no ponto indicado.\n\nA linha logística inimiga foi comprometida.",
-            discord.Color.blue(),
-            [
-                {"name": "📍 ORDEM", "value": "Regressem ao COMANDO para reorganização.", "inline": False},
-                {"name": "🏆 PONTOS", "value": "**+25 pontos atribuídos**", "inline": False}
-            ]
-        ),
-        "enemy_alert_embed": lambda: tactical_embed(
-            "🚨 CARGA PERDIDA",
-            "A Task Force Azul intercetou e depositou a carga. A rota logística Vermelha foi comprometida.",
-            discord.Color.red()
-        )
-    },
-
     "EXFIL-337": {
         "team": "vermelho",
         "mission": "mission_3",
@@ -5915,6 +5896,63 @@ async def codigo(ctx, codigo: str):
     if team_state["current"] != data["mission"]:
         return await ctx.send("⚠️ Código correto, mas fora da fase operacional atual.")
 
+    # MISSÃO 03 — INTERCEPT CONVOY: se a Azul registar a caixa no bunker antes dos 10 minutos,
+    # a missão não termina. A Vermelha recebe uma janela de recuperação/contra-assalto ao bunker.
+    if codigo == "HIJACK-515" and team == "azul" and data.get("mission") == "mission_3":
+        elapsed = mission_elapsed_seconds(team)
+        if elapsed < MIN_VALIDATION_SECONDS:
+            bunker_state = milsim_state.setdefault("mission3_bunker", {
+                "active": False,
+                "alert_sent": False,
+                "started_at": None
+            })
+
+            if bunker_state.get("active"):
+                return await ctx.send(
+                    "⚠️ A caixa já foi registada no BUNKER. Defendam a posição até autorização operacional.",
+                    delete_after=12
+                )
+
+            bunker_state["active"] = True
+            bunker_state["alert_sent"] = True
+            bunker_state["started_at"] = datetime.now(timezone.utc)
+
+            remaining = MIN_VALIDATION_SECONDS - elapsed
+            minutes = remaining // 60
+            seconds = remaining % 60
+
+            await milsim_send_to_team(
+                "azul",
+                embed=tactical_embed(
+                    "📦 CAIXA REGISTADA NO BUNKER",
+                    "A caixa capturada foi entregue no BUNKER, mas a janela operacional mínima ainda não terminou.",
+                    discord.Color.blue(),
+                    [
+                        {"name": "📍 ORDEM", "value": "Defendam o BUNKER e mantenham a caixa sob controlo até validação final.", "inline": False},
+                        {"name": "⏱️ TEMPO ATÉ EXTRAÇÃO DEFINITIVA", "value": f"**{minutes:02d}:{seconds:02d}**", "inline": True},
+                    ],
+                    footer="COMANDO CENTRAL • INTERCEPT CONVOY"
+                )
+            )
+
+            await milsim_send_to_team(
+                "vermelho",
+                embed=tactical_embed(
+                    "🚨 CAIXA LOCALIZADA NO BUNKER",
+                    "A Task Force Azul intercetou a caixa e levou-a para o BUNKER antes da janela operacional mínima terminar.",
+                    discord.Color.red(),
+                    [
+                        {"name": "📍 ORDEM", "value": "Avançar para o BUNKER, recuperar a caixa e impedir a extração definitiva.", "inline": False},
+                        {"name": "⚠️ PRIORIDADE", "value": "Contra-assalto imediato. A caixa ainda não foi extraída em definitivo.", "inline": False},
+                    ],
+                    footer="COMANDO CENTRAL • ALERTA CONVOY"
+                )
+            )
+
+            await milsim_log("🚨 HIJACK-515 registado antes dos 10 minutos. Caixa localizada no BUNKER; Vermelha alertada para recuperação.")
+            await update_status_panel()
+            return
+
     if await guard_early_validation(ctx, team, data):
         return
 
@@ -6085,6 +6123,9 @@ async def codigo(ctx, codigo: str):
         await milsim_log("🏁 Operação terminada por código final.")
         return
 
+    if data.get("mission") == "mission_3" and codigo in {"HIJACK-515", "EXFIL-337"}:
+        milsim_state["mission3_bunker"] = {"active": False, "alert_sent": False, "started_at": None}
+
     await set_both_teams_to_regroup_after_objective(team, team_state["current"], codigo)
 
 
@@ -6136,12 +6177,6 @@ async def set_both_teams_to_regroup_after_objective(winning_team: str, mission_n
             "winner_reason": "A carga inimiga foi capturada pela Task Force Azul e retirada para o HQ com sucesso.",
             "enemy_title": "CONVOY PERDIDO",
             "enemy_reason": "A Task Force Azul intercetou o transporte e capturou a carga operacional."
-        },
-        "GHOST-802": {
-            "winner_title": "CARGA DEPOSITADA",
-            "winner_reason": "A carga inimiga foi intercetada e depositada com sucesso no ponto indicado.",
-            "enemy_title": "CARGA INTERCETADA",
-            "enemy_reason": "A Task Force Azul conseguiu capturar e depositar a carga operacional."
         },
         "EXFIL-337": {
             "winner_title": "CONVOY VALIDADO",
@@ -6274,6 +6309,7 @@ async def advance_milsim_phase(old_mission: str):
 
         if milsim_state["teams"][t]["current"] == "mission_3":
             milsim_state["mission3_route"]["vermelho_step"] = 0
+            milsim_state["mission3_bunker"] = {"active": False, "alert_sent": False, "started_at": None}
 
         await force_archive_current_mission_embed(t, "Nova fase operacional iniciada.")
         await purge_team_status_panels(t)
