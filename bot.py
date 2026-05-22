@@ -2407,7 +2407,7 @@ SATCOM_SECONDARY_SECONDS = 900  # 15 minutos para missão secundária do acampam
 # Além disso, durante os primeiros 10 minutos, a validação final fica bloqueada,
 # exceto se a equipa capturar o HVT inimigo. Isto evita que missões acabem demasiado rápido.
 MIN_VALIDATION_SECONDS = 600  # 10 minutos mínimos antes de validar objetivos finais
-EARLY_VALIDATION_MISSIONS = {"mission_1", "mission_2", "mission_3", "mission_4", "final"}
+EARLY_VALIDATION_MISSIONS = {"mission_1", "mission_2", "mission_3", "final"}
 EARLY_VALIDATION_TYPES = {"complete", "end"}
 
 # ---------- CORES DOS EMBEDS MILSIM ----------
@@ -2828,16 +2828,15 @@ def build_mission_embed_with_status(team: str, embed: discord.Embed, estado: str
     final_embed = embed.copy()
     _remove_mission_status_fields(final_embed)
 
-    # Alertas HVT/captura/extração são mensagens paralelas.
-    # Nunca devem receber protocolo de validação, objetivos da missão nem bloco HVT completo.
-    if is_hvt_or_capture_alert_embed(final_embed):
-        final_embed = strip_hvt_alert_extra_fields(final_embed)
-        return aplicar_cor_milsim(final_embed)
-
     # Embeds de retirada/fim não devem receber objetivos, protocolo de validação nem HVT.
     # Missões arquivadas mantêm a informação operacional para consulta histórica.
     if is_retreat_or_archived_embed(final_embed):
         final_embed = strip_retreat_embed_fields(final_embed)
+        return aplicar_cor_milsim(final_embed)
+
+    # Alertas/eventos operacionais são mensagens informativas, não briefings principais.
+    # Ex.: interferências SATCOM, HVT capturado/extraído, checkpoints, hacks.
+    if is_operational_alert_embed(final_embed):
         return aplicar_cor_milsim(final_embed)
 
     final_embed = apply_operational_note_to_embed(final_embed)
@@ -3383,50 +3382,31 @@ def is_hvt_or_capture_alert_embed(embed: discord.Embed) -> bool:
     )
     return any(marker in title or marker in footer for marker in markers)
 
-def strip_hvt_alert_extra_fields(embed: discord.Embed) -> discord.Embed:
-    """Mantém os alertas HVT/captura limpos.
-
-    Remove campos que pertencem apenas ao briefing principal da missão
-    caso algum fluxo tente reaproveitar/enriquecer estes embeds.
+def is_operational_alert_embed(embed: discord.Embed) -> bool:
+    """Embeds informativos/alertas não são briefings principais.
+    Não recebem protocolo dos 10 minutos, HVT secundário nem campos extra.
     """
-    if not embed.fields:
-        return embed
-
-    blocked_markers = (
-        "PROTOCOLO DE VALIDAÇÃO",
-        "OBJETIVO SECUNDÁRIO",
-        "OBJETIVO DA MISSÃO",
-        "ESTADO HVT",
-        "HVT INIMIGO",
-        "NOTA OPERACIONAL",
+    title = (embed.title or "").upper()
+    footer = (embed.footer.text if embed.footer else "").upper()
+    markers = (
+        "INTERFERÊNCIAS DETETADAS",
+        "ALERTA DE INTERFERÊNCIAS",
+        "SATCOM COMPROMETIDO",
+        "SATCOM EM RISCO",
+        "HVT",
+        "CAPTURA",
+        "EXTRAÇÃO",
+        "CHECKPOINT",
+        "ORDEM DE RETIRADA",
+        "MISSÃO BEM SUCEDIDA",
+        "MISSAO BEM SUCEDIDA",
+        "MISSÃO FRACASSADA",
+        "MISSAO FRACASSADA",
+        "TEMPO ESGOTADO",
+        "HACK CANCELADO",
+        "HACK SATCOM",
     )
-
-    kept_fields = []
-    for field in embed.fields:
-        name_upper = (field.name or "").upper()
-        value_upper = (field.value or "").upper()
-
-        if any(marker in name_upper for marker in blocked_markers):
-            continue
-
-        # Segurança extra: remove campos-tutorial longos do HVT secundário.
-        if (
-            "CAPTURAS PODEM REPETIR" in value_upper
-            or "SÓ É PERMITIDA 1 EXTRAÇÃO" in value_upper
-            or "TEMPO MÍNIMO OPERACIONAL" in value_upper
-            or "VALIDAÇÃO FINAL FICA BLOQUEADA" in value_upper
-            or "REGISTAR CAPTURA COM" in value_upper
-        ):
-            continue
-
-        kept_fields.append({"name": field.name, "value": field.value, "inline": field.inline})
-
-    embed.clear_fields()
-    for field in kept_fields:
-        embed.add_field(name=field["name"], value=field["value"], inline=field["inline"])
-
-    return embed
-
+    return any(marker in title or marker in footer for marker in markers)
 
 async def send_team_embed_with_status_last(team: str, embed: discord.Embed, estado: str = None):
     channel = milsim_channel_for_team(team)
@@ -3436,8 +3416,7 @@ async def send_team_embed_with_status_last(team: str, embed: discord.Embed, esta
     # Capturas/extrações HVT são alertas paralelos.
     # Não arquivam a missão atual, não viram embed principal e não recebem campos de missão/protocolo.
     if is_hvt_or_capture_alert_embed(embed):
-        clean_embed = strip_hvt_alert_extra_fields(embed.copy())
-        clean_embed = aplicar_cor_milsim(clean_embed)
+        clean_embed = aplicar_cor_milsim(embed.copy())
         return await channel.send(embed=clean_embed)
 
     # Arquivar visualmente o embed operacional anterior antes de enviar nova missão/descanso/reagrupamento.
@@ -4088,7 +4067,9 @@ def mission_elapsed_seconds(team: str) -> int:
         remaining = max(0, int((end_time - datetime.now(timezone.utc)).total_seconds()))
         return max(0, limit - remaining)
 
-    return MIN_VALIDATION_SECONDS
+    # Se por algum motivo o início da missão não estiver registado, bloqueia por segurança.
+    # Assim códigos finais como EXFIL não passam antes dos 10 minutos por falha de timer.
+    return 0
 
 
 def early_validation_unlocked(team: str) -> bool:
@@ -4177,16 +4158,18 @@ def apply_early_validation_note_to_embed(team: str, embed: discord.Embed):
     else:
         status = "Ativo — capturar o HVT inimigo e extrair até ao HQ."
 
-    embed.add_field(
-        name="⛔ PROTOCOLO DE VALIDAÇÃO",
-        value=(
-            "▸ Tempo mínimo operacional: **10 MINUTOS**\n"
-            "▸ Antes dos 10 minutos, a validação final fica bloqueada\n"
-            "▸ Para validar antes do tempo mínimo, capturar o HVT inimigo\n"
-            "▸ Após os 10 minutos, a validação final fica autorizada normalmente"
-        ),
-        inline=False
-    )
+    # SATCOM/Missão 4 não mostra protocolo dos 10 minutos: o próprio hack já é o timer.
+    if current != "mission_4":
+        embed.add_field(
+            name="⛔ PROTOCOLO DE VALIDAÇÃO",
+            value=(
+                "▸ Tempo mínimo operacional: **10 MINUTOS**\n"
+                "▸ Antes dos 10 minutos, a validação final fica bloqueada\n"
+                "▸ Para validar antes do tempo mínimo, capturar o HVT inimigo\n"
+                "▸ Após os 10 minutos, a validação final fica autorizada normalmente"
+            ),
+            inline=False
+        )
 
     embed.add_field(
         name="🎯 OBJETIVO SECUNDÁRIO — HVT",
@@ -5326,17 +5309,10 @@ async def milsim_send_to_team(team: str, embed=None, content=None):
         if embed:
             await prepare_team_channel_for_new_milsim_embed(team)
             embed = apply_medical_rules_to_embed(embed)
-
-            # Alertas HVT/captura/extração devem ser limpos e paralelos.
-            # Não recebem campos de briefing, protocolo ou objetivo secundário.
-            if is_hvt_or_capture_alert_embed(embed):
-                embed = strip_hvt_alert_extra_fields(embed)
-                embed = aplicar_cor_milsim(embed)
-            elif get_clear_objective_for_embed(embed):
+            if not is_operational_alert_embed(embed) and not is_retreat_or_archived_embed(embed):
                 embed = build_mission_embed_with_status(team, embed)
             else:
                 embed = aplicar_cor_milsim(embed)
-
             msg = await canal.send(embed=embed)
             await finish_team_channel_after_new_milsim_embed(team)
             return msg
@@ -6157,11 +6133,6 @@ async def advance_milsim_phase(old_mission: str):
 
         await force_archive_current_mission_embed(t, "Nova fase operacional iniciada.")
         await purge_team_status_panels(t)
-
-        # Novo HVT por missão. Seleciona uma única vez antes de enviar os briefings
-        # para impedir que a Missão 2/Missões seguintes herdem o HVT anterior.
-        if t == "azul":
-            select_hvt_targets_for_mission()
 
         if old_mission == "mission_3":
             if not milsim_state.get("satcom", {}).get("selected", {}).get("azul"):
