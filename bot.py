@@ -2397,7 +2397,9 @@ GM_ROLE_ID = 1504602388496121928
 RESPAWN_INTERVAL_SECONDS = 300  # 5 minutos
 RESPAWN_OPEN_SECONDS = 5        # janela verde de respawn
 TIMEOUT_REFILL_SECONDS = 300   # 5 minutos para reagrupamento/refill quando missão expira
-SATCOM_HACK_SECONDS = 600      # 10 minutos de hack SATCOM
+SATCOM_HACK_SECONDS = 600      # 10 minutos de defesa após hack ativo
+SATCOM_FORTIFICATION_SECONDS = 600  # 10 minutos iniciais para fortificar SATCOM
+SATCOM_HACK_START_WINDOW_SECONDS = 300  # 5 minutos para iniciar hack após fortificação
 SATCOM_TEAM_SIZE = 5
 SATCOM_SECONDARY_DELAY = 180  # 3 minutos até ativar missão secundária
 SATCOM_SECONDARY_SECONDS = 900  # 15 minutos para missão secundária do acampamento
@@ -2463,7 +2465,7 @@ MISSION_TIME_LIMITS = {
 
 # Missões principais onde o HVT aparece como objetivo secundário opcional.
 # Ordens de retirada/arquivos/falhas/sucessos são limpos e não mostram HVT.
-MAIN_HVT_MISSIONS = set(MISSION_TIME_LIMITS.keys())
+MAIN_HVT_MISSIONS = {"mission_1", "mission_2", "mission_3", "final"}
 
 
 def hvt_should_show_for_team(team: str) -> bool:
@@ -2480,7 +2482,6 @@ def mission4_all_objectives_finished():
     hack_done = (
         satcom.get("hack_completed")
         or satcom.get("hack_cancelled")
-        or not satcom.get("hack_active")
     )
 
     secondary_started = (
@@ -2694,7 +2695,7 @@ def get_operational_note_for_embed(embed: discord.Embed):
 
     if "INTERCEPT CONVOY" in combined and "TASK FORCE AZUL" in combined:
         return (
-            "Capturar a caixa do convoy e transportá-la para a base.\n\n"
+            "Capturar a caixa do convoy e transportá-la até ao Bunker para registar a extração no ponto específico.\n\n"
             "O código de validação encontra-se gravado na própria caixa."
         )
 
@@ -2763,7 +2764,7 @@ def get_clear_objective_for_embed(embed: discord.Embed):
         return '▸ Transportar a caixa segura pelo percurso operacional indicado\n▸ Alcançar os pontos designados mantendo a carga sob controlo\n▸ Validar os códigos operacionais em cada checkpoint\n▸ Garantir que a caixa chega intacta ao ponto final'
 
     if "INTERCEPT CONVOY" in combined and "TASK FORCE AZUL" in combined:
-        return '▸ Intercetar o convoy Vermelho durante o transporte da caixa\n▸ Capturar a caixa e extrair até ao HQ Azul\n▸ Procurar o código gravado na própria caixa\n▸ Validar o código para concluir a missão'
+        return '▸ Intercetar o convoy Vermelho durante o transporte da caixa\n▸ Capturar a caixa\n▸ Transportar a caixa até ao Bunker e registar a extração da caixa no ponto específico\n▸ Defender o Bunker se a extração for registada antes dos 10 minutos operacionais'
 
     if "SATCOM BREACH" in combined and "TASK FORCE VERMELHA" in combined:
         return '▸ Localizar o terminal SATCOM ativo no setor CQB\n▸ Validar o código de ativação localizado junto ao terminal\n▸ Iniciar o hack às comunicações inimigas\n▸ Manter controlo da posição até conclusão total do hack (10 min)'
@@ -3480,10 +3481,16 @@ async def advance_both_teams_to_next_mission(old_mission: str):
             seconds=MISSION_TIME_LIMITS[milsim_state["teams"][t]["current"]]
         )
 
-        if t == "azul":
-            select_hvt_targets_for_mission()
-
-        await send_team_embed_with_status_last(t, NEXT_MISSIONS[old_mission][t]())
+        if milsim_state["teams"][t]["current"] == "mission_4":
+            if t == "azul":
+                await start_mission4_operational_flow()
+                await send_team_embed_with_status_last(t, build_satcom_interference_embed())
+            else:
+                await send_team_embed_with_status_last(t, build_satcom_red_initial_embed())
+        else:
+            if t == "azul":
+                select_hvt_targets_for_mission()
+            await send_team_embed_with_status_last(t, NEXT_MISSIONS[old_mission][t]())
 
     for t in ["azul", "vermelho"]:
         asyncio.create_task(mission_timer(t, milsim_state["teams"][t]["current"]))
@@ -3929,6 +3936,11 @@ milsim_state = {
         "hack_cancelled": False,
         "hack_end_time": None,
         "hack_task": None,
+        "fortification_end_time": None,
+        "fortification_task": None,
+        "hack_window_active": False,
+        "hack_window_end_time": None,
+        "hack_window_task": None,
         "secondary_active": False,
         "secondary_completed": False,
         "secondary_winner": None,
@@ -4462,6 +4474,143 @@ def format_operator_list(codes, team):
     return "\n".join([f"▸ `{code}` — {source.get(code, 'OPERADOR')}" for code in codes]) if codes else "Sem operadores definidos."
 
 
+def reset_satcom_state_for_mission4():
+    """Reinicia a lógica SATCOM para a Missão 4 sem mexer no resto da operação."""
+    old_satcom = milsim_state.get("satcom", {})
+    for key in ("hack_task", "secondary_task", "fortification_task", "hack_window_task"):
+        task = old_satcom.get(key)
+        if task and not task.done():
+            task.cancel()
+
+    select_satcom_operators()
+    now = datetime.now(timezone.utc)
+    milsim_state["satcom"].update({
+        "hack_active": False,
+        "hack_completed": False,
+        "hack_cancelled": False,
+        "hack_end_time": None,
+        "hack_task": None,
+        "fortification_end_time": now + timedelta(seconds=SATCOM_FORTIFICATION_SECONDS),
+        "fortification_task": None,
+        "hack_window_active": False,
+        "hack_window_end_time": None,
+        "hack_window_task": None,
+        "secondary_active": False,
+        "secondary_completed": False,
+        "secondary_winner": None,
+        "secondary_end_time": None,
+        "secondary_started_at": None,
+        "secondary_task": None,
+        "secondary_transport_started": False,
+        "secondary_transport_started_at": None,
+    })
+
+
+def mission4_is_current_active() -> bool:
+    return (
+        milsim_state.get("active")
+        and milsim_state.get("teams", {}).get("azul", {}).get("current") == "mission_4"
+        and milsim_state.get("teams", {}).get("vermelho", {}).get("current") == "mission_4"
+    )
+
+
+async def start_mission4_operational_flow():
+    """Ativa os timers/fases próprias da Missão 4: secundária aos 3 min, fortificação 10 min, janela hack 5 min."""
+    reset_satcom_state_for_mission4()
+    satcom = milsim_state["satcom"]
+    satcom["secondary_task"] = asyncio.create_task(activate_satcom_secondary_missions())
+    satcom["fortification_task"] = asyncio.create_task(satcom_fortification_timer())
+    await milsim_log("📡 Missão 4 iniciada: 10 min de fortificação SATCOM, secundária aos 3 min, sem HVT.")
+
+
+async def satcom_fortification_timer():
+    satcom = milsim_state.get("satcom", {})
+    end_time = satcom.get("fortification_end_time")
+    if not end_time:
+        return
+
+    while mission4_is_current_active():
+        remaining = (end_time - datetime.now(timezone.utc)).total_seconds()
+        if remaining <= 0:
+            break
+        await update_status_panel()
+        await asyncio.sleep(min(5, max(1, int(remaining))))
+
+    if not mission4_is_current_active():
+        return
+
+    satcom = milsim_state.get("satcom", {})
+    if satcom.get("hack_active") or satcom.get("hack_completed") or satcom.get("hack_cancelled"):
+        return
+
+    satcom["hack_window_active"] = True
+    satcom["hack_window_end_time"] = datetime.now(timezone.utc) + timedelta(seconds=SATCOM_HACK_START_WINDOW_SECONDS)
+    satcom["hack_window_task"] = asyncio.create_task(satcom_hack_window_timer())
+
+    await milsim_send_to_team(
+        "vermelho",
+        embed=tactical_embed(
+            "🟡 JANELA DE ATIVAÇÃO SATCOM",
+            "A fase de fortificação terminou. A estação está preparada para iniciar intrusão.",
+            discord.Color.orange(),
+            [
+                {"name": "⏱️ JANELA", "value": "A Task Force Vermelha tem **5 minutos** para validar `BLACK-916` e iniciar o hack.", "inline": False},
+                {"name": "📍 ORDEM", "value": "Confirmar ativação no terminal SATCOM. Se a janela expirar, a oportunidade operacional será perdida.", "inline": False},
+            ],
+            footer="COMANDO CENTRAL • SATCOM READY"
+        )
+    )
+    await milsim_log("🟡 Fortificação SATCOM terminada. Janela de 5 minutos para iniciar hack aberta.")
+    await update_status_panel()
+
+
+async def satcom_hack_window_timer():
+    satcom = milsim_state.get("satcom", {})
+    end_time = satcom.get("hack_window_end_time")
+    if not end_time:
+        return
+
+    while mission4_is_current_active():
+        satcom = milsim_state.get("satcom", {})
+        if satcom.get("hack_active") or satcom.get("hack_completed") or satcom.get("hack_cancelled"):
+            return
+        remaining = (end_time - datetime.now(timezone.utc)).total_seconds()
+        if remaining <= 0:
+            break
+        await update_status_panel()
+        await asyncio.sleep(min(5, max(1, int(remaining))))
+
+    satcom = milsim_state.get("satcom", {})
+    if not mission4_is_current_active() or satcom.get("hack_active") or satcom.get("hack_completed") or satcom.get("hack_cancelled"):
+        return
+
+    satcom["hack_window_active"] = False
+    satcom["hack_cancelled"] = True
+
+    await milsim_send_to_team(
+        "vermelho",
+        embed=tactical_embed(
+            "❌ JANELA SATCOM EXPIRADA",
+            "A Task Force Vermelha não iniciou o hack dentro da janela operacional de 5 minutos.",
+            discord.Color.red(),
+            [{"name": "📍 ORDEM", "value": "Regressem ao ponto de reagrupamento e aguardem novas ordens.", "inline": False}],
+            footer="COMANDO CENTRAL • SATCOM FAILURE"
+        )
+    )
+    await milsim_send_to_team(
+        "azul",
+        embed=tactical_embed(
+            "✅ INTERFERÊNCIAS ESTABILIZADAS",
+            "A tentativa de intrusão SATCOM inimiga perdeu janela operacional antes de ser ativada.",
+            discord.Color.blue(),
+            [{"name": "📍 ORDEM", "value": "Manter prontidão até nova atualização do COMANDO CENTRAL.", "inline": False}],
+            footer="COMANDO CENTRAL • SATCOM STABLE"
+        )
+    )
+    await milsim_log("❌ Janela SATCOM expirada sem BLACK-916. Hack não iniciado.")
+    await update_status_panel()
+
+
 def build_satcom_interference_embed():
     selected = milsim_state["satcom"]["selected"]["azul"]
     secondary = milsim_state["satcom"]["secondary"]["azul"]
@@ -4470,9 +4619,9 @@ def build_satcom_interference_embed():
         "〔 TASK FORCE AZUL 〕\n\nO COMANDO CENTRAL detetou atividade eletrónica anormal nas comunicações da operação.\n\nA origem ainda não foi confirmada. A unidade deve manter-se em prontidão até nova ordem.",
         discord.Color.blue(),
         [
-            {"name": "👥 EQUIPA DE RESPOSTA SATCOM", "value": format_operator_list(selected, "azul"), "inline": False},
+            {"name": "👥 EQUIPA PRINCIPAL", "value": format_operator_list(selected, "azul"), "inline": False},
             {"name": "📦 EQUIPA SECUNDÁRIA", "value": format_operator_list(secondary, "azul"), "inline": False},
-            {"name": "📍 ORDEM", "value": "Os operadores SATCOM aguardam autorização de saída. Os restantes operadores ficam destacados para missão secundária.", "inline": False},
+            {"name": "📍 ORDEM", "value": "5 operadores ficam preparados para resposta SATCOM. 5 operadores ficam destacados para a missão secundária quando for ativada.", "inline": False},
         ],
         footer="COMANDO CENTRAL • ALERTA DE INTERFERÊNCIAS",
     )
@@ -4518,6 +4667,7 @@ async def start_satcom_hack():
     satcom["hack_active"] = True
     satcom["hack_completed"] = False
     satcom["hack_cancelled"] = False
+    satcom["hack_window_active"] = False
     satcom["hack_end_time"] = datetime.now(timezone.utc) + timedelta(seconds=SATCOM_HACK_SECONDS)
     for t in ["azul", "vermelho"]:
         milsim_state["mission_end_times"][t] = satcom["hack_end_time"]
@@ -4539,8 +4689,7 @@ async def start_satcom_hack():
     )
     await send_team_embed_with_status_last("azul", build_satcom_blue_active_embed())
     satcom["hack_task"] = asyncio.create_task(satcom_hack_timer())
-    asyncio.create_task(activate_satcom_secondary_missions())
-    await milsim_log("📡 Hack SATCOM iniciado por BLACK-916. Timer de 10 minutos ativo.")
+    await milsim_log("📡 Hack SATCOM iniciado por BLACK-916. Defesa de 10 minutos ativa.")
     await update_status_panel()
 
 
@@ -4554,7 +4703,7 @@ async def activate_satcom_secondary_missions():
     await stop_respawn_cycle()
 
     satcom = milsim_state.get("satcom", {})
-    if not satcom.get("hack_active"):
+    if milsim_state.get("teams", {}).get("azul", {}).get("current") != "mission_4":
         return
 
     satcom["secondary_active"] = True
@@ -4597,7 +4746,7 @@ async def activate_satcom_secondary_missions():
                 "▸ Eliminar ameaças dentro da área operacional\\n"
                 "▸ A caixa não pode ser movida e a equipa não deve abandonar o perímetro do acampamento"
             )
-            win_condition = "A Vermelha vence se a Azul não iniciar transporte e validar `CACHE-777` antes do fim do tempo."
+            win_condition = "A Vermelha vence se a Azul não iniciar transporte autorizado e validar `CACHE-777` antes do fim do tempo."
 
         await send_team_embed_with_status_last(
             t,
@@ -4609,6 +4758,7 @@ async def activate_satcom_secondary_missions():
                     {"name": "👥 OPERADORES SECUNDÁRIOS", "value": format_operator_list(secondary, t), "inline": False},
                     {"name": "📌 OBJETIVO DA MISSÃO", "value": objective, "inline": False},
                     {"name": "⏱️ TEMPO", "value": "**15 minutos**", "inline": True},
+                    {"name": "👥 DIVISÃO", "value": "5 operadores na principal SATCOM e 5 operadores na secundária. Sem HVT nesta missão.", "inline": False},
                     {"name": "⚠️ MORTE SÚBITA", "value": "Após atendimento médico, se o operador voltar a ser eliminado, fica fora até à próxima missão. Sem respawn.", "inline": False},
                     {"name": "🚫 RESTRIÇÃO", "value": "Operadores da secundária não podem interferir na SATCOM. Operadores SATCOM não podem interferir na secundária.", "inline": False},
                     {"name": "🏁 CONDIÇÃO DE VITÓRIA", "value": win_condition, "inline": False},
@@ -4918,11 +5068,11 @@ MISSION_CODES = {
         "type": "complete",
         "embed": lambda: tactical_embed(
             "🚛 CONVOY INTERCEPTADO",
-            "A Task Force Azul conseguiu capturar a carga do comboio inimigo e regressar com o material operacional.\n\n"
+            "A Task Force Azul capturou a carga do convoy e registou a extração no ponto específico do Bunker.\n\n"
             "A logística Vermelha foi comprometida.",
             discord.Color.blue(),
             [
-                {"name": "📍 ORDEM", "value": "Regressar ao HQ, proteger a carga recuperada e aguardar novas ordens.", "inline": False},
+                {"name": "📍 ORDEM", "value": "Manter controlo do Bunker até confirmação operacional final.", "inline": False},
                 {"name": "🏆 PONTOS", "value": "+15 pontos atribuídos", "inline": False}
             ]
         )
@@ -5107,7 +5257,7 @@ NEXT_MISSIONS = {
             "〔 TASK FORCE AZUL 〕\n\nUma unidade Vermelha está a transportar material crítico através do complexo operacional. Acreditamos que a carga contém equipamento capaz de alterar o rumo da operação.\n\nA Vermelha irá defender a carga com tudo o que tem. Ataquem rápido, criem confusão e não deixem o comboio escapar.",
             discord.Color.blue(),
             [
-                {"name": "📌 OBJETIVO DA MISSÃO", "value": "▸ Intercetar o convoy Vermelho durante o transporte da caixa\n▸ Capturar a caixa e extrair até ao HQ Azul\n▸ Procurar o código gravado na própria caixa\n▸ Validar o código para concluir a missão", "inline": False},
+                {"name": "📌 OBJETIVO DA MISSÃO", "value": "▸ Intercetar o convoy Vermelho durante o transporte da caixa\n▸ Capturar a caixa\n▸ Transportar a caixa até ao Bunker e registar a extração da caixa no ponto específico\n▸ Defender o Bunker se a extração for registada antes dos 10 minutos operacionais", "inline": False},
                 {"name": "⚠️ REGRAS OPERACIONAIS", "value": "▸ O operador da carga não pode correr\n▸ Se eliminado, a carga permanece no terreno", "inline": False}
             ]
         ),
@@ -5909,7 +6059,7 @@ async def codigo(ctx, codigo: str):
 
             if bunker_state.get("active"):
                 return await ctx.send(
-                    "⚠️ A caixa já foi registada no BUNKER. Defendam a posição até autorização operacional.",
+                    "⛔ Extração ainda bloqueada. O registo da caixa no BUNKER só fica válido após os 10 minutos operacionais.",
                     delete_after=12
                 )
 
@@ -5924,14 +6074,16 @@ async def codigo(ctx, codigo: str):
             await milsim_send_to_team(
                 "azul",
                 embed=tactical_embed(
-                    "📦 CAIXA REGISTADA NO BUNKER",
-                    "A caixa capturada foi entregue no BUNKER, mas a janela operacional mínima ainda não terminou.",
-                    discord.Color.blue(),
+                    "⛔ EXTRAÇÃO BLOQUEADA",
+                    "O COMANDO CENTRAL rejeitou o registo operacional.\n\nA caixa chegou ao BUNKER, mas o protocolo de extração ainda não foi autorizado.",
+                    discord.Color.orange(),
                     [
-                        {"name": "📍 ORDEM", "value": "Defendam o BUNKER e mantenham a caixa sob controlo até validação final.", "inline": False},
-                        {"name": "⏱️ TEMPO ATÉ EXTRAÇÃO DEFINITIVA", "value": f"**{minutes:02d}:{seconds:02d}**", "inline": True},
+                        {"name": "📦 ESTADO DA CAIXA", "value": "Caixa registada no Bunker, mas ainda sem extração definitiva.", "inline": False},
+                        {"name": "⏱️ REGISTO VÁLIDO", "value": "Apenas após os **10 minutos operacionais**.", "inline": False},
+                        {"name": "📍 ORDEM", "value": "Defender o Bunker até autorização final de extração.", "inline": False},
+                        {"name": "⏳ TEMPO RESTANTE", "value": f"**{minutes:02d}:{seconds:02d}**", "inline": True},
                     ],
-                    footer="COMANDO CENTRAL • INTERCEPT CONVOY"
+                    footer="COMANDO CENTRAL • EXTRAÇÃO PREMATURA"
                 )
             )
 
@@ -5997,8 +6149,39 @@ async def codigo(ctx, codigo: str):
     if codigo == "BLACK-916":
         if team != "vermelho":
             return await ctx.send("❌ Apenas a Task Force Vermelha pode iniciar o hack SATCOM.", delete_after=10)
-        if milsim_state.get("satcom", {}).get("hack_active"):
+        satcom = milsim_state.get("satcom", {})
+        if satcom.get("hack_active"):
             return await ctx.send("⚠️ O hack SATCOM já está em curso.", delete_after=10)
+        if satcom.get("hack_completed"):
+            return await ctx.send("⚠️ O hack SATCOM já foi concluído.", delete_after=10)
+        if satcom.get("hack_cancelled"):
+            return await ctx.send("⚠️ A janela SATCOM já foi encerrada.", delete_after=10)
+
+        now = datetime.now(timezone.utc)
+        fort_end = satcom.get("fortification_end_time")
+        if fort_end and fort_end.tzinfo is None:
+            fort_end = fort_end.replace(tzinfo=timezone.utc)
+        if fort_end and now < fort_end:
+            remaining = int((fort_end - now).total_seconds())
+            return await ctx.send(embed=tactical_embed(
+                "⛔ HACK BLOQUEADO — FORTIFICAÇÃO EM CURSO",
+                "A estação SATCOM ainda está em fase de fortificação. O hack não pode ser iniciado antes dos 10 minutos iniciais.",
+                discord.Color.orange(),
+                [
+                    {"name": "⏱️ Tempo restante", "value": f"**{remaining // 60:02d}:{remaining % 60:02d}**", "inline": True},
+                    {"name": "📍 Ordem", "value": "Continuem a fortificar o local e preparem a ativação.", "inline": False},
+                ],
+                footer="COMANDO CENTRAL • SATCOM LOCKED"
+            ), delete_after=20)
+
+        window_end = satcom.get("hack_window_end_time")
+        if window_end and window_end.tzinfo is None:
+            window_end = window_end.replace(tzinfo=timezone.utc)
+        if window_end and now > window_end:
+            return await ctx.send("⚠️ A janela de ativação SATCOM expirou.", delete_after=10)
+        if not satcom.get("hack_window_active") and not window_end:
+            return await ctx.send("⚠️ A janela de ativação SATCOM ainda não foi aberta.", delete_after=10)
+
         team_state["completed_codes"].append(codigo)
         await start_satcom_hack()
         return
@@ -6315,8 +6498,8 @@ async def advance_milsim_phase(old_mission: str):
         await purge_team_status_panels(t)
 
         if old_mission == "mission_3":
-            if not milsim_state.get("satcom", {}).get("selected", {}).get("azul"):
-                select_satcom_operators()
+            if t == "azul":
+                await start_mission4_operational_flow()
             if t == "vermelho":
                 await milsim_send_to_team(t, embed=build_satcom_red_initial_embed())
             else:
@@ -6897,10 +7080,16 @@ async def gm_next(ctx):
             seconds=MISSION_TIME_LIMITS[milsim_state["teams"][t]["current"]]
         )
 
-        if t == "azul":
-            select_hvt_targets_for_mission()
-
-        await send_team_embed_with_status_last(t, NEXT_MISSIONS[old_mission][t]())
+        if milsim_state["teams"][t]["current"] == "mission_4":
+            if t == "azul":
+                await start_mission4_operational_flow()
+                await send_team_embed_with_status_last(t, build_satcom_interference_embed())
+            else:
+                await send_team_embed_with_status_last(t, build_satcom_red_initial_embed())
+        else:
+            if t == "azul":
+                select_hvt_targets_for_mission()
+            await send_team_embed_with_status_last(t, NEXT_MISSIONS[old_mission][t]())
 
     for t in ["azul", "vermelho"]:
         asyncio.create_task(mission_timer(t, milsim_state["teams"][t]["current"]))
@@ -7051,37 +7240,38 @@ def reset_mission_runtime_state_for_gm(mission_name: str):
     milsim_state["mission3_route"] = {"vermelho_step": 0}
     milsim_state["captured_players"] = []
 
-    if mission_name != "mission_4":
-        milsim_state["satcom"] = {
-            "hack_active": False,
-            "hack_completed": False,
-            "hack_cancelled": False,
-            "hack_started_at": None,
-            "hack_ends_at": None,
-            "hack_team": None,
-            "secondary_active": False,
-            "secondary_completed": False,
-            "secondary_winner": None,
-            "secondary_started_at": None,
-            "secondary_ends_at": None,
-        }
-    else:
-        milsim_state.setdefault("satcom", {})
-        milsim_state["satcom"].update({
-            "hack_active": False,
-            "hack_completed": False,
-            "hack_cancelled": False,
-            "hack_started_at": None,
-            "hack_ends_at": None,
-            "hack_team": None,
-            "secondary_active": False,
-            "secondary_completed": False,
-            "secondary_winner": None,
-            "secondary_started_at": None,
-            "secondary_ends_at": None,
-        })
+    # Reset SATCOM completo. Se a missão for a 4, o fluxo próprio será iniciado logo após enviar o briefing.
+    old_satcom = milsim_state.get("satcom", {})
+    for key in ("hack_task", "secondary_task", "fortification_task", "hack_window_task"):
+        task = old_satcom.get(key)
+        if task and not task.done():
+            task.cancel()
 
-    select_hvt_targets_for_mission()
+    milsim_state["satcom"] = {
+        "hack_active": False,
+        "hack_completed": False,
+        "hack_cancelled": False,
+        "hack_end_time": None,
+        "hack_task": None,
+        "fortification_end_time": None,
+        "fortification_task": None,
+        "hack_window_active": False,
+        "hack_window_end_time": None,
+        "hack_window_task": None,
+        "secondary_active": False,
+        "secondary_completed": False,
+        "secondary_winner": None,
+        "secondary_end_time": None,
+        "secondary_started_at": None,
+        "secondary_task": None,
+        "secondary_transport_started": False,
+        "secondary_transport_started_at": None,
+        "selected": {"azul": [], "vermelho": []},
+        "secondary": {"azul": [], "vermelho": []},
+    }
+
+    if mission_name != "mission_4":
+        select_hvt_targets_for_mission()
 
 
 async def gm_restart_mission_core(mission_name: str, announce_channel=None):
@@ -7091,6 +7281,9 @@ async def gm_restart_mission_core(mission_name: str, announce_channel=None):
 
     await force_archive_all_current_mission_embeds("Missão reiniciada pelo Game Master.")
     reset_mission_runtime_state_for_gm(mission_name)
+
+    if mission_name == "mission_4":
+        await start_mission4_operational_flow()
 
     for team in ["azul", "vermelho"]:
         await send_team_embed_with_status_last(team, build_mission_embed_for_team_by_name(mission_name, team))
