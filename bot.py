@@ -3509,7 +3509,7 @@ async def advance_both_teams_to_next_mission(old_mission: str):
         )
 
         if t == "azul":
-            select_hvt_targets_for_mission()
+            select_hvt_targets_for_mission(milsim_state["teams"][t]["current"])
 
         await send_team_embed_with_status_last(t, NEXT_MISSIONS[old_mission][t]())
 
@@ -3991,9 +3991,29 @@ def _choose_hvt_code(codes: dict, previous_code: str = None, used_codes=None):
     return random.choice(available)
 
 
-def select_hvt_targets_for_mission():
-    """Seleciona HVTs novos por missão e garante que não repetem na mesma operação, quando possível."""
+def select_hvt_targets_for_mission(mission_name: str = None):
+    """Seleciona HVTs novos por missão e garante que não repetem na mesma operação, quando possível.
+
+    IMPORTANTE:
+    - O HVT é escolhido UMA vez por missão.
+    - O mesmo par fica fixo durante essa missão.
+    - Ao mudar de missão, é escolhido um novo HVT, evitando repetir os anteriores.
+    """
+    if mission_name is None:
+        mission_name = milsim_state.get("teams", {}).get("azul", {}).get("current")
+
     hvt_memory = milsim_state.get("hvt", {})
+
+    # Se já existe HVT selecionado para esta mesma missão, mantém.
+    # Isto impede que updates/edits do embed troquem o HVT durante a missão.
+    if (
+        mission_name
+        and hvt_memory.get("mission") == mission_name
+        and hvt_memory.get("targets", {}).get("azul")
+        and hvt_memory.get("targets", {}).get("vermelho")
+    ):
+        return hvt_memory
+
     previous_targets = hvt_memory.get("targets", {})
     used_targets = hvt_memory.get("used_targets", {"azul": [], "vermelho": []})
 
@@ -4008,7 +4028,13 @@ def select_hvt_targets_for_mission():
     if vermelho_hvt not in vermelho_used:
         vermelho_used.append(vermelho_hvt)
 
+    # Mantém histórico por missão para consulta/debug e para evitar repetir alvos.
+    history = dict(hvt_memory.get("history", {}))
+    if mission_name:
+        history[mission_name] = {"azul": azul_hvt, "vermelho": vermelho_hvt}
+
     milsim_state["hvt"] = {
+        "mission": mission_name,
         "targets": {
             "azul": azul_hvt,
             "vermelho": vermelho_hvt,
@@ -4028,15 +4054,29 @@ def select_hvt_targets_for_mission():
         "early_validation_unlocked": {
             "azul": False,
             "vermelho": False,
-        }
+        },
+        "history": history,
     }
 
     return milsim_state["hvt"]
 
 
+def ensure_hvt_for_current_mission(team: str):
+    """Garante que existe HVT para a missão atual sem o trocar durante a mesma missão."""
+    current = milsim_state.get("teams", {}).get(team, {}).get("current")
+    hvt_state = milsim_state.get("hvt", {})
+
+    if not current:
+        return hvt_state
+
+    if hvt_state.get("mission") != current or not hvt_state.get("targets", {}).get("azul") or not hvt_state.get("targets", {}).get("vermelho"):
+        return select_hvt_targets_for_mission(current)
+
+    return hvt_state
+
 def select_hvt_targets_for_operation():
     # Mantido por compatibilidade: agora o HVT é renovado por missão.
-    return select_hvt_targets_for_mission()
+    return select_hvt_targets_for_mission(milsim_state.get("teams", {}).get("azul", {}).get("current"))
 
 
 def format_hvt_line(team: str) -> str:
@@ -4047,6 +4087,7 @@ def format_hvt_line(team: str) -> str:
 
 
 def get_enemy_hvt_for_team(team: str):
+    ensure_hvt_for_current_mission(team)
     enemy = milsim_enemy(team)
     return milsim_state.get("hvt", {}).get("targets", {}).get(enemy)
 
@@ -5659,7 +5700,7 @@ async def start_op(ctx):
         "used_targets": {"azul": [], "vermelho": []},
         "early_validation_unlocked": {"azul": False, "vermelho": False}
     }
-    select_hvt_targets_for_mission()
+    select_hvt_targets_for_mission("mission_1")
     milsim_state["mission_branch"] = None
 
     for team in ["azul", "vermelho"]:
@@ -6718,7 +6759,7 @@ async def gm_next(ctx):
         )
 
         if t == "azul":
-            select_hvt_targets_for_mission()
+            select_hvt_targets_for_mission(milsim_state["teams"][t]["current"])
 
         await send_team_embed_with_status_last(t, NEXT_MISSIONS[old_mission][t]())
 
