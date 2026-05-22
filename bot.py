@@ -2411,7 +2411,7 @@ SATCOM_SECONDARY_TRANSPORT_CODE = "TRANSPORT-404"  # código para iniciar transp
 # Além disso, durante os primeiros 10 minutos, a validação final fica bloqueada,
 # exceto se a equipa capturar o HVT inimigo. Isto evita que missões acabem demasiado rápido.
 MIN_VALIDATION_SECONDS = 600  # 10 minutos mínimos antes de validar objetivos finais
-EARLY_VALIDATION_MISSIONS = {"mission_1", "mission_2", "mission_3", "mission_4", "final"}
+EARLY_VALIDATION_MISSIONS = {"mission_1", "mission_2", "mission_3", "final"}
 EARLY_VALIDATION_TYPES = {"complete", "end"}
 
 # ---------- CORES DOS EMBEDS MILSIM ----------
@@ -4097,7 +4097,7 @@ async def guard_early_validation(ctx, team: str, data: dict) -> bool:
             {"name": "📡 ORDEM", "value": "Aguardem autorização operacional ou confirmem captura do operador prioritário.", "inline": False},
         ],
         footer="COMANDO CENTRAL • PROTOCOLO HVT"
-    ), delete_after=20)
+    ))
     return True
 
 
@@ -4621,7 +4621,7 @@ def build_satcom_interference_embed():
         [
             {"name": "👥 EQUIPA PRINCIPAL", "value": format_operator_list(selected, "azul"), "inline": False},
             {"name": "📦 EQUIPA SECUNDÁRIA", "value": format_operator_list(secondary, "azul"), "inline": False},
-            {"name": "📍 ORDEM", "value": "5 operadores ficam preparados para resposta SATCOM. 5 operadores ficam destacados para a missão secundária quando for ativada.", "inline": False},
+            {"name": "📍 ORDEM", "value": "5 operadores ficam preparados para resposta SATCOM. 5 operadores ficam destacados para a missão secundária quando for ativada aos 3 minutos.", "inline": False},
         ],
         footer="COMANDO CENTRAL • ALERTA DE INTERFERÊNCIAS",
     )
@@ -4637,7 +4637,10 @@ def build_satcom_red_initial_embed():
         [
             {"name": "👥 OPERADORES SATCOM DESTACADOS", "value": format_operator_list(selected, "vermelho"), "inline": False},
             {"name": "📦 OPERADORES SECUNDÁRIOS", "value": format_operator_list(secondary, "vermelho"), "inline": False},
-            {"name": "📌 OBJETIVO DA MISSÃO", "value": "▸ Localizar o terminal SATCOM ativo no setor CQB\n▸ Validar o código de ativação localizado junto ao terminal\n▸ Iniciar o hack às comunicações inimigas\n▸ Manter controlo da posição até conclusão total do hack (10 min)", "inline": False},
+            {"name": "📌 OBJETIVO DA MISSÃO", "value": "▸ Localizar e ocupar o terminal SATCOM ativo no setor CQB\n▸ Fortificar o local antes da ativação do hack\n▸ Iniciar o hack dentro da janela operacional\n▸ Defender o terminal até conclusão total do hack", "inline": False},
+            {"name": "⏱️ FASE DE FORTIFICAÇÃO", "value": "▸ O hack SATCOM não pode ser iniciado durante os primeiros **10 minutos**\n▸ Utilizar este período para fortificar entradas, colocar cadeados/barreiras e preparar defesa\n▸ Operadores SATCOM mantêm-se dedicados à missão principal", "inline": False},
+            {"name": "📡 JANELA DE ATIVAÇÃO", "value": "▸ Após os 10 minutos, a equipa SATCOM terá **5 minutos** para iniciar o hack\n▸ Se o terminal não for ativado dentro da janela operacional, a missão falha", "inline": False},
+            {"name": "📦 MISSÃO SECUNDÁRIA", "value": "▸ Após 3 minutos, 5 operadores secundários recebem ordem para vigiar o acampamento\n▸ Proteger a caixa de suprimentos e impedir emboscada da Task Force Azul\n▸ Divisão obrigatória: **5 SATCOM / 5 Acampamento**", "inline": False},
             {"name": "⚠️ REGRA CRÍTICA", "value": "A missão SATCOM só termina se o hack completar por tempo ou se a Azul cancelar o hack. Sem respawn. Operadores SATCOM não podem interferir na secundária.", "inline": False},
         ],
         footer="COMANDO CENTRAL • OPERAÇÃO SATCOM 5x5",
@@ -6058,10 +6061,20 @@ async def codigo(ctx, codigo: str):
             })
 
             if bunker_state.get("active"):
-                return await ctx.send(
-                    "⛔ Extração ainda bloqueada. O registo da caixa no BUNKER só fica válido após os 10 minutos operacionais.",
-                    delete_after=12
-                )
+                remaining = max(0, MIN_VALIDATION_SECONDS - elapsed)
+                minutes = remaining // 60
+                seconds = remaining % 60
+                return await ctx.send(embed=tactical_embed(
+                    "⛔ EXTRAÇÃO BLOQUEADA",
+                    "O registo da caixa no BUNKER ainda não está autorizado.",
+                    discord.Color.orange(),
+                    [
+                        {"name": "⏱️ REGISTO VÁLIDO", "value": "Apenas após os **10 minutos operacionais**.", "inline": False},
+                        {"name": "⏳ TEMPO RESTANTE", "value": f"**{minutes:02d}:{seconds:02d}**", "inline": True},
+                        {"name": "📍 ORDEM", "value": "Manter defesa do Bunker até autorização final de extração.", "inline": False},
+                    ],
+                    footer="COMANDO CENTRAL • EXTRAÇÃO PREMATURA"
+                ))
 
             bunker_state["active"] = True
             bunker_state["alert_sent"] = True
