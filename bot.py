@@ -732,7 +732,11 @@ async def criar_inscricao_interaction(interaction: discord.Interaction, nome: st
     criado_em = utc_now()
     expira_em = criado_em + timedelta(hours=HORAS_PAGAMENTO)
 
-    membro_jogador = interaction.user if isinstance(interaction.user, discord.Member) else None
+    # Tenta encontrar o jogador pelo nome escrito no modal.
+    # Assim, quem carrega no botão fica como Autor da inscrição,
+    # mas o campo Jogador mostra o nome/pessoa que foi realmente inscrita.
+    membro_jogador = await encontrar_membro_por_nome(interaction.guild, nome)
+
     embed = await criar_embed_inscricao_pendente(interaction, nome, expira_em, membro_jogador)
     msg = await interaction.channel.send(embed=embed)
 
