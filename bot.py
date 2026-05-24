@@ -5,6 +5,7 @@ import asyncio
 import psycopg2
 import os
 import random
+import re
 from datetime import datetime, timezone, timedelta
 
 # ---------- CONFIG ----------
@@ -255,6 +256,112 @@ def contar_inscricoes_validas(thread_id: int):
     return total
 
 
+# ---------- NÚMEROS FIXOS DE JOGADOR ----------
+def limpar_prefixo_numero_jogador(nome: str) -> str:
+    nome = nome or "Jogador"
+    return re.sub(r"^#\d+\s*", "", nome).strip() or "Jogador"
+
+
+def formatar_nickname_jogador(numero: int, nome_base: str) -> str:
+    nome_limpo = limpar_prefixo_numero_jogador(nome_base)
+    prefixo = f"#{numero:02d} "
+    limite_nome = max(1, 32 - len(prefixo))
+    return f"{prefixo}{nome_limpo[:limite_nome]}"
+
+
+def obter_numero_jogador_sync(user_id: int):
+    conn = get_connection()
+    if not conn:
+        return None
+
+    cursor = conn.cursor()
+    cursor.execute("SELECT numero FROM jogadores_numeros WHERE user_id = %s", (user_id,))
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return row[0] if row else None
+
+
+def obter_ou_criar_numero_jogador_sync(user_id: int):
+    conn = get_connection()
+    if not conn:
+        return None
+
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT numero FROM jogadores_numeros WHERE user_id = %s", (user_id,))
+        row = cursor.fetchone()
+        if row:
+            numero = row[0]
+        else:
+            cursor.execute("SELECT COALESCE(MAX(numero), 0) + 1 FROM jogadores_numeros")
+            numero = cursor.fetchone()[0]
+            cursor.execute("""
+                INSERT INTO jogadores_numeros (user_id, numero)
+                VALUES (%s, %s)
+            """, (user_id, numero))
+            conn.commit()
+        return numero
+    except Exception as e:
+        conn.rollback()
+        print(f"Erro ao obter/criar número de jogador: {e}")
+        return None
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def definir_numero_jogador_sync(user_id: int, numero: int):
+    conn = get_connection()
+    if not conn:
+        return False, "Erro ao ligar à base de dados."
+
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT user_id FROM jogadores_numeros WHERE numero = %s AND user_id <> %s", (numero, user_id))
+        ocupado = cursor.fetchone()
+        if ocupado:
+            return False, "Esse número já está atribuído a outro jogador."
+
+        cursor.execute("""
+            INSERT INTO jogadores_numeros (user_id, numero)
+            VALUES (%s, %s)
+            ON CONFLICT (user_id)
+            DO UPDATE SET numero = EXCLUDED.numero
+        """, (user_id, numero))
+        conn.commit()
+        return True, "Número atualizado."
+    except Exception as e:
+        conn.rollback()
+        print(f"Erro ao definir número de jogador: {e}")
+        return False, "Erro ao definir número de jogador."
+    finally:
+        cursor.close()
+        conn.close()
+
+
+async def aplicar_numero_nickname(membro: discord.Member):
+    if membro.bot:
+        return None
+
+    numero = obter_ou_criar_numero_jogador_sync(membro.id)
+    if numero is None:
+        return None
+
+    nome_atual = membro.nick or membro.display_name or membro.name
+    novo_nick = formatar_nickname_jogador(numero, nome_atual)
+
+    if membro.nick == novo_nick:
+        return numero
+
+    try:
+        await membro.edit(nick=novo_nick, reason="Número fixo de jogador")
+    except (discord.Forbidden, discord.HTTPException) as e:
+        print(f"Não consegui alterar nickname de {membro} para {novo_nick}: {e}")
+
+    return numero
+
+
 # ---------- EQUIPAS HELPERS ----------
 def calcular_pontos_jogador_sync(user_id: int):
     conn = get_connection()
@@ -499,6 +606,14 @@ if conn:
         """)
 
         cursor.execute("""
+        CREATE TABLE IF NOT EXISTS jogadores_numeros (
+            user_id BIGINT PRIMARY KEY,
+            numero INTEGER UNIQUE NOT NULL,
+            atribuido_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """)
+
+        cursor.execute("""
         CREATE TABLE IF NOT EXISTS jogos_threads (
             thread_id BIGINT PRIMARY KEY,
             thread_name TEXT NOT NULL,
@@ -613,6 +728,11 @@ async def on_ready():
 
 
 @bot.event
+async def on_member_join(member):
+    await aplicar_numero_nickname(member)
+
+
+@bot.event
 async def on_message(message):
     if message.author.bot:
         return
@@ -681,7 +801,7 @@ class InscricoesView(discord.ui.View):
         custom_id="inscricoes:inscrever"
     )
     async def botao_inscrever(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(InscricaoModal())
+        await criar_inscricao_interaction(interaction)
 
     @discord.ui.button(
         label="Cancelar inscrição",
@@ -690,11 +810,15 @@ class InscricoesView(discord.ui.View):
         custom_id="inscricoes:cancelar"
     )
     async def botao_cancelar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(CancelarInscricaoModal())
+        await cancelar_inscricao_interaction(interaction)
 
 
-async def criar_inscricao_interaction(interaction: discord.Interaction, nome: str):
-    nome = normalizar_nome(nome)
+async def criar_inscricao_interaction(interaction: discord.Interaction, nome: str = None):
+    """Inscreve automaticamente o utilizador que clicou no botão.
+    Já não permite inscrever terceiros nem escrever outro nome.
+    """
+    membro_jogador = interaction.user if isinstance(interaction.user, discord.Member) else None
+    nome = normalizar_nome(membro_jogador.display_name if membro_jogador else interaction.user.name)
 
     if not is_thread_channel(interaction.channel):
         return await interaction.response.send_message(
@@ -736,29 +860,25 @@ async def criar_inscricao_interaction(interaction: discord.Interaction, nome: st
 
     cursor = conn.cursor()
 
+    # Bloqueia múltiplas inscrições do mesmo Discord user nesta thread.
     cursor.execute("""
         SELECT 1
         FROM inscricoes_jogos
         WHERE thread_id = %s
-          AND LOWER(nome_jogador) = LOWER(%s)
+          AND user_id = %s
           AND estado IN ('pendente_pagamento', 'pago')
-    """, (interaction.channel.id, nome))
+    """, (interaction.channel.id, interaction.user.id))
 
     if cursor.fetchone():
         cursor.close()
         conn.close()
         return await interaction.response.send_message(
-            "⚠️ Já existe uma inscrição com esse nome neste jogo.",
+            "⚠️ Já tens uma inscrição ativa neste jogo.",
             ephemeral=True
         )
 
     criado_em = utc_now()
     expira_em = criado_em + timedelta(hours=HORAS_PAGAMENTO)
-
-    # Tenta encontrar o jogador pelo nome escrito no modal.
-    # Assim, quem carrega no botão fica como Autor da inscrição,
-    # mas o campo Jogador mostra o nome/pessoa que foi realmente inscrita.
-    membro_jogador = await encontrar_membro_por_nome(interaction.guild, nome)
 
     embed = await criar_embed_inscricao_pendente(interaction, nome, expira_em, membro_jogador)
     msg = await interaction.channel.send(embed=embed)
@@ -794,24 +914,19 @@ async def criar_inscricao_interaction(interaction: discord.Interaction, nome: st
     conn.close()
 
     await interaction.response.send_message(
-        f"✅ Inscrição criada para **{nome}**.",
+        f"✅ Inscrição criada para {interaction.user.mention}.",
         ephemeral=True
     )
 
     await atualizar_embed_estado(interaction.channel)
 
-
-async def cancelar_inscricao_interaction(interaction: discord.Interaction, nome: str):
-    nome = normalizar_nome(nome)
-
+async def cancelar_inscricao_interaction(interaction: discord.Interaction, nome: str = None):
+    """Cancela automaticamente a inscrição ativa do utilizador que clicou no botão."""
     if not is_thread_channel(interaction.channel):
         return await interaction.response.send_message(
             "⚠️ Este botão só pode ser usado dentro da thread do jogo.",
             ephemeral=True
         )
-
-    if len(nome) < 3:
-        return await interaction.response.send_message("⚠️ Nome inválido.", ephemeral=True)
 
     conn = get_connection()
     if not conn:
@@ -823,12 +938,11 @@ async def cancelar_inscricao_interaction(interaction: discord.Interaction, nome:
         SELECT id, message_id, nome_jogador, user_id
         FROM inscricoes_jogos
         WHERE thread_id = %s
-          AND LOWER(nome_jogador) = LOWER(%s)
           AND user_id = %s
           AND estado IN ('pendente_pagamento', 'pago')
         ORDER BY id DESC
         LIMIT 1
-    """, (interaction.channel.id, nome, interaction.user.id))
+    """, (interaction.channel.id, interaction.user.id))
 
     row = cursor.fetchone()
 
@@ -836,7 +950,7 @@ async def cancelar_inscricao_interaction(interaction: discord.Interaction, nome:
         cursor.close()
         conn.close()
         return await interaction.response.send_message(
-            "⚠️ Não encontrei uma inscrição ativa tua com esse nome nesta thread.",
+            "⚠️ Não encontrei nenhuma inscrição ativa tua nesta thread.",
             ephemeral=True
         )
 
@@ -871,7 +985,7 @@ async def cancelar_inscricao_interaction(interaction: discord.Interaction, nome:
         pass
 
     await interaction.response.send_message(
-        f"✅ A inscrição de **{nome_jogador}** foi cancelada.",
+        f"✅ A tua inscrição foi cancelada.",
         ephemeral=True
     )
 
@@ -1569,6 +1683,88 @@ async def painel_jogo(ctx):
 
 
 # =========================
+# 🆔 NÚMEROS FIXOS DE JOGADOR
+# =========================
+@bot.command()
+async def numero(ctx, membro: discord.Member = None):
+    membro = membro or ctx.author
+    numero = obter_ou_criar_numero_jogador_sync(membro.id)
+    if numero is None:
+        return await ctx.send(DB_ERROR_MSG)
+
+    await ctx.send(f"🆔 {membro.mention} tem o número **#{numero:02d}**")
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setnumero(ctx, membro: discord.Member, numero: int):
+    if numero <= 0:
+        return await ctx.send("⚠️ O número tem de ser superior a 0.", delete_after=10)
+
+    ok, msg = definir_numero_jogador_sync(membro.id, numero)
+    if not ok:
+        return await ctx.send(f"⚠️ {msg}", delete_after=10)
+
+    await aplicar_numero_nickname(membro)
+    await ctx.send(f"✅ {membro.mention} ficou com o número **#{numero:02d}**")
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def corrigirnick(ctx, membro: discord.Member):
+    numero = await aplicar_numero_nickname(membro)
+    if numero is None:
+        return await ctx.send("⚠️ Não consegui atribuir/corrigir o número deste jogador.", delete_after=10)
+
+    await ctx.send(f"✅ Nickname corrigido para {membro.mention} com o número **#{numero:02d}**")
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def atribuirnumeros(ctx):
+    await ctx.send("🆔 A atribuir números aos membros sem número...")
+
+    total = 0
+    falhas = 0
+    for membro in ctx.guild.members:
+        if membro.bot:
+            continue
+
+        antes = obter_numero_jogador_sync(membro.id)
+        numero = await aplicar_numero_nickname(membro)
+        if numero is None:
+            falhas += 1
+            continue
+        if antes is None:
+            total += 1
+
+    await ctx.send(f"✅ Números atribuídos a **{total}** jogador(es). Falhas: **{falhas}**.")
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def corrigirnicks(ctx):
+    await ctx.send("♻️ A corrigir nicknames dos jogadores numerados...")
+
+    total = 0
+    falhas = 0
+    for membro in ctx.guild.members:
+        if membro.bot:
+            continue
+
+        if obter_numero_jogador_sync(membro.id) is None:
+            continue
+
+        numero = await aplicar_numero_nickname(membro)
+        if numero is None:
+            falhas += 1
+            continue
+        total += 1
+
+    await ctx.send(f"✅ Nicknames corrigidos em **{total}** jogador(es). Falhas: **{falhas}**.")
+
+
+# =========================
 # 📜 LISTA DE COMANDOS
 # =========================
 @bot.command()
@@ -1655,6 +1851,7 @@ async def comandos(ctx):
         name="🎮 Perfil / Utilidades",
         value=(
             "`!status [@user]`\n"
+            "`!numero [@user]`\n"
             "`!ping`\n"
             "`!comandos`"
         ),
