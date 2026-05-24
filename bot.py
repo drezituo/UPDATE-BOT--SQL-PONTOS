@@ -537,6 +537,29 @@ if conn:
         """)
 
         cursor.execute("""
+        ALTER TABLE inscricoes_jogos
+        ADD COLUMN IF NOT EXISTS presenca_marcada BOOLEAN NOT NULL DEFAULT FALSE
+        """)
+
+        cursor.execute("""
+        ALTER TABLE inscricoes_jogos
+        ADD COLUMN IF NOT EXISTS crony_feito BOOLEAN NOT NULL DEFAULT FALSE
+        """)
+
+        cursor.execute("""
+        ALTER TABLE inscricoes_jogos
+        ADD COLUMN IF NOT EXISTS equipa_jogo TEXT
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS termos_responsabilidade (
+            user_id BIGINT PRIMARY KEY,
+            assinado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            confirmado_por BIGINT NOT NULL
+        )
+        """)
+
+        cursor.execute("""
         CREATE TABLE IF NOT EXISTS equipas (
             id BIGSERIAL PRIMARY KEY,
             nome TEXT NOT NULL UNIQUE,
@@ -1135,6 +1158,414 @@ async def cancelarinscricao(ctx, *, nome: str):
     await atualizar_embed_estado(ctx.channel)
 
 
+
+
+
+
+# =========================
+# 👥 PAINEL DE GESTÃO DO JOGO
+# =========================
+def termo_assinado_sync(user_id: int) -> bool:
+    conn = get_connection()
+    if not conn:
+        return False
+
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1 FROM termos_responsabilidade WHERE user_id = %s", (user_id,))
+    existe = cursor.fetchone() is not None
+    cursor.close()
+    conn.close()
+    return existe
+
+
+def obter_numero_sorteio_sync(thread_id: int, inscricao_id: int) -> int:
+    conn = get_connection()
+    if not conn:
+        return 0
+
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT COUNT(*)
+        FROM inscricoes_jogos
+        WHERE thread_id = %s
+          AND id <= %s
+          AND estado IN ('pendente_pagamento', 'pago')
+    """, (thread_id, inscricao_id))
+    numero = cursor.fetchone()[0]
+    cursor.close()
+    conn.close()
+    return numero
+
+
+async def obter_membro_da_inscricao(guild: discord.Guild, nome_jogador: str, autor_user_id: int = None):
+    membro = await encontrar_membro_por_nome(guild, nome_jogador)
+    if membro:
+        return membro
+
+    if guild and autor_user_id:
+        membro = guild.get_member(autor_user_id)
+        if membro:
+            return membro
+        try:
+            return await guild.fetch_member(autor_user_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return None
+
+    return None
+
+
+def obter_inscricao_gestao_sync(inscricao_id: int):
+    conn = get_connection()
+    if not conn:
+        return None
+
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, thread_id, message_id, user_id, nome_jogador, estado,
+               presenca_marcada, crony_feito, equipa_jogo
+        FROM inscricoes_jogos
+        WHERE id = %s
+    """, (inscricao_id,))
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return row
+
+
+async def criar_embed_gestao_jogador(guild: discord.Guild, inscricao_id: int):
+    row = obter_inscricao_gestao_sync(inscricao_id)
+    if not row:
+        return None, None
+
+    id_, thread_id, message_id, user_id, nome_jogador, estado, presenca, crony, equipa = row
+    membro = await obter_membro_da_inscricao(guild, nome_jogador, user_id)
+    termo_ok = termo_assinado_sync(membro.id) if membro else False
+    numero_sorteio = obter_numero_sorteio_sync(thread_id, id_)
+
+    jogador_valor = membro.mention if membro else nome_jogador
+    equipa_txt = {
+        "A": "🔵 Equipa A",
+        "B": "🔴 Equipa B",
+    }.get(equipa, "⚪ Sem equipa")
+
+    embed = discord.Embed(
+        title=f"👥 Gestão do Jogador — #{numero_sorteio:02}",
+        description=f"**{jogador_valor}**",
+        color=discord.Color.blurple(),
+        timestamp=discord.utils.utcnow()
+    )
+    if membro:
+        embed.set_thumbnail(url=membro.display_avatar.url)
+
+    embed.add_field(name="💳 Inscrição", value="✅ Paga" if estado == "pago" else f"⏳ {estado}", inline=True)
+    embed.add_field(name="✅ Presença", value="🟢 Marcada" if presenca else "🔴 Por marcar", inline=True)
+    embed.add_field(name="🎯 Crony", value="🟢 OK" if crony else "🔴 Por fazer", inline=True)
+    embed.add_field(name="📄 Termo", value="🟢 Assinado" if termo_ok else "🔴 Falta assinar", inline=True)
+    embed.add_field(name="🎮 Equipa", value=equipa_txt, inline=True)
+    embed.add_field(name="🎲 Sorteio", value=f"Entrada #{numero_sorteio:02}", inline=True)
+    embed.set_footer(text="Painel de staff • presença adiciona +1 ponto")
+
+    return embed, PainelJogadorView(inscricao_id, bool(presenca), bool(crony), termo_ok, equipa)
+
+
+class PainelJogadorView(discord.ui.View):
+    def __init__(self, inscricao_id: int, presenca: bool, crony: bool, termo_ok: bool, equipa: str = None):
+        super().__init__(timeout=None)
+        self.inscricao_id = inscricao_id
+        self.marcar_presenca.disabled = presenca
+        self.marcar_presenca.label = "Presença marcada" if presenca else "Marcar presença"
+        self.marcar_crony.disabled = crony
+        self.marcar_crony.label = "Crony OK" if crony else "Crony feito"
+        self.marcar_termo.disabled = termo_ok
+        self.marcar_termo.label = "Termo OK" if termo_ok else "Termo assinado"
+        self.equipa_a.label = "🔵 Equipa A ✓" if equipa == "A" else "🔵 Equipa A"
+        self.equipa_b.label = "🔴 Equipa B ✓" if equipa == "B" else "🔴 Equipa B"
+
+    async def _staff_only(self, interaction: discord.Interaction) -> bool:
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Apenas staff/admin pode usar este painel.", ephemeral=True)
+            return False
+        return True
+
+    async def _refresh(self, interaction: discord.Interaction, texto: str):
+        embed, view = await criar_embed_gestao_jogador(interaction.guild, self.inscricao_id)
+        if embed:
+            try:
+                await interaction.message.edit(embed=embed, view=view)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+        await interaction.response.send_message(texto, ephemeral=True)
+
+    @discord.ui.button(label="Marcar presença", emoji="✅", style=discord.ButtonStyle.green)
+    async def marcar_presenca(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction):
+            return
+
+        row = obter_inscricao_gestao_sync(self.inscricao_id)
+        if not row:
+            return await interaction.response.send_message("⚠️ Inscrição não encontrada.", ephemeral=True)
+
+        id_, thread_id, message_id, user_id, nome_jogador, estado, presenca, crony, equipa = row
+        if presenca:
+            return await interaction.response.send_message("ℹ️ A presença já estava marcada.", ephemeral=True)
+
+        membro = await obter_membro_da_inscricao(interaction.guild, nome_jogador, user_id)
+        if not membro:
+            return await interaction.response.send_message("⚠️ Não encontrei este jogador no servidor para adicionar presença.", ephemeral=True)
+
+        conn = get_connection()
+        if not conn:
+            return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
+
+        cursor = conn.cursor()
+        cursor.execute("SELECT pontos FROM pontos WHERE user_id = %s", (membro.id,))
+        resultado = cursor.fetchone()
+        novo_total = (resultado[0] if resultado else 0) + 1
+
+        if resultado:
+            cursor.execute(
+                "UPDATE pontos SET pontos = %s, ultima_atividade = NOW() WHERE user_id = %s",
+                (novo_total, membro.id)
+            )
+        else:
+            cursor.execute(
+                "INSERT INTO pontos (user_id, pontos, ultima_atividade) VALUES (%s, %s, NOW())",
+                (membro.id, novo_total)
+            )
+
+        cursor.execute("UPDATE inscricoes_jogos SET presenca_marcada = TRUE WHERE id = %s", (self.inscricao_id,))
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        try:
+            await update_member_tier_role(membro, novo_total)
+        except Exception as e:
+            print(f"Erro ao atualizar cargo de tier por presença no painel: {e}")
+
+        numero_sorteio = obter_numero_sorteio_sync(thread_id, id_)
+        try:
+            await interaction.channel.send(
+                f"🎲 {membro.mention} entrou no sorteio como **#{numero_sorteio:02}**.\n"
+                f"⭐ Foi adicionada uma presença a {membro.mention}\n"
+                f"Conta agora com: **{novo_total:02} presenças**"
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+        await self._refresh(interaction, f"✅ Presença marcada para {membro.mention}.")
+
+    @discord.ui.button(label="Crony feito", emoji="🎯", style=discord.ButtonStyle.primary)
+    async def marcar_crony(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction):
+            return
+
+        row = obter_inscricao_gestao_sync(self.inscricao_id)
+        if not row:
+            return await interaction.response.send_message("⚠️ Inscrição não encontrada.", ephemeral=True)
+
+        if row[7]:
+            return await interaction.response.send_message("ℹ️ O crony já estava marcado como feito.", ephemeral=True)
+
+        conn = get_connection()
+        if not conn:
+            return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
+
+        cursor = conn.cursor()
+        cursor.execute("UPDATE inscricoes_jogos SET crony_feito = TRUE WHERE id = %s", (self.inscricao_id,))
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        await self._refresh(interaction, "🎯 Crony marcado como feito.")
+
+    @discord.ui.button(label="Termo assinado", emoji="📄", style=discord.ButtonStyle.secondary)
+    async def marcar_termo(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction):
+            return
+
+        row = obter_inscricao_gestao_sync(self.inscricao_id)
+        if not row:
+            return await interaction.response.send_message("⚠️ Inscrição não encontrada.", ephemeral=True)
+
+        _, _, _, user_id, nome_jogador, *_ = row
+        membro = await obter_membro_da_inscricao(interaction.guild, nome_jogador, user_id)
+        if not membro:
+            return await interaction.response.send_message("⚠️ Não encontrei este jogador no servidor para guardar o termo.", ephemeral=True)
+
+        conn = get_connection()
+        if not conn:
+            return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
+
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO termos_responsabilidade (user_id, confirmado_por)
+            VALUES (%s, %s)
+            ON CONFLICT (user_id)
+            DO UPDATE SET assinado_em = NOW(), confirmado_por = EXCLUDED.confirmado_por
+        """, (membro.id, interaction.user.id))
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        await self._refresh(interaction, f"📄 Termo marcado como assinado para {membro.mention}.")
+
+    @discord.ui.button(label="🔵 Equipa A", style=discord.ButtonStyle.secondary)
+    async def equipa_a(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction):
+            return
+        await definir_equipa_jogador(interaction, self.inscricao_id, "A")
+
+    @discord.ui.button(label="🔴 Equipa B", style=discord.ButtonStyle.secondary)
+    async def equipa_b(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction):
+            return
+        await definir_equipa_jogador(interaction, self.inscricao_id, "B")
+
+
+async def definir_equipa_jogador(interaction: discord.Interaction, inscricao_id: int, equipa: str):
+    conn = get_connection()
+    if not conn:
+        return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
+
+    cursor = conn.cursor()
+    cursor.execute("UPDATE inscricoes_jogos SET equipa_jogo = %s WHERE id = %s", (equipa, inscricao_id))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    await PainelJogadorView(inscricao_id, False, False, False)._refresh(
+        interaction,
+        f"{'🔵' if equipa == 'A' else '🔴'} Jogador movido para a Equipa {equipa}."
+    )
+
+
+class PainelJogoView(discord.ui.View):
+    def __init__(self, thread_id: int):
+        super().__init__(timeout=None)
+        self.thread_id = thread_id
+
+    async def _staff_only(self, interaction: discord.Interaction) -> bool:
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Apenas staff/admin pode usar este painel.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Ver equipas", emoji="👥", style=discord.ButtonStyle.primary)
+    async def ver_equipas(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction):
+            return
+
+        conn = get_connection()
+        if not conn:
+            return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
+
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, user_id, nome_jogador, equipa_jogo
+            FROM inscricoes_jogos
+            WHERE thread_id = %s
+              AND estado = 'pago'
+            ORDER BY id ASC
+        """, (self.thread_id,))
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        grupos = {"A": [], "B": [], None: []}
+        for inscricao_id, user_id, nome, equipa in rows:
+            numero = obter_numero_sorteio_sync(self.thread_id, inscricao_id)
+            grupos[equipa if equipa in ("A", "B") else None].append(f"#{numero:02} — {nome}")
+
+        def bloco(lista):
+            return "\n".join(lista) if lista else "Nenhum jogador."
+
+        embed = discord.Embed(
+            title="👥 Equipas do Jogo",
+            color=discord.Color.blurple(),
+            timestamp=discord.utils.utcnow()
+        )
+        embed.add_field(name=f"🔵 Equipa A — {len(grupos['A'])}", value=bloco(grupos["A"])[:1024], inline=False)
+        embed.add_field(name=f"🔴 Equipa B — {len(grupos['B'])}", value=bloco(grupos["B"])[:1024], inline=False)
+        embed.add_field(name=f"⚪ Sem equipa — {len(grupos[None])}", value=bloco(grupos[None])[:1024], inline=False)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Lista sorteio", emoji="🎲", style=discord.ButtonStyle.secondary)
+    async def lista_sorteio(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction):
+            return
+
+        conn = get_connection()
+        if not conn:
+            return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
+
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, nome_jogador, presenca_marcada
+            FROM inscricoes_jogos
+            WHERE thread_id = %s
+              AND estado IN ('pendente_pagamento', 'pago')
+            ORDER BY id ASC
+        """, (self.thread_id,))
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        linhas = []
+        for i, (inscricao_id, nome, presenca) in enumerate(rows, 1):
+            linhas.append(f"#{i:02} — {nome} {'✅' if presenca else '❌'}")
+
+        embed = discord.Embed(
+            title="🎲 Lista do Sorteio",
+            description="\n".join(linhas)[:4000] if linhas else "Sem inscrições.",
+            color=discord.Color.gold(),
+            timestamp=discord.utils.utcnow()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def painel_jogo(ctx):
+    if not is_thread_channel(ctx.channel):
+        return await ctx.send("⚠️ Este comando só pode ser usado dentro da thread do jogo.", delete_after=10)
+
+    conn = get_connection()
+    if not conn:
+        return await ctx.send(DB_ERROR_MSG)
+
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id
+        FROM inscricoes_jogos
+        WHERE thread_id = %s
+          AND estado = 'pago'
+        ORDER BY id ASC
+    """, (ctx.channel.id,))
+    inscricoes = [r[0] for r in cursor.fetchall()]
+    cursor.close()
+    conn.close()
+
+    if not inscricoes:
+        return await ctx.send("⚠️ Ainda não há jogadores pagos para gerir nesta thread.", delete_after=10)
+
+    resumo = discord.Embed(
+        title="🎮 Painel de Gestão do Jogo",
+        description=(
+            "Usa os cartões abaixo para marcar presença, crony, termo e equipas.\n"
+            "O botão de presença adiciona automaticamente **+1 presença** ao jogador."
+        ),
+        color=discord.Color.dark_teal(),
+        timestamp=discord.utils.utcnow()
+    )
+    resumo.add_field(name="👥 Jogadores pagos", value=str(len(inscricoes)), inline=True)
+    resumo.add_field(name="🎲 Sorteio", value="A ordem segue a ordem de inscrição", inline=True)
+    await ctx.send(embed=resumo, view=PainelJogoView(ctx.channel.id))
+
+    for inscricao_id in inscricoes:
+        embed, view = await criar_embed_gestao_jogador(ctx.guild, inscricao_id)
+        if embed:
+            await ctx.send(embed=embed, view=view)
 
 
 # =========================
