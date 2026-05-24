@@ -1287,7 +1287,7 @@ class PainelJogadorView(discord.ui.View):
             return False
         return True
 
-    async def _refresh(self, interaction: discord.Interaction, texto: str):
+    async def atualizar_painel(self, interaction: discord.Interaction, texto: str):
         embed, view = await criar_embed_gestao_jogador(interaction.guild, self.inscricao_id)
         if embed:
             try:
@@ -1353,7 +1353,7 @@ class PainelJogadorView(discord.ui.View):
         except (discord.Forbidden, discord.HTTPException):
             pass
 
-        await self._refresh(interaction, f"✅ Presença marcada para {membro.mention}.")
+        await self.atualizar_painel(interaction, f"✅ Presença marcada para {membro.mention}.")
 
     @discord.ui.button(label="Crony feito", emoji="🎯", style=discord.ButtonStyle.primary)
     async def marcar_crony(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1377,7 +1377,7 @@ class PainelJogadorView(discord.ui.View):
         cursor.close()
         conn.close()
 
-        await self._refresh(interaction, "🎯 Crony marcado como feito.")
+        await self.atualizar_painel(interaction, "🎯 Crony marcado como feito.")
 
     @discord.ui.button(label="Termo assinado", emoji="📄", style=discord.ButtonStyle.secondary)
     async def marcar_termo(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1408,7 +1408,7 @@ class PainelJogadorView(discord.ui.View):
         cursor.close()
         conn.close()
 
-        await self._refresh(interaction, f"📄 Termo marcado como assinado para {membro.mention}.")
+        await self.atualizar_painel(interaction, f"📄 Termo marcado como assinado para {membro.mention}.")
 
     @discord.ui.button(label="🔵 Equipa A", style=discord.ButtonStyle.secondary)
     async def equipa_a(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1434,7 +1434,7 @@ async def definir_equipa_jogador(interaction: discord.Interaction, inscricao_id:
     cursor.close()
     conn.close()
 
-    await PainelJogadorView(inscricao_id, False, False, False)._refresh(
+    await PainelJogadorView(inscricao_id, False, False, False).atualizar_painel(
         interaction,
         f"{'🔵' if equipa == 'A' else '🔴'} Jogador movido para a Equipa {equipa}."
     )
