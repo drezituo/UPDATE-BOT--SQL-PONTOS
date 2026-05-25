@@ -1462,29 +1462,43 @@ async def criar_embed_gestao_jogador(guild: discord.Guild, inscricao_id: int):
     numero_jogador = obter_numero_jogador_sync(membro.id) if membro else None
 
     jogador_valor = formatar_nome_operador(membro, nome_jogador)
-    equipa_txt = {
-        "A": "🔵 Equipa A",
-        "B": "🔴 Equipa B",
-    }.get(equipa, "⚪ Sem equipa")
 
-    titulo_numero = f"#{numero_jogador:02d}" if numero_jogador else "Sem número"
+    equipa_txt = {
+        "A": "[🔵] Equipa A",
+        "B": "[🔴] Equipa B",
+    }.get(equipa, "[⚪] Sem equipa")
+
+    presenca_txt = "[✅] Presente" if presenca else "[❌] Sem presença"
+    chrony_txt = "[🎯] Chrony OK" if chrony else "[❌] Chrony pendente"
+    termo_txt = "[📄] Termo assinado" if termo_ok else "[❌] Termo por assinar"
+
+    descricao = (
+        "```fix\n"
+        f"{jogador_valor}\n\n"
+        f"{presenca_txt}\n"
+        f"{chrony_txt}\n"
+        f"{termo_txt}\n"
+        f"{equipa_txt}\n"
+        "```"
+    )
+
+    if presenca and chrony and termo_ok and equipa in ("A", "B"):
+        cor = discord.Color.green()
+    elif presenca or chrony or termo_ok or equipa in ("A", "B"):
+        cor = discord.Color.orange()
+    else:
+        cor = discord.Color.dark_grey()
 
     embed = discord.Embed(
-        title=f"👥 Gestão do Jogador — {titulo_numero}",
-        description=f"**{jogador_valor}**",
-        color=discord.Color.blurple(),
+        description=descricao,
+        color=cor,
         timestamp=discord.utils.utcnow()
     )
+
     if membro:
         embed.set_thumbnail(url=membro.display_avatar.url)
 
-    embed.add_field(name="💳 Inscrição", value="✅ Paga" if estado == "pago" else f"⏳ {estado}", inline=True)
-    embed.add_field(name="✅ Presença", value="🟢 Marcada" if presenca else "🔴 Por marcar", inline=True)
-    embed.add_field(name="🎯 Chrony", value="🟢 OK" if chrony else "🔴 Por fazer", inline=True)
-    embed.add_field(name="📄 Termo", value="🟢 Assinado" if termo_ok else "🔴 Falta assinar", inline=True)
-    embed.add_field(name="🎮 Equipa", value=equipa_txt, inline=True)
-    embed.add_field(name="🆔 Operador", value=titulo_numero, inline=True)
-    embed.set_footer(text="Painel de staff • presença adiciona +1 presença")
+    embed.set_footer(text="Painel de staff")
 
     return embed, PainelJogadorView(inscricao_id, bool(presenca), bool(chrony), termo_ok, equipa)
 
