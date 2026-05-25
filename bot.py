@@ -13,6 +13,8 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 DB_ERROR_MSG = "✅ Bot ativado, volta a digitar o comando."
+PONTOS_LOG_CHANNEL_ID = 1466622709772582963
+PONTOS_LOG_CHANNEL_ID = 1466622709772582963
 
 # ---------- INSCRIÇÕES ----------
 LIMITE_PADRAO_INSCRICOES = 25
@@ -42,6 +44,28 @@ intents.reactions = True
 intents.guilds = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+
+async def enviar_log_pontos(guild: discord.Guild, mensagem: str):
+    """Envia logs simples de pontos/presenças para a sala configurada."""
+    canal = bot.get_channel(PONTOS_LOG_CHANNEL_ID)
+
+    if canal is None and guild is not None:
+        canal = guild.get_channel(PONTOS_LOG_CHANNEL_ID)
+
+    if canal is None:
+        try:
+            canal = await bot.fetch_channel(PONTOS_LOG_CHANNEL_ID)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            canal = None
+
+    if canal is None:
+        return
+
+    try:
+        await canal.send(mensagem)
+    except (discord.Forbidden, discord.HTTPException):
+        pass
 
 
 # ---------- DATABASE ----------
@@ -1292,24 +1316,6 @@ def termo_assinado_sync(user_id: int) -> bool:
     return existe
 
 
-def obter_numero_sorteio_sync(thread_id: int, inscricao_id: int) -> int:
-    conn = get_connection()
-    if not conn:
-        return 0
-
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT COUNT(*)
-        FROM inscricoes_jogos
-        WHERE thread_id = %s
-          AND id <= %s
-          AND estado IN ('pendente_pagamento', 'pago')
-    """, (thread_id, inscricao_id))
-    numero = cursor.fetchone()[0]
-    cursor.close()
-    conn.close()
-    return numero
-
 
 async def obter_membro_da_inscricao(guild: discord.Guild, nome_jogador: str, autor_user_id: int = None):
     membro = await encontrar_membro_por_nome(guild, nome_jogador)
@@ -1354,7 +1360,7 @@ async def criar_embed_gestao_jogador(guild: discord.Guild, inscricao_id: int):
     id_, thread_id, message_id, user_id, nome_jogador, estado, presenca, crony, equipa = row
     membro = await obter_membro_da_inscricao(guild, nome_jogador, user_id)
     termo_ok = termo_assinado_sync(membro.id) if membro else False
-    numero_sorteio = obter_numero_sorteio_sync(thread_id, id_)
+    numero_jogador = obter_numero_jogador_sync(membro.id) if membro else None
 
     jogador_valor = membro.mention if membro else nome_jogador
     equipa_txt = {
@@ -1362,8 +1368,10 @@ async def criar_embed_gestao_jogador(guild: discord.Guild, inscricao_id: int):
         "B": "🔴 Equipa B",
     }.get(equipa, "⚪ Sem equipa")
 
+    titulo_numero = f"#{numero_jogador:02d}" if numero_jogador else "Sem número"
+
     embed = discord.Embed(
-        title=f"👥 Gestão do Jogador — #{numero_sorteio:02}",
+        title=f"👥 Gestão do Jogador — {titulo_numero}",
         description=f"**{jogador_valor}**",
         color=discord.Color.blurple(),
         timestamp=discord.utils.utcnow()
@@ -1376,8 +1384,8 @@ async def criar_embed_gestao_jogador(guild: discord.Guild, inscricao_id: int):
     embed.add_field(name="🎯 Crony", value="🟢 OK" if crony else "🔴 Por fazer", inline=True)
     embed.add_field(name="📄 Termo", value="🟢 Assinado" if termo_ok else "🔴 Falta assinar", inline=True)
     embed.add_field(name="🎮 Equipa", value=equipa_txt, inline=True)
-    embed.add_field(name="🎲 Sorteio", value=f"Entrada #{numero_sorteio:02}", inline=True)
-    embed.set_footer(text="Painel de staff • presença adiciona +1 ponto")
+    embed.add_field(name="🆔 Operador", value=titulo_numero, inline=True)
+    embed.set_footer(text="Painel de staff • presença adiciona +1 presença")
 
     return embed, PainelJogadorView(inscricao_id, bool(presenca), bool(crony), termo_ok, equipa)
 
@@ -1457,15 +1465,11 @@ class PainelJogadorView(discord.ui.View):
         except Exception as e:
             print(f"Erro ao atualizar cargo de tier por presença no painel: {e}")
 
-        numero_sorteio = obter_numero_sorteio_sync(thread_id, id_)
-        try:
-            await interaction.channel.send(
-                f"🎲 {membro.mention} entrou no sorteio como **#{numero_sorteio:02}**.\n"
-                f"⭐ Foi adicionada uma presença a {membro.mention}\n"
-                f"Conta agora com: **{novo_total:02} presenças**"
-            )
-        except (discord.Forbidden, discord.HTTPException):
-            pass
+        await enviar_log_pontos(
+            interaction.guild,
+            f"⭐ Foi adicionada uma presença a {membro.mention}\n"
+            f"Conta agora com: **{novo_total:02} presenças**"
+        )
 
         await self.atualizar_painel(interaction, f"✅ Presença marcada para {membro.mention}.")
 
@@ -1588,8 +1592,9 @@ class PainelJogoView(discord.ui.View):
 
         grupos = {"A": [], "B": [], None: []}
         for inscricao_id, user_id, nome, equipa in rows:
-            numero = obter_numero_sorteio_sync(self.thread_id, inscricao_id)
-            grupos[equipa if equipa in ("A", "B") else None].append(f"#{numero:02} — {nome}")
+            numero = obter_numero_jogador_sync(user_id)
+            prefixo = f"#{numero:02d}" if numero else "#--"
+            grupos[equipa if equipa in ("A", "B") else None].append(f"{prefixo} — {nome}")
 
         def bloco(lista):
             return "\n".join(lista) if lista else "Nenhum jogador."
@@ -1602,39 +1607,6 @@ class PainelJogoView(discord.ui.View):
         embed.add_field(name=f"🔵 Equipa A — {len(grupos['A'])}", value=bloco(grupos["A"])[:1024], inline=False)
         embed.add_field(name=f"🔴 Equipa B — {len(grupos['B'])}", value=bloco(grupos["B"])[:1024], inline=False)
         embed.add_field(name=f"⚪ Sem equipa — {len(grupos[None])}", value=bloco(grupos[None])[:1024], inline=False)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @discord.ui.button(label="Lista sorteio", emoji="🎲", style=discord.ButtonStyle.secondary)
-    async def lista_sorteio(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self._staff_only(interaction):
-            return
-
-        conn = get_connection()
-        if not conn:
-            return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
-
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT id, nome_jogador, presenca_marcada
-            FROM inscricoes_jogos
-            WHERE thread_id = %s
-              AND estado IN ('pendente_pagamento', 'pago')
-            ORDER BY id ASC
-        """, (self.thread_id,))
-        rows = cursor.fetchall()
-        cursor.close()
-        conn.close()
-
-        linhas = []
-        for i, (inscricao_id, nome, presenca) in enumerate(rows, 1):
-            linhas.append(f"#{i:02} — {nome} {'✅' if presenca else '❌'}")
-
-        embed = discord.Embed(
-            title="🎲 Lista do Sorteio",
-            description="\n".join(linhas)[:4000] if linhas else "Sem inscrições.",
-            color=discord.Color.gold(),
-            timestamp=discord.utils.utcnow()
-        )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
@@ -1673,7 +1645,7 @@ async def painel_jogo(ctx):
         timestamp=discord.utils.utcnow()
     )
     resumo.add_field(name="👥 Jogadores pagos", value=str(len(inscricoes)), inline=True)
-    resumo.add_field(name="🎲 Sorteio", value="A ordem segue a ordem de inscrição", inline=True)
+    resumo.add_field(name="🆔 Operadores", value="Usa o número fixo de cada jogador", inline=True)
     await ctx.send(embed=resumo, view=PainelJogoView(ctx.channel.id))
 
     for inscricao_id in inscricoes:
@@ -1791,10 +1763,10 @@ async def comandos(ctx):
     embed.add_field(
         name="⭐ Pontos / Presenças",
         value=(
-            "`!addpontos @user quantidade`\n"
-            "`!removepontos @user quantidade`\n"
-            "`!pontos [@user]`\n"
-            "`!ranking`"
+            "`!addpresenca @user quantidade` / `!addpontos`\n"
+            "`!removerpresenca @user quantidade` / `!removepontos`\n"
+            "`!presencas [@user]` / `!pontos`\n"
+            "`!rankingpresencas` / `!ranking`"
         ),
         inline=False
     )
@@ -2223,7 +2195,7 @@ async def listarequipas(ctx):
 # =========================
 # 🔥 SISTEMA ANTIGO
 # =========================
-@bot.command()
+@bot.command(aliases=["addpresenca", "addpresencas"])
 @commands.has_permissions(administrator=True)
 async def addpontos(ctx, membro: discord.Member, quantidade: int):
     conn = get_connection()
@@ -2256,10 +2228,11 @@ async def addpontos(ctx, membro: discord.Member, quantidade: int):
     except Exception as e:
         print(f"Erro ao atualizar cargo de tier: {e}")
 
-    await ctx.send(f"✅ {membro.display_name} agora tem **{novo_total} pontos**")
+    await enviar_log_pontos(ctx.guild, f"⭐ Foi adicionada uma presença a {membro.mention}\nConta agora com: **{novo_total:02} presenças**")
+    await ctx.send(f"✅ {membro.display_name} agora tem **{novo_total} presenças**")
 
 
-@bot.command()
+@bot.command(aliases=["removerpresenca", "removerpresencas"])
 @commands.has_permissions(administrator=True)
 async def removepontos(ctx, membro: discord.Member, quantidade: int):
     conn = get_connection()
@@ -2287,10 +2260,11 @@ async def removepontos(ctx, membro: discord.Member, quantidade: int):
     except Exception as e:
         print(f"Erro ao atualizar cargo de tier: {e}")
 
-    await ctx.send(f"❌ {membro.display_name} agora tem **{novo_total} pontos**")
+    await enviar_log_pontos(ctx.guild, f"⭐ Foi removida uma presença a {membro.mention}\nConta agora com: **{novo_total:02} presenças**")
+    await ctx.send(f"❌ {membro.display_name} agora tem **{novo_total} presenças**")
 
 
-@bot.command()
+@bot.command(aliases=["presenca", "presencas"])
 async def pontos(ctx, membro: discord.Member = None):
     membro = membro or ctx.author
 
@@ -2307,10 +2281,10 @@ async def pontos(ctx, membro: discord.Member = None):
     cursor.close()
     conn.close()
 
-    await ctx.send(f"⭐ {membro.display_name} tem **{total} pontos**")
+    await ctx.send(f"⭐ {membro.display_name} tem **{total} presenças**")
 
 
-@bot.command()
+@bot.command(aliases=["rankingpresencas"])
 async def ranking(ctx):
     conn = get_connection()
     if not conn:
@@ -2326,13 +2300,13 @@ async def ranking(ctx):
         conn.close()
         return
 
-    msg = "**🏆 Ranking de Pontos:**\n"
+    msg = "**🏆 Ranking de Presenças:**\n"
 
     for i, (uid, pts) in enumerate(dados, 1):
         membro = ctx.guild.get_member(uid)
         nome = membro.display_name if membro else f"ID:{uid}"
 
-        linha = f"{i}. {nome} — {pts} pontos\n"
+        linha = f"{i}. {nome} — {pts} presenças\n"
 
         if len(msg) + len(linha) > 2000:
             await ctx.send(msg)
@@ -2372,7 +2346,9 @@ async def addsolo(ctx, membro: discord.Member, quantidade: int):
     cursor.close()
     conn.close()
 
+    await enviar_log_pontos(ctx.guild, f"🔥 Foi adicionada uma SoloWin a {membro.mention}\nConta agora com: **{total:02} SoloWins**")
     await ctx.send(f"🔥 {membro.display_name} agora tem **{total} vitórias no Solo Rebirth**")
+    await enviar_log_pontos(f"🔥 Foi adicionada uma SoloWin a {membro.mention}\nConta agora com: **{total:02} SoloWins**")
 
 
 @bot.command()
@@ -2399,10 +2375,12 @@ async def removesolo(ctx, membro: discord.Member, quantidade: int):
     cursor.close()
     conn.close()
 
+    await enviar_log_pontos(ctx.guild, f"🔥 Foi removida uma SoloWin a {membro.mention}\nConta agora com: **{total:02} SoloWins**")
     await ctx.send(f"❌ {membro.display_name} agora tem **{total} vitórias no Solo Rebirth**")
+    await enviar_log_pontos(f"🔥 Foi removida uma SoloWin a {membro.mention}\nConta agora com: **{total:02} SoloWins**")
 
 
-@bot.command()
+@bot.command(aliases=["presenca", "presencas"])
 async def pontossolo(ctx, membro: discord.Member = None):
     membro = membro or ctx.author
 
@@ -2478,7 +2456,9 @@ async def addteam(ctx, membro: discord.Member, quantidade: int):
     cursor.close()
     conn.close()
 
+    await enviar_log_pontos(ctx.guild, f"👥 Foi adicionada uma TeamWin a {membro.mention}\nConta agora com: **{total:02} TeamWins**")
     await ctx.send(f"👥 {membro.display_name} agora tem **{total} vitórias no TeamWin**")
+    await enviar_log_pontos(f"👥 Foi adicionada uma TeamWin a {membro.mention}\nConta agora com: **{total:02} TeamWins**")
 
 
 @bot.command()
@@ -2505,10 +2485,12 @@ async def removeteam(ctx, membro: discord.Member, quantidade: int):
     cursor.close()
     conn.close()
 
+    await enviar_log_pontos(ctx.guild, f"👥 Foi removida uma TeamWin a {membro.mention}\nConta agora com: **{total:02} TeamWins**")
     await ctx.send(f"❌ {membro.display_name} agora tem **{total} vitórias no TeamWin**")
+    await enviar_log_pontos(f"👥 Foi removida uma TeamWin a {membro.mention}\nConta agora com: **{total:02} TeamWins**")
 
 
-@bot.command()
+@bot.command(aliases=["presenca", "presencas"])
 async def pontosteam(ctx, membro: discord.Member = None):
     membro = membro or ctx.author
 
@@ -2584,7 +2566,9 @@ async def addtempo(ctx, membro: discord.Member, quantidade: int):
     cursor.close()
     conn.close()
 
+    await enviar_log_pontos(ctx.guild, f"⏱️ Foi adicionado tempo em pista a {membro.mention}\nConta agora com: **{total:02} pontos de tempo**")
     await ctx.send(f"⏱️ {membro.display_name} agora tem **{total} tempo em pista**")
+    await enviar_log_pontos(f"⏱️ Foi adicionado tempo em pista a {membro.mention}\nConta agora com: **{total:02} tempo em pista**")
 
 
 @bot.command()
@@ -2611,7 +2595,9 @@ async def removetempo(ctx, membro: discord.Member, quantidade: int):
     cursor.close()
     conn.close()
 
+    await enviar_log_pontos(ctx.guild, f"⏱️ Foi removido tempo em pista a {membro.mention}\nConta agora com: **{total:02} pontos de tempo**")
     await ctx.send(f"❌ {membro.display_name} agora tem **{total} tempo em pista**")
+    await enviar_log_pontos(f"⏱️ Foi removido tempo em pista a {membro.mention}\nConta agora com: **{total:02} tempo em pista**")
 
 
 @bot.command()
