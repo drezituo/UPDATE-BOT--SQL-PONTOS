@@ -2348,7 +2348,6 @@ async def addsolo(ctx, membro: discord.Member, quantidade: int):
 
     await enviar_log_pontos(ctx.guild, f"🔥 Foi adicionada uma SoloWin a {membro.mention}\nConta agora com: **{total:02} SoloWins**")
     await ctx.send(f"🔥 {membro.display_name} agora tem **{total} vitórias no Solo Rebirth**")
-    await enviar_log_pontos(f"🔥 Foi adicionada uma SoloWin a {membro.mention}\nConta agora com: **{total:02} SoloWins**")
 
 
 @bot.command()
@@ -2377,10 +2376,9 @@ async def removesolo(ctx, membro: discord.Member, quantidade: int):
 
     await enviar_log_pontos(ctx.guild, f"🔥 Foi removida uma SoloWin a {membro.mention}\nConta agora com: **{total:02} SoloWins**")
     await ctx.send(f"❌ {membro.display_name} agora tem **{total} vitórias no Solo Rebirth**")
-    await enviar_log_pontos(f"🔥 Foi removida uma SoloWin a {membro.mention}\nConta agora com: **{total:02} SoloWins**")
 
 
-@bot.command(aliases=["presenca", "presencas"])
+@bot.command()
 async def pontossolo(ctx, membro: discord.Member = None):
     membro = membro or ctx.author
 
@@ -2458,7 +2456,6 @@ async def addteam(ctx, membro: discord.Member, quantidade: int):
 
     await enviar_log_pontos(ctx.guild, f"👥 Foi adicionada uma TeamWin a {membro.mention}\nConta agora com: **{total:02} TeamWins**")
     await ctx.send(f"👥 {membro.display_name} agora tem **{total} vitórias no TeamWin**")
-    await enviar_log_pontos(f"👥 Foi adicionada uma TeamWin a {membro.mention}\nConta agora com: **{total:02} TeamWins**")
 
 
 @bot.command()
@@ -2487,10 +2484,9 @@ async def removeteam(ctx, membro: discord.Member, quantidade: int):
 
     await enviar_log_pontos(ctx.guild, f"👥 Foi removida uma TeamWin a {membro.mention}\nConta agora com: **{total:02} TeamWins**")
     await ctx.send(f"❌ {membro.display_name} agora tem **{total} vitórias no TeamWin**")
-    await enviar_log_pontos(f"👥 Foi removida uma TeamWin a {membro.mention}\nConta agora com: **{total:02} TeamWins**")
 
 
-@bot.command(aliases=["presenca", "presencas"])
+@bot.command()
 async def pontosteam(ctx, membro: discord.Member = None):
     membro = membro or ctx.author
 
@@ -2568,7 +2564,6 @@ async def addtempo(ctx, membro: discord.Member, quantidade: int):
 
     await enviar_log_pontos(ctx.guild, f"⏱️ Foi adicionado tempo em pista a {membro.mention}\nConta agora com: **{total:02} pontos de tempo**")
     await ctx.send(f"⏱️ {membro.display_name} agora tem **{total} tempo em pista**")
-    await enviar_log_pontos(f"⏱️ Foi adicionado tempo em pista a {membro.mention}\nConta agora com: **{total:02} tempo em pista**")
 
 
 @bot.command()
@@ -2597,7 +2592,6 @@ async def removetempo(ctx, membro: discord.Member, quantidade: int):
 
     await enviar_log_pontos(ctx.guild, f"⏱️ Foi removido tempo em pista a {membro.mention}\nConta agora com: **{total:02} pontos de tempo**")
     await ctx.send(f"❌ {membro.display_name} agora tem **{total} tempo em pista**")
-    await enviar_log_pontos(f"⏱️ Foi removido tempo em pista a {membro.mention}\nConta agora com: **{total:02} tempo em pista**")
 
 
 @bot.command()
