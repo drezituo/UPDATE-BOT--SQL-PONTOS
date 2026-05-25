@@ -895,7 +895,7 @@ class InscricoesView(discord.ui.View):
 async def criar_inscricao_interaction(interaction: discord.Interaction, numero_texto: str = None):
     """Inscreve o jogador indicado pelo número fixo de operador.
     user_id = jogador inscrito. inscrito_por = quem clicou/fez a inscrição.
-    Assim presença, termo, crony, equipas e pontos ficam sempre ligados ao jogador inscrito.
+    Assim presença, termo, chrony, equipas e pontos ficam sempre ligados ao jogador inscrito.
     """
     if not is_thread_channel(interaction.channel):
         return await interaction.response.send_message(
@@ -1414,19 +1414,21 @@ def termo_assinado_sync(user_id: int) -> bool:
 
 
 
-async def obter_membro_da_inscricao(guild: discord.Guild, nome_jogador: str, autor_user_id: int = None):
-    membro = await encontrar_membro_por_nome(guild, nome_jogador)
-    if membro:
-        return membro
-
-    if guild and autor_user_id:
-        membro = guild.get_member(autor_user_id)
+async def obter_membro_da_inscricao(guild: discord.Guild, nome_jogador: str, user_id: int = None):
+    # A inscrição deve estar sempre ligada ao jogador inscrito pelo user_id.
+    # Só fazemos fallback ao nome para inscrições antigas onde o user_id possa não existir.
+    if guild and user_id:
+        membro = guild.get_member(user_id)
         if membro:
             return membro
         try:
-            return await guild.fetch_member(autor_user_id)
+            return await guild.fetch_member(user_id)
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-            return None
+            pass
+
+    membro = await encontrar_membro_por_nome(guild, nome_jogador)
+    if membro:
+        return membro
 
     return None
 
@@ -1454,7 +1456,7 @@ async def criar_embed_gestao_jogador(guild: discord.Guild, inscricao_id: int):
     if not row:
         return None, None
 
-    id_, thread_id, message_id, user_id, nome_jogador, estado, presenca, crony, equipa = row
+    id_, thread_id, message_id, user_id, nome_jogador, estado, presenca, chrony, equipa = row
     membro = await obter_membro_da_inscricao(guild, nome_jogador, user_id)
     termo_ok = termo_assinado_sync(membro.id) if membro else False
     numero_jogador = obter_numero_jogador_sync(membro.id) if membro else None
@@ -1478,7 +1480,7 @@ async def criar_embed_gestao_jogador(guild: discord.Guild, inscricao_id: int):
 
     embed.add_field(name="💳 Inscrição", value="✅ Paga" if estado == "pago" else f"⏳ {estado}", inline=True)
     embed.add_field(name="✅ Presença", value="🟢 Marcada" if presenca else "🔴 Por marcar", inline=True)
-    embed.add_field(name="🎯 Crony", value="🟢 OK" if crony else "🔴 Por fazer", inline=True)
+    embed.add_field(name="🎯 Chrony", value="🟢 OK" if chrony else "🔴 Por fazer", inline=True)
     embed.add_field(name="📄 Termo", value="🟢 Assinado" if termo_ok else "🔴 Falta assinar", inline=True)
     embed.add_field(name="🎮 Equipa", value=equipa_txt, inline=True)
     embed.add_field(name="🆔 Operador", value=titulo_numero, inline=True)
@@ -1495,7 +1497,7 @@ class PainelJogadorView(discord.ui.View):
         self.marcar_presenca.label = "Remover presença" if presenca else "Marcar presença"
         self.marcar_presenca.style = discord.ButtonStyle.red if presenca else discord.ButtonStyle.green
         self.marcar_crony.disabled = crony
-        self.marcar_crony.label = "Crony OK" if crony else "Crony feito"
+        self.marcar_crony.label = "Chrony OK" if chrony else "Chrony feito"
         self.marcar_termo.disabled = termo_ok
         self.marcar_termo.label = "Termo OK" if termo_ok else "Termo assinado"
         self.equipa_a.label = "🔵 Equipa A ✓" if equipa == "A" else "🔵 Equipa A"
@@ -1525,7 +1527,7 @@ class PainelJogadorView(discord.ui.View):
         if not row:
             return await interaction.response.send_message("⚠️ Inscrição não encontrada.", ephemeral=True)
 
-        id_, thread_id, message_id, user_id, nome_jogador, estado, presenca, crony, equipa = row
+        id_, thread_id, message_id, user_id, nome_jogador, estado, presenca, chrony, equipa = row
         membro = await obter_membro_da_inscricao(interaction.guild, nome_jogador, user_id)
         if not membro:
             return await interaction.response.send_message("⚠️ Não encontrei este jogador no servidor para gerir a presença.", ephemeral=True)
@@ -1602,7 +1604,7 @@ class PainelJogadorView(discord.ui.View):
 
         await self.atualizar_painel(interaction, f"✅ Presença marcada para **{nome_log}**.")
 
-    @discord.ui.button(label="Crony feito", emoji="🎯", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Chrony feito", emoji="🎯", style=discord.ButtonStyle.primary)
     async def marcar_crony(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._staff_only(interaction):
             return
@@ -1612,7 +1614,7 @@ class PainelJogadorView(discord.ui.View):
             return await interaction.response.send_message("⚠️ Inscrição não encontrada.", ephemeral=True)
 
         if row[7]:
-            return await interaction.response.send_message("ℹ️ O crony já estava marcado como feito.", ephemeral=True)
+            return await interaction.response.send_message("ℹ️ O chrony já estava marcado como feito.", ephemeral=True)
 
         conn = get_connection()
         if not conn:
@@ -1624,7 +1626,7 @@ class PainelJogadorView(discord.ui.View):
         cursor.close()
         conn.close()
 
-        await self.atualizar_painel(interaction, "🎯 Crony marcado como feito.")
+        await self.atualizar_painel(interaction, "🎯 Chrony marcado como feito.")
 
     @discord.ui.button(label="Termo assinado", emoji="📄", style=discord.ButtonStyle.secondary)
     async def marcar_termo(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1767,7 +1769,7 @@ async def painel_jogo(ctx):
     resumo = discord.Embed(
         title="🎮 Painel de Gestão do Jogo",
         description=(
-            "Usa os cartões abaixo para marcar presença, crony, termo e equipas.\n"
+            "Usa os cartões abaixo para marcar presença, chrony, termo e equipas.\n"
             "O botão de presença adiciona automaticamente **+1 presença** ao jogador."
         ),
         color=discord.Color.dark_teal(),
@@ -1863,6 +1865,90 @@ async def corrigirnicks(ctx):
         total += 1
 
     await ctx.send(f"✅ Nicknames corrigidos em **{total}** jogador(es). Falhas: **{falhas}**.")
+
+@bot.command(name="corrigirinscricao", aliases=["corrigir_inscricao"])
+@commands.has_permissions(administrator=True)
+async def corrigirinscricao(ctx, numero: str):
+    """Corrige uma inscrição antiga para ficar associada ao jogador certo pelo número de operador.
+    Usa este comando respondendo à mensagem/embed da inscrição que queres corrigir:
+    !corrigirinscricao 135
+    """
+    if not is_thread_channel(ctx.channel):
+        return await ctx.send("⚠️ Este comando só pode ser usado dentro da thread do jogo.", delete_after=10)
+
+    if not ctx.message.reference or not ctx.message.reference.message_id:
+        return await ctx.send(
+            "⚠️ Responde à mensagem da inscrição que queres corrigir e usa `!corrigirinscricao 135`.",
+            delete_after=15
+        )
+
+    numero_int = extrair_numero_operador(numero)
+    if numero_int is None:
+        return await ctx.send("⚠️ Número inválido. Usa apenas o número do operador. Exemplo: `135`.", delete_after=10)
+
+    membro_jogador = await obter_membro_por_numero_jogador(ctx.guild, numero_int)
+    if membro_jogador is None:
+        return await ctx.send(f"⚠️ Não encontrei nenhum jogador com o número **#{numero_int:02d}**.", delete_after=10)
+
+    message_id = ctx.message.reference.message_id
+    nome_jogador = formatar_nome_operador(membro_jogador)
+
+    conn = get_connection()
+    if not conn:
+        return await ctx.send(DB_ERROR_MSG)
+
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, user_id, COALESCE(inscrito_por, user_id), estado
+        FROM inscricoes_jogos
+        WHERE thread_id = %s AND message_id = %s
+    """, (ctx.channel.id, message_id))
+    row = cursor.fetchone()
+
+    if not row:
+        cursor.close()
+        conn.close()
+        return await ctx.send("⚠️ Não encontrei inscrição associada à mensagem respondida.", delete_after=10)
+
+    inscricao_id, user_id_antigo, inscrito_por, estado = row
+
+    # Se a inscrição antiga não tinha inscrito_por, assumimos que quem estava no user_id antigo foi quem inscreveu.
+    autor_id = inscrito_por or user_id_antigo
+
+    cursor.execute("""
+        UPDATE inscricoes_jogos
+        SET user_id = %s,
+            nome_jogador = %s,
+            inscrito_por = %s
+        WHERE id = %s
+    """, (membro_jogador.id, nome_jogador, autor_id, inscricao_id))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    autor_inscricao_mention = f"<@{autor_id}>"
+
+    try:
+        msg = await ctx.channel.fetch_message(message_id)
+        if estado == "pago":
+            embed = await criar_embed_inscricao_paga(
+                ctx.guild,
+                ctx.channel.name,
+                nome_jogador,
+                autor_inscricao_mention,
+                membro_jogador
+            )
+        else:
+            expira_em = utc_now() + timedelta(hours=HORAS_PAGAMENTO)
+            embed = await criar_embed_inscricao_pendente(ctx, nome_jogador, expira_em, membro_jogador)
+        await msg.edit(embed=embed)
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        pass
+
+    await apagar_mensagem_comando(ctx)
+    await ctx.send(f"✅ Inscrição corrigida para **{nome_jogador}**.", delete_after=12)
+    await atualizar_embed_estado(ctx.channel)
+
 
 
 # =========================
