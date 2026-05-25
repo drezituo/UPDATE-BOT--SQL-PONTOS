@@ -306,6 +306,43 @@ def obter_numero_jogador_sync(user_id: int):
     return row[0] if row else None
 
 
+def obter_user_id_por_numero_jogador_sync(numero: int):
+    conn = get_connection()
+    if not conn:
+        return None
+
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM jogadores_numeros WHERE numero = %s", (numero,))
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return row[0] if row else None
+
+
+async def obter_membro_por_numero_jogador(guild: discord.Guild, numero: int):
+    user_id = obter_user_id_por_numero_jogador_sync(numero)
+    if not user_id or guild is None:
+        return None
+
+    membro = guild.get_member(user_id)
+    if membro:
+        return membro
+
+    try:
+        return await guild.fetch_member(user_id)
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        return None
+
+
+def extrair_numero_operador(texto: str):
+    texto = normalizar_nome(str(texto or ""))
+    texto = texto.replace("#", "").strip()
+    if not texto.isdigit():
+        return None
+    numero = int(texto)
+    return numero if numero > 0 else None
+
+
 def formatar_nome_operador(membro: discord.Member = None, nome_fallback: str = "Jogador") -> str:
     if membro is None:
         return normalizar_nome(nome_fallback) or "Jogador"
@@ -685,6 +722,11 @@ if conn:
 
         cursor.execute("""
         ALTER TABLE inscricoes_jogos
+        ADD COLUMN IF NOT EXISTS inscrito_por BIGINT
+        """)
+
+        cursor.execute("""
+        ALTER TABLE inscricoes_jogos
         DROP CONSTRAINT IF EXISTS inscricoes_jogos_thread_id_user_id_key
         """)
 
@@ -804,27 +846,27 @@ async def on_command_error(ctx, error):
 # 🎟️ BOTÕES / MODAIS DE INSCRIÇÕES
 # =========================
 class InscricaoModal(discord.ui.Modal, title="Inscrição no jogo"):
-    nome = discord.ui.TextInput(
-        label="Nome do jogador",
-        placeholder="Escreve aqui o teu nome",
-        min_length=3,
-        max_length=50
+    numero = discord.ui.TextInput(
+        label="Número do jogador",
+        placeholder="Exemplo: 149 ou #149",
+        min_length=1,
+        max_length=10
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        await criar_inscricao_interaction(interaction, str(self.nome))
+        await criar_inscricao_interaction(interaction, str(self.numero))
 
 
 class CancelarInscricaoModal(discord.ui.Modal, title="Cancelar inscrição"):
-    nome = discord.ui.TextInput(
-        label="Nome da inscrição",
-        placeholder="Escreve o nome que queres cancelar",
-        min_length=3,
-        max_length=50
+    numero = discord.ui.TextInput(
+        label="Número do jogador",
+        placeholder="Exemplo: 149 ou #149",
+        min_length=1,
+        max_length=10
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        await cancelar_inscricao_interaction(interaction, str(self.nome))
+        await cancelar_inscricao_interaction(interaction, str(self.numero))
 
 
 class InscricoesView(discord.ui.View):
@@ -838,7 +880,7 @@ class InscricoesView(discord.ui.View):
         custom_id="inscricoes:inscrever"
     )
     async def botao_inscrever(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await criar_inscricao_interaction(interaction)
+        await interaction.response.send_modal(InscricaoModal())
 
     @discord.ui.button(
         label="Cancelar inscrição",
@@ -847,24 +889,35 @@ class InscricoesView(discord.ui.View):
         custom_id="inscricoes:cancelar"
     )
     async def botao_cancelar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await cancelar_inscricao_interaction(interaction)
+        await interaction.response.send_modal(CancelarInscricaoModal())
 
 
-async def criar_inscricao_interaction(interaction: discord.Interaction, nome: str = None):
-    """Inscreve automaticamente o utilizador que clicou no botão.
-    Já não permite inscrever terceiros nem escrever outro nome.
+async def criar_inscricao_interaction(interaction: discord.Interaction, numero_texto: str = None):
+    """Inscreve o jogador indicado pelo número fixo de operador.
+    user_id = jogador inscrito. inscrito_por = quem clicou/fez a inscrição.
+    Assim presença, termo, crony, equipas e pontos ficam sempre ligados ao jogador inscrito.
     """
-    membro_jogador = interaction.user if isinstance(interaction.user, discord.Member) else None
-    nome = normalizar_nome(membro_jogador.display_name if membro_jogador else interaction.user.name)
-
     if not is_thread_channel(interaction.channel):
         return await interaction.response.send_message(
             "⚠️ Este botão só pode ser usado dentro da thread do jogo.",
             ephemeral=True
         )
 
-    if len(nome) < 3:
-        return await interaction.response.send_message("⚠️ Nome inválido.", ephemeral=True)
+    numero = extrair_numero_operador(numero_texto)
+    if numero is None:
+        return await interaction.response.send_message(
+            "⚠️ Número inválido. Escreve apenas o número do jogador. Exemplo: `149` ou `#149`.",
+            ephemeral=True
+        )
+
+    membro_jogador = await obter_membro_por_numero_jogador(interaction.guild, numero)
+    if membro_jogador is None:
+        return await interaction.response.send_message(
+            f"⚠️ Não encontrei nenhum jogador no Discord com o número **#{numero:02d}**.",
+            ephemeral=True
+        )
+
+    nome = formatar_nome_operador(membro_jogador)
 
     dados = obter_thread_config(interaction.channel.id)
     if not dados:
@@ -897,20 +950,20 @@ async def criar_inscricao_interaction(interaction: discord.Interaction, nome: st
 
     cursor = conn.cursor()
 
-    # Bloqueia múltiplas inscrições do mesmo Discord user nesta thread.
+    # Bloqueia múltiplas inscrições do mesmo jogador nesta thread, mesmo que seja inscrito por outra pessoa.
     cursor.execute("""
         SELECT 1
         FROM inscricoes_jogos
         WHERE thread_id = %s
           AND user_id = %s
           AND estado IN ('pendente_pagamento', 'pago')
-    """, (interaction.channel.id, interaction.user.id))
+    """, (interaction.channel.id, membro_jogador.id))
 
     if cursor.fetchone():
         cursor.close()
         conn.close()
         return await interaction.response.send_message(
-            "⚠️ Já tens uma inscrição ativa neste jogo.",
+            f"⚠️ O jogador **{nome}** já tem uma inscrição ativa neste jogo.",
             ephemeral=True
         )
 
@@ -924,16 +977,17 @@ async def criar_inscricao_interaction(interaction: discord.Interaction, nome: st
         cursor.execute("""
             INSERT INTO inscricoes_jogos (
                 thread_id, message_id, user_id, nome_jogador,
-                estado, criado_em, expira_em, aviso_30min_enviado
+                estado, criado_em, expira_em, aviso_30min_enviado, inscrito_por
             )
-            VALUES (%s, %s, %s, %s, 'pendente_pagamento', %s, %s, FALSE)
+            VALUES (%s, %s, %s, %s, 'pendente_pagamento', %s, %s, FALSE, %s)
         """, (
             interaction.channel.id,
             msg.id,
-            interaction.user.id,
+            membro_jogador.id,
             nome,
             criado_em,
-            expira_em
+            expira_em,
+            interaction.user.id
         ))
         conn.commit()
     except Exception as e:
@@ -951,17 +1005,34 @@ async def criar_inscricao_interaction(interaction: discord.Interaction, nome: st
     conn.close()
 
     await interaction.response.send_message(
-        f"✅ Inscrição criada para {interaction.user.mention}.",
+        f"✅ Inscrição criada para **{nome}**.",
         ephemeral=True
     )
 
     await atualizar_embed_estado(interaction.channel)
 
-async def cancelar_inscricao_interaction(interaction: discord.Interaction, nome: str = None):
-    """Cancela automaticamente a inscrição ativa do utilizador que clicou no botão."""
+
+async def cancelar_inscricao_interaction(interaction: discord.Interaction, numero_texto: str = None):
+    """Cancela a inscrição do jogador indicado pelo número.
+    Admin cancela qualquer inscrição. Utilizador normal só cancela se for o próprio jogador ou se tiver feito essa inscrição.
+    """
     if not is_thread_channel(interaction.channel):
         return await interaction.response.send_message(
             "⚠️ Este botão só pode ser usado dentro da thread do jogo.",
+            ephemeral=True
+        )
+
+    numero = extrair_numero_operador(numero_texto)
+    if numero is None:
+        return await interaction.response.send_message(
+            "⚠️ Número inválido. Escreve apenas o número do jogador. Exemplo: `149` ou `#149`.",
+            ephemeral=True
+        )
+
+    membro_jogador = await obter_membro_por_numero_jogador(interaction.guild, numero)
+    if membro_jogador is None:
+        return await interaction.response.send_message(
+            f"⚠️ Não encontrei nenhum jogador no Discord com o número **#{numero:02d}**.",
             ephemeral=True
         )
 
@@ -970,16 +1041,29 @@ async def cancelar_inscricao_interaction(interaction: discord.Interaction, nome:
         return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
 
     cursor = conn.cursor()
+    is_admin = interaction.user.guild_permissions.administrator
 
-    cursor.execute("""
-        SELECT id, message_id, nome_jogador, user_id
-        FROM inscricoes_jogos
-        WHERE thread_id = %s
-          AND user_id = %s
-          AND estado IN ('pendente_pagamento', 'pago')
-        ORDER BY id DESC
-        LIMIT 1
-    """, (interaction.channel.id, interaction.user.id))
+    if is_admin:
+        cursor.execute("""
+            SELECT id, message_id, nome_jogador, user_id, COALESCE(inscrito_por, user_id)
+            FROM inscricoes_jogos
+            WHERE thread_id = %s
+              AND user_id = %s
+              AND estado IN ('pendente_pagamento', 'pago')
+            ORDER BY id DESC
+            LIMIT 1
+        """, (interaction.channel.id, membro_jogador.id))
+    else:
+        cursor.execute("""
+            SELECT id, message_id, nome_jogador, user_id, COALESCE(inscrito_por, user_id)
+            FROM inscricoes_jogos
+            WHERE thread_id = %s
+              AND user_id = %s
+              AND estado IN ('pendente_pagamento', 'pago')
+              AND (user_id = %s OR inscrito_por = %s)
+            ORDER BY id DESC
+            LIMIT 1
+        """, (interaction.channel.id, membro_jogador.id, interaction.user.id, interaction.user.id))
 
     row = cursor.fetchone()
 
@@ -987,11 +1071,11 @@ async def cancelar_inscricao_interaction(interaction: discord.Interaction, nome:
         cursor.close()
         conn.close()
         return await interaction.response.send_message(
-            "⚠️ Não encontrei nenhuma inscrição ativa tua nesta thread.",
+            "⚠️ Não encontrei uma inscrição ativa com esse número que possas cancelar nesta thread.",
             ephemeral=True
         )
 
-    inscricao_id, message_id, nome_jogador, user_id = row
+    inscricao_id, message_id, nome_jogador, user_id, inscrito_por = row
 
     cursor.execute("""
         UPDATE inscricoes_jogos
@@ -1003,9 +1087,8 @@ async def cancelar_inscricao_interaction(interaction: discord.Interaction, nome:
     cursor.close()
     conn.close()
 
-    autor_inscricao_mention = f"<@{user_id}>"
-    cancelado_por = interaction.user.mention
-    membro_jogador = interaction.user if isinstance(interaction.user, discord.Member) else None
+    autor_inscricao_mention = f"<@{inscrito_por}>"
+    cancelado_por = interaction.user.mention if interaction.user.id == user_id else f"{interaction.user.mention} (staff/autor)"
 
     try:
         msg = await interaction.channel.fetch_message(message_id)
@@ -1022,7 +1105,7 @@ async def cancelar_inscricao_interaction(interaction: discord.Interaction, nome:
         pass
 
     await interaction.response.send_message(
-        f"✅ A tua inscrição foi cancelada.",
+        f"✅ A inscrição de **{nome_jogador}** foi cancelada.",
         ephemeral=True
     )
 
@@ -1171,16 +1254,17 @@ async def inscrever(ctx, *, nome: str):
         cursor.execute("""
             INSERT INTO inscricoes_jogos (
                 thread_id, message_id, user_id, nome_jogador,
-                estado, criado_em, expira_em, aviso_30min_enviado
+                estado, criado_em, expira_em, aviso_30min_enviado, inscrito_por
             )
-            VALUES (%s, %s, %s, %s, 'pendente_pagamento', %s, %s, FALSE)
+            VALUES (%s, %s, %s, %s, 'pendente_pagamento', %s, %s, FALSE, %s)
         """, (
             ctx.channel.id,
             msg.id,
-            ctx.author.id,
+            membro_jogador.id if membro_jogador else ctx.author.id,
             nome,
             criado_em,
-            expira_em
+            expira_em,
+            ctx.author.id
         ))
         conn.commit()
     except Exception as e:
@@ -2900,7 +2984,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
 
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT thread_id, user_id, nome_jogador, estado
+        SELECT thread_id, user_id, nome_jogador, estado, COALESCE(inscrito_por, user_id)
         FROM inscricoes_jogos
         WHERE message_id = %s
     """, (payload.message_id,))
@@ -2911,7 +2995,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         conn.close()
         return
 
-    thread_id, user_id, nome_jogador, estado = row
+    thread_id, user_id, nome_jogador, estado, inscrito_por = row
 
     if estado != "pendente_pagamento":
         cursor.close()
@@ -2938,12 +3022,18 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             user = None
 
-    autor_inscricao_mention = f"<@{user_id}>"
+    autor_inscricao_mention = f"<@{inscrito_por}>"
+    membro_jogador = guild.get_member(user_id)
+    if membro_jogador is None:
+        try:
+            membro_jogador = await guild.fetch_member(user_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            membro_jogador = None
 
     if canal:
         try:
             msg = await canal.fetch_message(payload.message_id)
-            embed = await criar_embed_inscricao_paga(guild, canal.name, nome_jogador, autor_inscricao_mention)
+            embed = await criar_embed_inscricao_paga(guild, canal.name, nome_jogador, autor_inscricao_mention, membro_jogador)
             await msg.edit(embed=embed)
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             pass
@@ -2965,7 +3055,7 @@ async def verificar_inscricoes():
 
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT id, thread_id, message_id, user_id, nome_jogador, expira_em, aviso_30min_enviado
+        SELECT id, thread_id, message_id, user_id, nome_jogador, expira_em, aviso_30min_enviado, COALESCE(inscrito_por, user_id)
         FROM inscricoes_jogos
         WHERE estado = 'pendente_pagamento'
     """)
@@ -2973,7 +3063,7 @@ async def verificar_inscricoes():
 
     agora = utc_now()
 
-    for inscricao_id, thread_id, message_id, user_id, nome_jogador, expira_em, aviso_30min_enviado in rows:
+    for inscricao_id, thread_id, message_id, user_id, nome_jogador, expira_em, aviso_30min_enviado, inscrito_por in rows:
         if expira_em.tzinfo is None:
             expira_em = expira_em.replace(tzinfo=timezone.utc)
 
@@ -3013,12 +3103,20 @@ async def verificar_inscricoes():
 
             canal = bot.get_channel(thread_id)
             guild = canal.guild if canal else None
-            autor_inscricao_mention = f"<@{user_id}>"
+            autor_inscricao_mention = f"<@{inscrito_por}>"
+            membro_jogador = None
+            if guild:
+                membro_jogador = guild.get_member(user_id)
+                if membro_jogador is None:
+                    try:
+                        membro_jogador = await guild.fetch_member(user_id)
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        membro_jogador = None
 
             if canal:
                 try:
                     msg = await canal.fetch_message(message_id)
-                    embed = await criar_embed_inscricao_expirada(guild, canal.name, nome_jogador, autor_inscricao_mention)
+                    embed = await criar_embed_inscricao_expirada(guild, canal.name, nome_jogador, autor_inscricao_mention, membro_jogador)
                     await msg.edit(embed=embed)
                 except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                     pass
