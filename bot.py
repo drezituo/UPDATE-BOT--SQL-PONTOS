@@ -1462,43 +1462,29 @@ async def criar_embed_gestao_jogador(guild: discord.Guild, inscricao_id: int):
     numero_jogador = obter_numero_jogador_sync(membro.id) if membro else None
 
     jogador_valor = formatar_nome_operador(membro, nome_jogador)
-
     equipa_txt = {
-        "A": "[🔵] Equipa A",
-        "B": "[🔴] Equipa B",
-    }.get(equipa, "[⚪] Sem equipa")
+        "A": "🔵 Equipa A",
+        "B": "🔴 Equipa B",
+    }.get(equipa, "⚪ Sem equipa")
 
-    presenca_txt = "[✅] Presente" if presenca else "[❌] Sem presença"
-    chrony_txt = "[🎯] Chrony OK" if chrony else "[❌] Chrony pendente"
-    termo_txt = "[📄] Termo assinado" if termo_ok else "[❌] Termo por assinar"
-
-    descricao = (
-        "```fix\n"
-        f"{jogador_valor}\n\n"
-        f"{presenca_txt}\n"
-        f"{chrony_txt}\n"
-        f"{termo_txt}\n"
-        f"{equipa_txt}\n"
-        "```"
-    )
-
-    if presenca and chrony and termo_ok and equipa in ("A", "B"):
-        cor = discord.Color.green()
-    elif presenca or chrony or termo_ok or equipa in ("A", "B"):
-        cor = discord.Color.orange()
-    else:
-        cor = discord.Color.dark_grey()
+    titulo_numero = f"#{numero_jogador:02d}" if numero_jogador else "Sem número"
 
     embed = discord.Embed(
-        description=descricao,
-        color=cor,
+        title=f"👥 Gestão do Jogador — {titulo_numero}",
+        description=f"**{jogador_valor}**",
+        color=discord.Color.blurple(),
         timestamp=discord.utils.utcnow()
     )
-
     if membro:
         embed.set_thumbnail(url=membro.display_avatar.url)
 
-    embed.set_footer(text="Painel de staff")
+    embed.add_field(name="💳 Inscrição", value="✅ Paga" if estado == "pago" else f"⏳ {estado}", inline=True)
+    embed.add_field(name="✅ Presença", value="🟢 Marcada" if presenca else "🔴 Por marcar", inline=True)
+    embed.add_field(name="🎯 Chrony", value="🟢 OK" if chrony else "🔴 Por fazer", inline=True)
+    embed.add_field(name="📄 Termo", value="🟢 Assinado" if termo_ok else "🔴 Falta assinar", inline=True)
+    embed.add_field(name="🎮 Equipa", value=equipa_txt, inline=True)
+    embed.add_field(name="🆔 Operador", value=titulo_numero, inline=True)
+    embed.set_footer(text="Painel de staff • presença adiciona +1 presença")
 
     return embed, PainelJogadorView(inscricao_id, bool(presenca), bool(chrony), termo_ok, equipa)
 
@@ -1753,6 +1739,237 @@ class PainelJogoView(discord.ui.View):
         embed.add_field(name=f"🔴 Equipa B — {len(grupos['B'])}", value=bloco(grupos["B"])[:1024], inline=False)
         embed.add_field(name=f"⚪ Sem equipa — {len(grupos[None])}", value=bloco(grupos[None])[:1024], inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+    @discord.ui.button(label="Começar jogo", emoji="🎮", style=discord.ButtonStyle.success)
+    async def comecar_jogo(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction):
+            return
+
+        embed = discord.Embed(
+            title="🎮 Escolher modo de jogo",
+            description="Seleciona o modo para iniciar o painel do jogo.",
+            color=discord.Color.dark_teal(),
+            timestamp=discord.utils.utcnow()
+        )
+        embed.add_field(name="Disponível", value="💣 Plantar Bomba", inline=False)
+        await interaction.response.send_message(embed=embed, view=ModosJogoView(self.thread_id), ephemeral=False)
+
+
+def criar_embed_modo_bomba(score_a: int, score_b: int, finalizado: bool = False):
+    if score_a > score_b:
+        vencedor = "🔵 Equipa A"
+    elif score_b > score_a:
+        vencedor = "🔴 Equipa B"
+    else:
+        vencedor = "⚪ Empate"
+
+    estado = "🏁 Finalizado" if finalizado else "⏳ Em progresso"
+    conteudo = (
+        "```fix\n"
+        "MODO: PLANTAR BOMBA\n\n"
+        f"Equipa A: {score_a} bomba(s) plantada(s)\n"
+        f"Equipa B: {score_b} bomba(s) plantada(s)\n\n"
+        f"Estado: {estado}\n"
+        f"Vencedor atual: {vencedor}\n"
+        "```"
+    )
+
+    cor = discord.Color.dark_teal()
+    if finalizado:
+        if score_a == score_b:
+            cor = discord.Color.light_grey()
+        else:
+            cor = discord.Color.green()
+
+    embed = discord.Embed(
+        title="💣 Plantar Bomba",
+        description=conteudo,
+        color=cor,
+        timestamp=discord.utils.utcnow()
+    )
+    embed.set_footer(text="Ao finalizar, a equipa vencedora recebe +1 TeamWin automaticamente")
+    return embed
+
+
+async def adicionar_teamwin_jogador(guild: discord.Guild, membro: discord.Member, quantidade: int = 1):
+    conn = get_connection()
+    if not conn:
+        return None
+
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT pontos FROM pontos_team WHERE user_id = %s", (membro.id,))
+        row = cursor.fetchone()
+        total = (row[0] if row else 0) + quantidade
+
+        if row:
+            cursor.execute("UPDATE pontos_team SET pontos = %s WHERE user_id = %s", (total, membro.id))
+        else:
+            cursor.execute("INSERT INTO pontos_team VALUES (%s, %s)", (membro.id, total))
+
+        conn.commit()
+        return total
+    except Exception as e:
+        conn.rollback()
+        print(f"Erro ao adicionar TeamWin automática: {e}")
+        return None
+    finally:
+        cursor.close()
+        conn.close()
+
+
+async def obter_membros_equipa_jogo(guild: discord.Guild, thread_id: int, equipa: str):
+    conn = get_connection()
+    if not conn:
+        return []
+
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT user_id, nome_jogador
+        FROM inscricoes_jogos
+        WHERE thread_id = %s
+          AND estado = 'pago'
+          AND equipa_jogo = %s
+    """, (thread_id, equipa))
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+
+    membros = []
+    for user_id, nome_jogador in rows:
+        membro = await obter_membro_da_inscricao(guild, nome_jogador, user_id)
+        if membro:
+            membros.append(membro)
+    return membros
+
+
+class ModosJogoView(discord.ui.View):
+    def __init__(self, thread_id: int):
+        super().__init__(timeout=None)
+        self.thread_id = thread_id
+
+    async def _staff_only(self, interaction: discord.Interaction) -> bool:
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Apenas staff/admin pode usar este painel.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Plantar Bomba", emoji="💣", style=discord.ButtonStyle.primary)
+    async def plantar_bomba(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction):
+            return
+
+        embed = criar_embed_modo_bomba(0, 0)
+        await interaction.response.send_message(embed=embed, view=PlantarBombaView(self.thread_id, 0, 0), ephemeral=False)
+
+
+class PlantarBombaView(discord.ui.View):
+    def __init__(self, thread_id: int, score_a: int = 0, score_b: int = 0, finalizado: bool = False):
+        super().__init__(timeout=None)
+        self.thread_id = thread_id
+        self.score_a = score_a
+        self.score_b = score_b
+        self.finalizado = finalizado
+
+        if finalizado:
+            for item in self.children:
+                item.disabled = True
+
+    async def _staff_only(self, interaction: discord.Interaction) -> bool:
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Apenas staff/admin pode usar este painel.", ephemeral=True)
+            return False
+        return True
+
+    async def atualizar_score(self, interaction: discord.Interaction, equipa: str, valor: int):
+        if not await self._staff_only(interaction):
+            return
+
+        if self.finalizado:
+            return await interaction.response.send_message("⚠️ Este jogo já foi finalizado.", ephemeral=True)
+
+        if equipa == "A":
+            self.score_a = valor
+        else:
+            self.score_b = valor
+
+        embed = criar_embed_modo_bomba(self.score_a, self.score_b)
+        await interaction.response.edit_message(embed=embed, view=PlantarBombaView(self.thread_id, self.score_a, self.score_b))
+
+    @discord.ui.button(label="A: 1", emoji="🔵", style=discord.ButtonStyle.secondary, row=0)
+    async def a_1(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.atualizar_score(interaction, "A", 1)
+
+    @discord.ui.button(label="A: 2", emoji="🔵", style=discord.ButtonStyle.secondary, row=0)
+    async def a_2(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.atualizar_score(interaction, "A", 2)
+
+    @discord.ui.button(label="A: 3", emoji="🔵", style=discord.ButtonStyle.secondary, row=0)
+    async def a_3(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.atualizar_score(interaction, "A", 3)
+
+    @discord.ui.button(label="A: 4", emoji="🔵", style=discord.ButtonStyle.secondary, row=0)
+    async def a_4(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.atualizar_score(interaction, "A", 4)
+
+    @discord.ui.button(label="B: 1", emoji="🔴", style=discord.ButtonStyle.secondary, row=1)
+    async def b_1(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.atualizar_score(interaction, "B", 1)
+
+    @discord.ui.button(label="B: 2", emoji="🔴", style=discord.ButtonStyle.secondary, row=1)
+    async def b_2(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.atualizar_score(interaction, "B", 2)
+
+    @discord.ui.button(label="B: 3", emoji="🔴", style=discord.ButtonStyle.secondary, row=1)
+    async def b_3(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.atualizar_score(interaction, "B", 3)
+
+    @discord.ui.button(label="B: 4", emoji="🔴", style=discord.ButtonStyle.secondary, row=1)
+    async def b_4(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.atualizar_score(interaction, "B", 4)
+
+    @discord.ui.button(label="Finalizar e dar TeamWin", emoji="🏁", style=discord.ButtonStyle.success, row=2)
+    async def finalizar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction):
+            return
+
+        if self.score_a == self.score_b:
+            embed = criar_embed_modo_bomba(self.score_a, self.score_b, finalizado=False)
+            return await interaction.response.send_message(
+                "⚠️ O jogo está empatado. Define uma equipa vencedora antes de finalizar.",
+                ephemeral=True
+            )
+
+        equipa_vencedora = "A" if self.score_a > self.score_b else "B"
+        nome_equipa = "Equipa A" if equipa_vencedora == "A" else "Equipa B"
+        emoji_equipa = "🔵" if equipa_vencedora == "A" else "🔴"
+
+        membros = await obter_membros_equipa_jogo(interaction.guild, self.thread_id, equipa_vencedora)
+        if not membros:
+            return await interaction.response.send_message(
+                f"⚠️ Não encontrei jogadores pagos na {nome_equipa} para atribuir TeamWin.",
+                ephemeral=True
+            )
+
+        logs = []
+        for membro in membros:
+            total = await adicionar_teamwin_jogador(interaction.guild, membro, 1)
+            if total is None:
+                continue
+            nome_log = formatar_nome_operador(membro)
+            msg_log = f"👥 Foi adicionada uma TeamWin a **{nome_log}**\nConta agora com: **{total:02} TeamWins**"
+            await enviar_log_pontos(interaction.guild, msg_log)
+            logs.append(f"• {nome_log} — {total:02} TeamWins")
+
+        embed = criar_embed_modo_bomba(self.score_a, self.score_b, finalizado=True)
+        embed.add_field(
+            name=f"🏆 Vencedor: {emoji_equipa} {nome_equipa}",
+            value=("\n".join(logs)[:1024] if logs else "TeamWins atribuídas."),
+            inline=False
+        )
+        await interaction.response.edit_message(embed=embed, view=PlantarBombaView(self.thread_id, self.score_a, self.score_b, finalizado=True))
+
 
 
 @bot.command()
