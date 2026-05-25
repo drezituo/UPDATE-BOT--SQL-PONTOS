@@ -306,6 +306,19 @@ def obter_numero_jogador_sync(user_id: int):
     return row[0] if row else None
 
 
+def formatar_nome_operador(membro: discord.Member = None, nome_fallback: str = "Jogador") -> str:
+    if membro is None:
+        return normalizar_nome(nome_fallback) or "Jogador"
+
+    numero = obter_numero_jogador_sync(membro.id)
+    nome_base = limpar_prefixo_numero_jogador(membro.display_name)
+
+    if numero:
+        return f"#{numero:02d} {nome_base}"
+
+    return nome_base
+
+
 def obter_ou_criar_numero_jogador_sync(user_id: int):
     conn = get_connection()
     if not conn:
@@ -1362,7 +1375,7 @@ async def criar_embed_gestao_jogador(guild: discord.Guild, inscricao_id: int):
     termo_ok = termo_assinado_sync(membro.id) if membro else False
     numero_jogador = obter_numero_jogador_sync(membro.id) if membro else None
 
-    jogador_valor = membro.mention if membro else nome_jogador
+    jogador_valor = formatar_nome_operador(membro, nome_jogador)
     equipa_txt = {
         "A": "🔵 Equipa A",
         "B": "🔴 Equipa B",
@@ -1394,8 +1407,9 @@ class PainelJogadorView(discord.ui.View):
     def __init__(self, inscricao_id: int, presenca: bool, crony: bool, termo_ok: bool, equipa: str = None):
         super().__init__(timeout=None)
         self.inscricao_id = inscricao_id
-        self.marcar_presenca.disabled = presenca
-        self.marcar_presenca.label = "Presença marcada" if presenca else "Marcar presença"
+        self.marcar_presenca.disabled = False
+        self.marcar_presenca.label = "Remover presença" if presenca else "Marcar presença"
+        self.marcar_presenca.style = discord.ButtonStyle.red if presenca else discord.ButtonStyle.green
         self.marcar_crony.disabled = crony
         self.marcar_crony.label = "Crony OK" if crony else "Crony feito"
         self.marcar_termo.disabled = termo_ok
@@ -1428,12 +1442,9 @@ class PainelJogadorView(discord.ui.View):
             return await interaction.response.send_message("⚠️ Inscrição não encontrada.", ephemeral=True)
 
         id_, thread_id, message_id, user_id, nome_jogador, estado, presenca, crony, equipa = row
-        if presenca:
-            return await interaction.response.send_message("ℹ️ A presença já estava marcada.", ephemeral=True)
-
         membro = await obter_membro_da_inscricao(interaction.guild, nome_jogador, user_id)
         if not membro:
-            return await interaction.response.send_message("⚠️ Não encontrei este jogador no servidor para adicionar presença.", ephemeral=True)
+            return await interaction.response.send_message("⚠️ Não encontrei este jogador no servidor para gerir a presença.", ephemeral=True)
 
         conn = get_connection()
         if not conn:
@@ -1442,8 +1453,42 @@ class PainelJogadorView(discord.ui.View):
         cursor = conn.cursor()
         cursor.execute("SELECT pontos FROM pontos WHERE user_id = %s", (membro.id,))
         resultado = cursor.fetchone()
-        novo_total = (resultado[0] if resultado else 0) + 1
+        atual = resultado[0] if resultado else 0
 
+        nome_log = formatar_nome_operador(membro, nome_jogador)
+
+        if presenca:
+            novo_total = max(atual - 1, 0)
+            if resultado:
+                cursor.execute(
+                    "UPDATE pontos SET pontos = %s, ultima_atividade = NOW() WHERE user_id = %s",
+                    (novo_total, membro.id)
+                )
+            else:
+                cursor.execute(
+                    "INSERT INTO pontos (user_id, pontos, ultima_atividade) VALUES (%s, %s, NOW())",
+                    (membro.id, novo_total)
+                )
+
+            cursor.execute("UPDATE inscricoes_jogos SET presenca_marcada = FALSE WHERE id = %s", (self.inscricao_id,))
+            conn.commit()
+            cursor.close()
+            conn.close()
+
+            try:
+                await update_member_tier_role(membro, novo_total)
+            except Exception as e:
+                print(f"Erro ao atualizar cargo de tier ao remover presença no painel: {e}")
+
+            await enviar_log_pontos(
+                interaction.guild,
+                f"⭐ Foi removida uma presença a **{nome_log}**\n"
+                f"Conta agora com: **{novo_total:02} presenças**"
+            )
+
+            return await self.atualizar_painel(interaction, f"↩️ Presença removida para **{nome_log}**.")
+
+        novo_total = atual + 1
         if resultado:
             cursor.execute(
                 "UPDATE pontos SET pontos = %s, ultima_atividade = NOW() WHERE user_id = %s",
@@ -1467,11 +1512,11 @@ class PainelJogadorView(discord.ui.View):
 
         await enviar_log_pontos(
             interaction.guild,
-            f"⭐ Foi adicionada uma presença a {membro.mention}\n"
+            f"⭐ Foi adicionada uma presença a **{nome_log}**\n"
             f"Conta agora com: **{novo_total:02} presenças**"
         )
 
-        await self.atualizar_painel(interaction, f"✅ Presença marcada para {membro.mention}.")
+        await self.atualizar_painel(interaction, f"✅ Presença marcada para **{nome_log}**.")
 
     @discord.ui.button(label="Crony feito", emoji="🎯", style=discord.ButtonStyle.primary)
     async def marcar_crony(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1526,7 +1571,7 @@ class PainelJogadorView(discord.ui.View):
         cursor.close()
         conn.close()
 
-        await self.atualizar_painel(interaction, f"📄 Termo marcado como assinado para {membro.mention}.")
+        await self.atualizar_painel(interaction, f"📄 Termo marcado como assinado para **{formatar_nome_operador(membro, nome_jogador)}**.")
 
     @discord.ui.button(label="🔵 Equipa A", style=discord.ButtonStyle.secondary)
     async def equipa_a(self, interaction: discord.Interaction, button: discord.ui.Button):
