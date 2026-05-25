@@ -1486,17 +1486,17 @@ async def criar_embed_gestao_jogador(guild: discord.Guild, inscricao_id: int):
     embed.add_field(name="🆔 Operador", value=titulo_numero, inline=True)
     embed.set_footer(text="Painel de staff • presença adiciona +1 presença")
 
-    return embed, PainelJogadorView(inscricao_id, bool(presenca), bool(crony), termo_ok, equipa)
+    return embed, PainelJogadorView(inscricao_id, bool(presenca), bool(chrony), termo_ok, equipa)
 
 
 class PainelJogadorView(discord.ui.View):
-    def __init__(self, inscricao_id: int, presenca: bool, crony: bool, termo_ok: bool, equipa: str = None):
+    def __init__(self, inscricao_id: int, presenca: bool, chrony: bool, termo_ok: bool, equipa: str = None):
         super().__init__(timeout=None)
         self.inscricao_id = inscricao_id
         self.marcar_presenca.disabled = False
         self.marcar_presenca.label = "Remover presença" if presenca else "Marcar presença"
         self.marcar_presenca.style = discord.ButtonStyle.red if presenca else discord.ButtonStyle.green
-        self.marcar_crony.disabled = crony
+        self.marcar_crony.disabled = chrony
         self.marcar_crony.label = "Chrony OK" if chrony else "Chrony feito"
         self.marcar_termo.disabled = termo_ok
         self.marcar_termo.label = "Termo OK" if termo_ok else "Termo assinado"
