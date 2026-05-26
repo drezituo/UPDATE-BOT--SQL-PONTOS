@@ -1467,43 +1467,28 @@ async def criar_embed_gestao_jogador(guild: discord.Guild, inscricao_id: int):
         "B": "🔴 Equipa B",
     }.get(equipa, "⚪ Sem equipa")
 
-    presenca_txt = "✅ Presença" if presenca else "⬜ Presença"
-    chrony_txt = "✅ Chrony" if chrony else "⬜ Chrony"
-    termo_txt = "✅ Termo" if termo_ok else "⬜ Termo"
-
-    if presenca and chrony and termo_ok and equipa in ("A", "B"):
-        cor = discord.Color.green()
-    elif presenca or chrony or termo_ok or equipa in ("A", "B"):
-        cor = discord.Color.gold()
-    else:
-        cor = discord.Color.dark_teal()
-
-    descricao = (
-        "```fix
-"
-        f"{jogador_valor}
-
-"
-        f"{presenca_txt}
-"
-        f"{chrony_txt}
-"
-        f"{termo_txt}
-"
-        f"{equipa_txt}
-"
-        "```"
-    )
+    titulo_numero = f"#{numero_jogador:02d}" if numero_jogador else "Sem número"
 
     embed = discord.Embed(
-        title="👥 Painel do Jogador",
-        description=descricao,
-        color=cor,
+        title=f"👥 Gestão do Jogador — {titulo_numero}",
+        description=f"**{jogador_valor}**",
+        color=discord.Color.blurple(),
         timestamp=discord.utils.utcnow()
     )
     if membro:
         embed.set_thumbnail(url=membro.display_avatar.url)
 
+    painel_txt = (
+        "```fix\n"
+        f"{jogador_valor}\n\n"
+        f"{'✅' if presenca else '⬜'} Presença\n"
+        f"{'✅' if chrony else '⬜'} Chrony\n"
+        f"{'✅' if termo_ok else '⬜'} Termo\n"
+        f"{equipa_txt}\n"
+        "```"
+    )
+
+    embed.description = painel_txt
     embed.set_footer(text="Painel de staff")
 
     return embed, PainelJogadorView(inscricao_id, bool(presenca), bool(chrony), termo_ok, equipa)
@@ -1517,7 +1502,7 @@ class PainelJogadorView(discord.ui.View):
         self.marcar_presenca.label = "Remover presença" if presenca else "Marcar presença"
         self.marcar_presenca.style = discord.ButtonStyle.red if presenca else discord.ButtonStyle.green
         self.marcar_crony.disabled = False
-        self.marcar_crony.label = "Remover Chrony" if chrony else "Marcar Chrony"
+        self.marcar_crony.label = "Remover Chrony" if chrony else "Chrony feito"
         self.marcar_crony.style = discord.ButtonStyle.red if chrony else discord.ButtonStyle.primary
         self.marcar_termo.disabled = termo_ok
         self.marcar_termo.label = "Termo OK" if termo_ok else "Termo assinado"
@@ -1634,23 +1619,25 @@ class PainelJogadorView(discord.ui.View):
         if not row:
             return await interaction.response.send_message("⚠️ Inscrição não encontrada.", ephemeral=True)
 
-        chrony_atual = bool(row[7])
-        novo_estado = not chrony_atual
-
         conn = get_connection()
         if not conn:
             return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
 
+        novo_estado = not bool(row[7])
+
         cursor = conn.cursor()
-        cursor.execute("UPDATE inscricoes_jogos SET crony_feito = %s WHERE id = %s", (novo_estado, self.inscricao_id))
+        cursor.execute(
+            "UPDATE inscricoes_jogos SET crony_feito = %s WHERE id = %s",
+            (novo_estado, self.inscricao_id)
+        )
         conn.commit()
         cursor.close()
         conn.close()
 
-        if novo_estado:
-            await self.atualizar_painel(interaction, "🎯 Chrony marcado como feito.")
-        else:
-            await self.atualizar_painel(interaction, "↩️ Chrony removido.")
+        await self.atualizar_painel(
+            interaction,
+            "🎯 Chrony marcado como feito." if novo_estado else "↩️ Chrony removido."
+        )
 
     @discord.ui.button(label="Termo assinado", emoji="📄", style=discord.ButtonStyle.secondary)
     async def marcar_termo(self, interaction: discord.Interaction, button: discord.ui.Button):
