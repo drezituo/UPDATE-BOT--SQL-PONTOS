@@ -7,6 +7,7 @@ import os
 import random
 import re
 from datetime import datetime, timezone, timedelta
+from aiohttp import web
 
 # ---------- CONFIG ----------
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -15,6 +16,11 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 DB_ERROR_MSG = "✅ Bot ativado, volta a digitar o comando."
 PONTOS_LOG_CHANNEL_ID = 1466622709772582963
 PONTOS_LOG_CHANNEL_ID = 1466622709772582963
+
+# ---------- NFC API ----------
+NFC_API_TOKEN = os.getenv("NFC_API_TOKEN", "").strip()
+NFC_API_PORT = int(os.getenv("NFC_API_PORT", os.getenv("PORT", "8080")))
+nfc_api_runner = None
 
 # ---------- INSCRIÇÕES ----------
 LIMITE_PADRAO_INSCRICOES = 25
@@ -804,6 +810,8 @@ async def on_ready():
 
     if not limpar_timers_auto.is_running():
         limpar_timers_auto.start()
+
+    await start_nfc_api_server()
 
 
 @bot.event
@@ -9217,6 +9225,130 @@ async def teste_modos(ctx):
     )
     embed.set_footer(text="Sandbox seguro para testes")
     await ctx.send(embed=embed, view=EscolherTesteModoView())
+
+
+
+# =========================
+# 📡 NFC API — SITE → BOT
+# =========================
+class NFCFakeChannel:
+    def __init__(self, channel_id: int):
+        self.id = channel_id
+
+
+class NFCFakeCtx:
+    """Contexto mínimo para executar a lógica real dos comandos Milsim via NFC."""
+    def __init__(self, team: str):
+        self.team = team
+        self.channel = NFCFakeChannel(AZUL_CHANNEL_ID if team == "azul" else VERMELHO_CHANNEL_ID)
+        self.messages = []
+
+    async def send(self, content=None, *, embed=None, delete_after=None, view=None):
+        if content:
+            self.messages.append(str(content))
+
+        if embed:
+            titulo = getattr(embed, "title", None)
+            descricao = getattr(embed, "description", None)
+            partes = []
+            if titulo:
+                partes.append(str(titulo))
+            if descricao:
+                partes.append(str(descricao))
+            if partes:
+                self.messages.append("\n".join(partes))
+
+        return None
+
+
+def _nfc_json(ok: bool, message: str, status: int = 200, **extra):
+    payload = {
+        "ok": ok,
+        "message": message,
+    }
+    payload.update(extra)
+    return web.json_response(payload, status=status)
+
+
+def _nfc_authorized(request: web.Request) -> bool:
+    # Se definires NFC_API_TOKEN no Railway, o site também deve usar o mesmo token.
+    if not NFC_API_TOKEN:
+        return True
+
+    return request.headers.get("Authorization", "") == f"Bearer {NFC_API_TOKEN}"
+
+
+async def nfc_milsim_api(request: web.Request):
+    if not _nfc_authorized(request):
+        return _nfc_json(False, "Não autorizado.", status=401)
+
+    try:
+        data = await request.json()
+    except Exception:
+        return _nfc_json(False, "JSON inválido.", status=400)
+
+    team = str(data.get("team", "")).strip().lower()
+    codigo_lido = str(data.get("codigo", "")).strip().upper()
+    action = str(data.get("action", "codigo")).strip().lower()
+
+    if team not in ("azul", "vermelho"):
+        return _nfc_json(False, "Equipa inválida.", status=400)
+
+    if not codigo_lido:
+        return _nfc_json(False, "Código vazio.", status=400)
+
+    if not milsim_state.get("active"):
+        return _nfc_json(False, "A operação Milsim ainda não está ativa.", status=409)
+
+    fake_ctx = NFCFakeCtx(team)
+
+    try:
+        if action in ("extracao_hvt", "extrair_hvt", "extracaohtv"):
+            if codigo_lido not in ALL_OPERATOR_CODES:
+                return _nfc_json(False, "Código HVT inválido.", status=400)
+
+            await extracaohtv.callback(fake_ctx, codigo_lido)
+        else:
+            # Usa a mesma lógica do comando !codigo:
+            # códigos de missão, checkpoints, HVT/captura, equipa, fase, timers, etc.
+            await codigo.callback(fake_ctx, codigo_lido)
+
+    except Exception as e:
+        print(f"Erro NFC Milsim: {repr(e)}")
+        return _nfc_json(False, f"Erro interno ao validar código: {e}", status=500)
+
+    resposta = fake_ctx.messages[-1] if fake_ctx.messages else "Código processado pelo bot."
+
+    # Se a lógica real respondeu com bloqueio/erro, o site mostra negado.
+    negado = resposta.startswith(("⚠️", "❌", "⛔"))
+
+    return _nfc_json(
+        not negado,
+        resposta,
+        status=200 if not negado else 409,
+        team=team,
+        codigo=codigo_lido,
+        action=action,
+    )
+
+
+async def start_nfc_api_server():
+    global nfc_api_runner
+
+    if nfc_api_runner is not None:
+        return
+
+    app_api = web.Application()
+    app_api.router.add_post("/api/nfc/milsim", nfc_milsim_api)
+
+    nfc_api_runner = web.AppRunner(app_api)
+    await nfc_api_runner.setup()
+
+    site = web.TCPSite(nfc_api_runner, "0.0.0.0", NFC_API_PORT)
+    await site.start()
+
+    print(f"📡 NFC API ativa na porta {NFC_API_PORT}")
+
 
 
 bot.run(TOKEN)
