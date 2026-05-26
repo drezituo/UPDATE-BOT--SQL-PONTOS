@@ -6,6 +6,7 @@ import psycopg2
 import os
 import random
 import re
+from html import escape
 from datetime import datetime, timezone, timedelta
 from aiohttp import web
 
@@ -9271,11 +9272,85 @@ def _nfc_json(ok: bool, message: str, status: int = 200, **extra):
 
 
 def _nfc_authorized(request: web.Request) -> bool:
-    # Se definires NFC_API_TOKEN no Railway, o site também deve usar o mesmo token.
+    # Se definires NFC_API_TOKEN no Railway, o pedido tem de usar o mesmo token.
+    # POST/site: Authorization: Bearer TOKEN
+    # GET/tag NFC: ?token=TOKEN
     if not NFC_API_TOKEN:
         return True
 
-    return request.headers.get("Authorization", "") == f"Bearer {NFC_API_TOKEN}"
+    header_token = request.headers.get("Authorization", "") == f"Bearer {NFC_API_TOKEN}"
+    query_token = request.query.get("token", "") == NFC_API_TOKEN
+    return header_token or query_token
+
+
+def _nfc_html(ok: bool, message: str, status: int = 200, **extra):
+    cor = "#16a34a" if ok else "#dc2626"
+    titulo = "✅ NFC validado" if ok else "❌ NFC negado"
+    team = escape(str(extra.get("team", "-")))
+    codigo_lido = escape(str(extra.get("codigo", "-")))
+    action = escape(str(extra.get("action", "-")))
+    mensagem = escape(str(message)).replace("\n", "<br>")
+
+    html = f"""<!doctype html>
+<html lang="pt">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{titulo}</title>
+  <style>
+    body {{ margin:0; min-height:100vh; display:grid; place-items:center; background:#0f172a; color:#e5e7eb; font-family:Arial, sans-serif; }}
+    .card {{ width:min(92vw, 520px); padding:28px; border-radius:22px; background:#111827; box-shadow:0 18px 50px rgba(0,0,0,.35); border:1px solid #334155; }}
+    h1 {{ margin:0 0 14px; color:{cor}; font-size:28px; }}
+    .msg {{ line-height:1.45; font-size:17px; margin:16px 0; }}
+    .meta {{ margin-top:18px; padding-top:16px; border-top:1px solid #334155; color:#94a3b8; font-size:14px; }}
+    code {{ color:#e2e8f0; }}
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>{titulo}</h1>
+    <div class="msg">{mensagem}</div>
+    <div class="meta">Equipa: <code>{team}</code><br>Código: <code>{codigo_lido}</code><br>Ação: <code>{action}</code></div>
+  </main>
+</body>
+</html>"""
+    return web.Response(text=html, status=status, content_type="text/html")
+
+
+async def _processar_nfc_milsim(team: str, codigo_lido: str, action: str):
+    team = str(team or "").strip().lower()
+    codigo_lido = str(codigo_lido or "").strip().upper()
+    action = str(action or "codigo").strip().lower()
+
+    if team not in ("azul", "vermelho"):
+        return False, "Equipa inválida.", 400, team, codigo_lido, action
+
+    if not codigo_lido:
+        return False, "Código vazio.", 400, team, codigo_lido, action
+
+    if not milsim_state.get("active"):
+        return False, "A operação Milsim ainda não está ativa.", 409, team, codigo_lido, action
+
+    fake_ctx = NFCFakeCtx(team)
+
+    try:
+        if action in ("extracao_hvt", "extrair_hvt", "extracaohtv"):
+            if codigo_lido not in ALL_OPERATOR_CODES:
+                return False, "Código HVT inválido.", 400, team, codigo_lido, action
+
+            await extracaohtv.callback(fake_ctx, codigo_lido)
+        else:
+            # Usa a mesma lógica do comando !codigo:
+            # códigos de missão, checkpoints, HVT/captura, equipa, fase, timers, etc.
+            await codigo.callback(fake_ctx, codigo_lido)
+
+    except Exception as e:
+        print(f"Erro NFC Milsim: {repr(e)}")
+        return False, f"Erro interno ao validar código: {e}", 500, team, codigo_lido, action
+
+    resposta = fake_ctx.messages[-1] if fake_ctx.messages else "Código processado pelo bot."
+    negado = resposta.startswith(("⚠️", "❌", "⛔"))
+    return not negado, resposta, 200 if not negado else 409, team, codigo_lido, action
 
 
 async def nfc_milsim_api(request: web.Request):
@@ -9287,45 +9362,36 @@ async def nfc_milsim_api(request: web.Request):
     except Exception:
         return _nfc_json(False, "JSON inválido.", status=400)
 
-    team = str(data.get("team", "")).strip().lower()
-    codigo_lido = str(data.get("codigo", "")).strip().upper()
-    action = str(data.get("action", "codigo")).strip().lower()
-
-    if team not in ("azul", "vermelho"):
-        return _nfc_json(False, "Equipa inválida.", status=400)
-
-    if not codigo_lido:
-        return _nfc_json(False, "Código vazio.", status=400)
-
-    if not milsim_state.get("active"):
-        return _nfc_json(False, "A operação Milsim ainda não está ativa.", status=409)
-
-    fake_ctx = NFCFakeCtx(team)
-
-    try:
-        if action in ("extracao_hvt", "extrair_hvt", "extracaohtv"):
-            if codigo_lido not in ALL_OPERATOR_CODES:
-                return _nfc_json(False, "Código HVT inválido.", status=400)
-
-            await extracaohtv.callback(fake_ctx, codigo_lido)
-        else:
-            # Usa a mesma lógica do comando !codigo:
-            # códigos de missão, checkpoints, HVT/captura, equipa, fase, timers, etc.
-            await codigo.callback(fake_ctx, codigo_lido)
-
-    except Exception as e:
-        print(f"Erro NFC Milsim: {repr(e)}")
-        return _nfc_json(False, f"Erro interno ao validar código: {e}", status=500)
-
-    resposta = fake_ctx.messages[-1] if fake_ctx.messages else "Código processado pelo bot."
-
-    # Se a lógica real respondeu com bloqueio/erro, o site mostra negado.
-    negado = resposta.startswith(("⚠️", "❌", "⛔"))
+    ok, resposta, status, team, codigo_lido, action = await _processar_nfc_milsim(
+        data.get("team", ""),
+        data.get("codigo", ""),
+        data.get("action", "codigo"),
+    )
 
     return _nfc_json(
-        not negado,
+        ok,
         resposta,
-        status=200 if not negado else 409,
+        status=status,
+        team=team,
+        codigo=codigo_lido,
+        action=action,
+    )
+
+
+async def nfc_milsim_tap(request: web.Request):
+    if not _nfc_authorized(request):
+        return _nfc_html(False, "Não autorizado.", status=401)
+
+    ok, resposta, status, team, codigo_lido, action = await _processar_nfc_milsim(
+        request.query.get("team", ""),
+        request.query.get("codigo", ""),
+        request.query.get("action", "codigo"),
+    )
+
+    return _nfc_html(
+        ok,
+        resposta,
+        status=status,
         team=team,
         codigo=codigo_lido,
         action=action,
@@ -9340,6 +9406,7 @@ async def start_nfc_api_server():
 
     app_api = web.Application()
     app_api.router.add_post("/api/nfc/milsim", nfc_milsim_api)
+    app_api.router.add_get("/api/nfc/milsim/tap", nfc_milsim_tap)
 
     nfc_api_runner = web.AppRunner(app_api)
     await nfc_api_runner.setup()
