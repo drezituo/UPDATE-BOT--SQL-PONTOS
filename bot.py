@@ -1689,14 +1689,30 @@ async def definir_equipa_jogador(interaction: discord.Interaction, inscricao_id:
         return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
 
     cursor = conn.cursor()
-    cursor.execute("UPDATE inscricoes_jogos SET equipa_jogo = %s WHERE id = %s", (equipa, inscricao_id))
+
+    cursor.execute("SELECT equipa_jogo FROM inscricoes_jogos WHERE id = %s", (inscricao_id,))
+    row = cursor.fetchone()
+    equipa_atual = row[0] if row else None
+
+    # Se clicar novamente na equipa onde o jogador já está, remove-o da equipa.
+    nova_equipa = None if equipa_atual == equipa else equipa
+
+    cursor.execute(
+        "UPDATE inscricoes_jogos SET equipa_jogo = %s WHERE id = %s",
+        (nova_equipa, inscricao_id)
+    )
     conn.commit()
     cursor.close()
     conn.close()
 
+    if nova_equipa is None:
+        texto = "⚪ Jogador removido da equipa."
+    else:
+        texto = f"{'🔵' if nova_equipa == 'A' else '🔴'} Jogador movido para a Equipa {nova_equipa}."
+
     await PainelJogadorView(inscricao_id, False, False, False).atualizar_painel(
         interaction,
-        f"{'🔵' if equipa == 'A' else '🔴'} Jogador movido para a Equipa {equipa}."
+        texto
     )
 
 
