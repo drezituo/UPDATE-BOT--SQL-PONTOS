@@ -9051,4 +9051,172 @@ async def limparchat(ctx, quantidade: int = 100):
 
 
 # ---------- START ----------
+
+# =========================
+# 🧪 PAINEL DE TESTE DE MODOS / NFC
+# =========================
+def criar_embed_teste_modos(modo: str, pontos_a: int, pontos_b: int, origem: str = "Painel iniciado"):
+    if pontos_a > pontos_b:
+        estado = "🏆 Equipa A em vantagem"
+        cor = discord.Color.blue()
+    elif pontos_b > pontos_a:
+        estado = "🏆 Equipa B em vantagem"
+        cor = discord.Color.red()
+    else:
+        estado = "🤝 Empate / Sem vencedor"
+        cor = discord.Color.gold()
+
+    embed = discord.Embed(
+        title="🧪 Painel de Teste — Modos / NFC",
+        description=(
+            "```fix\n"
+            f"MODO: {modo}\n\n"
+            f"Equipa A: {pontos_a}\n"
+            f"Equipa B: {pontos_b}\n\n"
+            f"{estado}\n"
+            "```"
+        ),
+        color=cor,
+        timestamp=discord.utils.utcnow()
+    )
+    embed.add_field(
+        name="📌 Origem do último evento",
+        value=origem,
+        inline=False
+    )
+    embed.set_footer(text="Sandbox • Não adiciona pontos • Não usa jogadores reais")
+    return embed
+
+
+class TesteModosView(discord.ui.View):
+    def __init__(self, modo: str = "Plantar Bomba", pontos_a: int = 0, pontos_b: int = 0):
+        super().__init__(timeout=None)
+        self.modo = modo
+        self.pontos_a = pontos_a
+        self.pontos_b = pontos_b
+
+    async def _staff_only(self, interaction: discord.Interaction) -> bool:
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message(
+                "❌ Apenas staff/admin pode usar este painel de teste.",
+                ephemeral=True
+            )
+            return False
+        return True
+
+    async def atualizar(self, interaction: discord.Interaction, origem: str):
+        embed = criar_embed_teste_modos(self.modo, self.pontos_a, self.pontos_b, origem)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="A +1 Manual", emoji="🔵", style=discord.ButtonStyle.primary, row=0)
+    async def a_manual(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction):
+            return
+        self.pontos_a += 1
+        await self.atualizar(interaction, "🔵 Evento manual: Equipa A +1")
+
+    @discord.ui.button(label="B +1 Manual", emoji="🔴", style=discord.ButtonStyle.danger, row=0)
+    async def b_manual(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction):
+            return
+        self.pontos_b += 1
+        await self.atualizar(interaction, "🔴 Evento manual: Equipa B +1")
+
+    @discord.ui.button(label="Simular NFC A", emoji="📡", style=discord.ButtonStyle.secondary, row=1)
+    async def nfc_a(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction):
+            return
+        self.pontos_a += 1
+        await self.atualizar(interaction, "📡 NFC simulado: Equipa A +1")
+
+    @discord.ui.button(label="Simular NFC B", emoji="📡", style=discord.ButtonStyle.secondary, row=1)
+    async def nfc_b(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction):
+            return
+        self.pontos_b += 1
+        await self.atualizar(interaction, "📡 NFC simulado: Equipa B +1")
+
+    @discord.ui.button(label="Reset", emoji="🔄", style=discord.ButtonStyle.secondary, row=2)
+    async def reset(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction):
+            return
+        self.pontos_a = 0
+        self.pontos_b = 0
+        await self.atualizar(interaction, "🔄 Painel reiniciado")
+
+    @discord.ui.button(label="Finalizar teste", emoji="🏁", style=discord.ButtonStyle.success, row=2)
+    async def finalizar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction):
+            return
+
+        if self.pontos_a > self.pontos_b:
+            resultado = "🏆 Vitória teste: Equipa A"
+        elif self.pontos_b > self.pontos_a:
+            resultado = "🏆 Vitória teste: Equipa B"
+        else:
+            resultado = "🤝 Resultado teste: Empate"
+
+        embed = criar_embed_teste_modos(self.modo, self.pontos_a, self.pontos_b, resultado)
+        embed.set_footer(text="Sandbox finalizado • Nenhum ponto real foi atribuído")
+
+        for item in self.children:
+            item.disabled = True
+
+        await interaction.response.edit_message(embed=embed, view=self)
+
+
+class EscolherTesteModoView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _staff_only(self, interaction: discord.Interaction) -> bool:
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message(
+                "❌ Apenas staff/admin pode usar este painel de teste.",
+                ephemeral=True
+            )
+            return False
+        return True
+
+    async def abrir_teste(self, interaction: discord.Interaction, modo: str):
+        if not await self._staff_only(interaction):
+            return
+
+        view = TesteModosView(modo=modo)
+        embed = criar_embed_teste_modos(modo, 0, 0, "Painel de teste criado")
+        await interaction.response.send_message(embed=embed, view=view)
+
+    @discord.ui.button(label="Plantar Bomba", emoji="💣", style=discord.ButtonStyle.primary, row=0)
+    async def teste_bomba(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.abrir_teste(interaction, "Plantar Bomba")
+
+    @discord.ui.button(label="Dominação", emoji="📦", style=discord.ButtonStyle.primary, row=0)
+    async def teste_dominacao(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.abrir_teste(interaction, "Dominação")
+
+    @discord.ui.button(label="Extração VIP", emoji="🎯", style=discord.ButtonStyle.primary, row=1)
+    async def teste_extracao(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.abrir_teste(interaction, "Extração VIP")
+
+    @discord.ui.button(label="Captura Bandeiras", emoji="🏳️", style=discord.ButtonStyle.primary, row=1)
+    async def teste_bandeiras(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.abrir_teste(interaction, "Captura Bandeiras")
+
+
+@bot.command(name="teste_modos", aliases=["testemodos", "teste_nfc"])
+@commands.has_permissions(administrator=True)
+async def teste_modos(ctx):
+    embed = discord.Embed(
+        title="🧪 Painel de Teste — Modos / NFC",
+        description=(
+            "Escolhe um modo para testar manualmente ou simular eventos NFC.\n\n"
+            "⚠️ Este painel não usa jogadores reais, não mexe nas equipas e não dá TeamWins."
+        ),
+        color=discord.Color.dark_teal(),
+        timestamp=discord.utils.utcnow()
+    )
+    embed.set_footer(text="Sandbox seguro para testes")
+    await ctx.send(embed=embed, view=EscolherTesteModoView())
+
+
 bot.run(TOKEN)
