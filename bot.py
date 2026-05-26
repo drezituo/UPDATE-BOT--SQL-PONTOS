@@ -1467,24 +1467,44 @@ async def criar_embed_gestao_jogador(guild: discord.Guild, inscricao_id: int):
         "B": "🔴 Equipa B",
     }.get(equipa, "⚪ Sem equipa")
 
-    titulo_numero = f"#{numero_jogador:02d}" if numero_jogador else "Sem número"
+    presenca_txt = "✅ Presença" if presenca else "⬜ Presença"
+    chrony_txt = "✅ Chrony" if chrony else "⬜ Chrony"
+    termo_txt = "✅ Termo" if termo_ok else "⬜ Termo"
+
+    if presenca and chrony and termo_ok and equipa in ("A", "B"):
+        cor = discord.Color.green()
+    elif presenca or chrony or termo_ok or equipa in ("A", "B"):
+        cor = discord.Color.gold()
+    else:
+        cor = discord.Color.dark_teal()
+
+    descricao = (
+        "```fix
+"
+        f"{jogador_valor}
+
+"
+        f"{presenca_txt}
+"
+        f"{chrony_txt}
+"
+        f"{termo_txt}
+"
+        f"{equipa_txt}
+"
+        "```"
+    )
 
     embed = discord.Embed(
-        title=f"👥 Gestão do Jogador — {titulo_numero}",
-        description=f"**{jogador_valor}**",
-        color=discord.Color.blurple(),
+        title="👥 Painel do Jogador",
+        description=descricao,
+        color=cor,
         timestamp=discord.utils.utcnow()
     )
     if membro:
         embed.set_thumbnail(url=membro.display_avatar.url)
 
-    embed.add_field(name="💳 Inscrição", value="✅ Paga" if estado == "pago" else f"⏳ {estado}", inline=True)
-    embed.add_field(name="✅ Presença", value="🟢 Marcada" if presenca else "🔴 Por marcar", inline=True)
-    embed.add_field(name="🎯 Chrony", value="🟢 OK" if chrony else "🔴 Por fazer", inline=True)
-    embed.add_field(name="📄 Termo", value="🟢 Assinado" if termo_ok else "🔴 Falta assinar", inline=True)
-    embed.add_field(name="🎮 Equipa", value=equipa_txt, inline=True)
-    embed.add_field(name="🆔 Operador", value=titulo_numero, inline=True)
-    embed.set_footer(text="Painel de staff • presença adiciona +1 presença")
+    embed.set_footer(text="Painel de staff")
 
     return embed, PainelJogadorView(inscricao_id, bool(presenca), bool(chrony), termo_ok, equipa)
 
@@ -1496,8 +1516,9 @@ class PainelJogadorView(discord.ui.View):
         self.marcar_presenca.disabled = False
         self.marcar_presenca.label = "Remover presença" if presenca else "Marcar presença"
         self.marcar_presenca.style = discord.ButtonStyle.red if presenca else discord.ButtonStyle.green
-        self.marcar_crony.disabled = chrony
-        self.marcar_crony.label = "Chrony OK" if chrony else "Chrony feito"
+        self.marcar_crony.disabled = False
+        self.marcar_crony.label = "Remover Chrony" if chrony else "Marcar Chrony"
+        self.marcar_crony.style = discord.ButtonStyle.red if chrony else discord.ButtonStyle.primary
         self.marcar_termo.disabled = termo_ok
         self.marcar_termo.label = "Termo OK" if termo_ok else "Termo assinado"
         self.equipa_a.label = "🔵 Equipa A ✓" if equipa == "A" else "🔵 Equipa A"
@@ -1613,20 +1634,23 @@ class PainelJogadorView(discord.ui.View):
         if not row:
             return await interaction.response.send_message("⚠️ Inscrição não encontrada.", ephemeral=True)
 
-        if row[7]:
-            return await interaction.response.send_message("ℹ️ O chrony já estava marcado como feito.", ephemeral=True)
+        chrony_atual = bool(row[7])
+        novo_estado = not chrony_atual
 
         conn = get_connection()
         if not conn:
             return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
 
         cursor = conn.cursor()
-        cursor.execute("UPDATE inscricoes_jogos SET crony_feito = TRUE WHERE id = %s", (self.inscricao_id,))
+        cursor.execute("UPDATE inscricoes_jogos SET crony_feito = %s WHERE id = %s", (novo_estado, self.inscricao_id))
         conn.commit()
         cursor.close()
         conn.close()
 
-        await self.atualizar_painel(interaction, "🎯 Chrony marcado como feito.")
+        if novo_estado:
+            await self.atualizar_painel(interaction, "🎯 Chrony marcado como feito.")
+        else:
+            await self.atualizar_painel(interaction, "↩️ Chrony removido.")
 
     @discord.ui.button(label="Termo assinado", emoji="📄", style=discord.ButtonStyle.secondary)
     async def marcar_termo(self, interaction: discord.Interaction, button: discord.ui.Button):
