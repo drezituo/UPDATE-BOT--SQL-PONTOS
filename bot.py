@@ -1122,6 +1122,98 @@ async def ping(ctx):
 
 @bot.command()
 @commands.has_permissions(administrator=True)
+async def validartermo(ctx, numero: str):
+    numero_int = extrair_numero_operador(numero)
+
+    if numero_int is None:
+        return await ctx.send(
+            "⚠️ Número inválido. Usa `!validartermo 153`.",
+            delete_after=10
+        )
+
+    membro = await obter_membro_por_numero_jogador(ctx.guild, numero_int)
+
+    if membro is None:
+        return await ctx.send(
+            f"⚠️ Não encontrei nenhum jogador com o número #{numero_int:02d}.",
+            delete_after=10
+        )
+
+    conn = get_connection()
+    if not conn:
+        return await ctx.send(DB_ERROR_MSG, delete_after=10)
+
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        INSERT INTO termos_responsabilidade (user_id, confirmado_por)
+        VALUES (%s, %s)
+        ON CONFLICT (user_id)
+        DO UPDATE SET
+            assinado_em = NOW(),
+            confirmado_por = EXCLUDED.confirmado_por
+    """, (membro.id, ctx.author.id))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    await ctx.send(
+        f"✅ Termo validado para **{formatar_nome_operador(membro)}**.",
+        delete_after=10
+    )
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def removertermo(ctx, numero: str):
+    numero_int = extrair_numero_operador(numero)
+
+    if numero_int is None:
+        return await ctx.send(
+            "⚠️ Número inválido. Usa `!removertermo 153`.",
+            delete_after=10
+        )
+
+    membro = await obter_membro_por_numero_jogador(ctx.guild, numero_int)
+
+    if membro is None:
+        return await ctx.send(
+            f"⚠️ Não encontrei nenhum jogador com o número #{numero_int:02d}.",
+            delete_after=10
+        )
+
+    conn = get_connection()
+    if not conn:
+        return await ctx.send(DB_ERROR_MSG, delete_after=10)
+
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM termos_responsabilidade WHERE user_id = %s",
+        (membro.id,)
+    )
+
+    removidos = cursor.rowcount
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    if removidos:
+        await ctx.send(
+            f"↩️ Termo removido para **{formatar_nome_operador(membro)}**.",
+            delete_after=10
+        )
+    else:
+        await ctx.send(
+            f"ℹ️ O jogador **{formatar_nome_operador(membro)}** não tinha termo válido.",
+            delete_after=10
+        )
+
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
 async def abrir_inscricoes(ctx, limite: int = LIMITE_PADRAO_INSCRICOES):
     if not is_thread_channel(ctx.channel):
         return await ctx.send("⚠️ Este comando só pode ser usado dentro de uma thread.", delete_after=10)
