@@ -9484,9 +9484,91 @@ def _nfc_html(ok: bool, message: str, status: int = 200, **extra):
     }}
     @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
     @media (max-width: 640px) {{
-      .content {{ padding: 20px; }}
-      .grid {{ grid-template-columns: 1fr; }}
-      .topbar {{ align-items:flex-start; flex-direction:column; }}
+      body {{
+        min-height: 100dvh;
+        padding: 8px;
+        place-items: start center;
+      }}
+      body:after {{
+        width: 95vmin;
+        height: 95vmin;
+        opacity: .65;
+      }}
+      .terminal {{
+        width: min(100%, 760px);
+        border-radius: 18px;
+      }}
+      .topbar {{
+        padding: 13px 14px;
+        gap: 10px;
+        flex-wrap: wrap;
+        font-size: 10px;
+        letter-spacing: .10em;
+      }}
+      .content {{ padding: 18px 16px; }}
+      .stamp {{
+        padding: 8px 10px;
+        font-size: 10px;
+        letter-spacing: .07em;
+      }}
+      h1 {{
+        margin-top: 16px;
+        font-size: clamp(34px, 11vw, 48px);
+        letter-spacing: -.07em;
+      }}
+      .subtitle {{
+        font-size: 10px;
+        letter-spacing: .13em;
+        margin-bottom: 16px;
+      }}
+      .grid {{
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 9px;
+        margin: 14px 0;
+      }}
+      .cell {{
+        border-radius: 13px;
+        padding: 11px 10px;
+        min-height: 72px;
+      }}
+      .label {{
+        font-size: 9px;
+        letter-spacing: .10em;
+        margin-bottom: 6px;
+      }}
+      .value {{
+        font-size: 13px;
+        line-height: 1.18;
+        word-break: break-word;
+      }}
+      .message {{
+        margin-top: 14px;
+        padding: 14px;
+        font-size: 14px;
+        line-height: 1.35;
+        border-radius: 12px;
+      }}
+      .classified {{
+        margin-top: 14px;
+        padding-top: 12px;
+        font-size: 9px;
+        letter-spacing: .07em;
+        line-height: 1.35;
+      }}
+      .radar {{
+        right: -95px;
+        bottom: -105px;
+        width: 210px;
+        height: 210px;
+      }}
+    }}
+
+    @media (max-width: 360px) {{
+      .content {{ padding: 16px 12px; }}
+      h1 {{ font-size: 34px; }}
+      .grid {{ gap: 8px; }}
+      .cell {{ padding: 10px 8px; min-height: 68px; }}
+      .value {{ font-size: 12px; }}
     }}
   </style>
 </head>
