@@ -9625,6 +9625,183 @@ def _nfc_html(ok: bool, message: str, status: int = 200, **extra):
     return web.Response(text=html, status=status, content_type="text/html")
 
 
+def _nfc_confirm_html(team: str, codigo_lido: str, action: str, token: str = ""):
+    """Página intermédia: o NFC apenas abre o terminal; só o botão VALIDAR executa no Discord."""
+    team_raw = str(team or "-").strip().lower()
+    action_raw = str(action or "codigo").strip().lower()
+    active, current, phase, timer, hvt_public = _nfc_operation_snapshot(team_raw)
+
+    team_label = "TASK FORCE AZUL" if team_raw == "azul" else "TASK FORCE VERMELHA" if team_raw == "vermelho" else "EQUIPA DESCONHECIDA"
+    action_label = escape(_nfc_action_label(action_raw))
+    operation_state = "ATIVA" if active else "INATIVA"
+
+    hidden_team = escape(team_raw)
+    hidden_action = escape(action_raw)
+    hidden_codigo = escape(str(codigo_lido or "").strip().upper())
+    hidden_token = escape(str(token or ""))
+
+    html = f"""<!doctype html>
+<html lang="pt">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DUALITY SATCOM • CONFIRMAÇÃO</title>
+  <style>
+    :root {{ color-scheme: dark; }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      overflow-x: hidden;
+      background:
+        radial-gradient(circle at 50% 20%, rgba(14,165,233,.18), transparent 32%),
+        linear-gradient(180deg, #020617 0%, #07111f 48%, #020617 100%);
+      color: #dbeafe;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    }}
+    body:before {{
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background: repeating-linear-gradient(to bottom, rgba(148,163,184,.08) 0, rgba(148,163,184,.08) 1px, transparent 1px, transparent 4px);
+      opacity: .35;
+    }}
+    .terminal {{
+      position: relative;
+      z-index: 1;
+      width: min(94vw, 760px);
+      border: 1px solid rgba(125,211,252,.36);
+      border-radius: 22px;
+      background: rgba(2, 6, 23, .90);
+      box-shadow: 0 24px 90px rgba(0,0,0,.55), 0 0 45px rgba(14,165,233,.12);
+      overflow: hidden;
+    }}
+    .topbar {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 16px 18px;
+      border-bottom: 1px solid rgba(125,211,252,.22);
+      background: linear-gradient(90deg, rgba(8,47,73,.72), rgba(15,23,42,.65));
+      letter-spacing: .12em;
+      font-size: 12px;
+      color: #93c5fd;
+    }}
+    .signal {{ display:flex; align-items:center; gap:8px; white-space:nowrap; }}
+    .dot {{ width: 10px; height: 10px; border-radius: 50%; background: #f59e0b; box-shadow: 0 0 18px #f59e0b; animation: blink 1.4s infinite; }}
+    @keyframes blink {{ 0%,100% {{ opacity:1 }} 50% {{ opacity:.35 }} }}
+    .content {{ padding: 26px; }}
+    .stamp {{
+      display: inline-flex;
+      padding: 9px 12px;
+      border: 1px solid #f59e0b;
+      border-radius: 999px;
+      background: rgba(245,158,11,.14);
+      color: #fbbf24;
+      font-weight: 800;
+      letter-spacing: .08em;
+      font-size: 12px;
+    }}
+    h1 {{
+      margin: 18px 0 4px;
+      color: #f8fafc;
+      font-size: clamp(30px, 8vw, 58px);
+      line-height: .95;
+      letter-spacing: -.06em;
+      text-transform: uppercase;
+      text-shadow: 0 0 24px rgba(125,211,252,.22);
+    }}
+    .subtitle {{ color: #7dd3fc; letter-spacing: .16em; font-size: 12px; margin-bottom: 22px; }}
+    .grid {{ display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 18px 0; }}
+    .cell {{ border: 1px solid rgba(125,211,252,.18); border-radius: 16px; padding: 13px; background: rgba(15,23,42,.72); }}
+    .label {{ color:#64748b; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; margin-bottom: 7px; }}
+    .value {{ color:#e0f2fe; font-weight: 800; font-size: 15px; }}
+    .message {{
+      margin-top: 18px;
+      padding: 18px;
+      border-left: 3px solid #f59e0b;
+      background: linear-gradient(90deg, rgba(245,158,11,.16), rgba(15,23,42,.45));
+      border-radius: 14px;
+      color: #e5e7eb;
+      line-height: 1.5;
+      font-family: Arial, sans-serif;
+      font-size: 16px;
+    }}
+    .btn {{
+      width: 100%;
+      margin-top: 18px;
+      padding: 18px 20px;
+      border: 1px solid rgba(34,197,94,.75);
+      border-radius: 16px;
+      background: linear-gradient(90deg, rgba(22,163,74,.95), rgba(21,128,61,.95));
+      color: white;
+      font-weight: 900;
+      letter-spacing: .14em;
+      font-size: 16px;
+      cursor: pointer;
+      box-shadow: 0 0 26px rgba(34,197,94,.18);
+    }}
+    .btn:active {{ transform: scale(.99); }}
+    .classified {{ margin-top: 18px; padding-top: 14px; border-top: 1px solid rgba(125,211,252,.18); color: #64748b; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }}
+    @media (max-width: 640px) {{
+      body {{ min-height: 100dvh; padding: 8px; place-items: start center; }}
+      .terminal {{ width: min(100%, 760px); border-radius: 18px; }}
+      .topbar {{ padding: 13px 14px; gap: 10px; flex-wrap: wrap; font-size: 10px; letter-spacing: .10em; }}
+      .content {{ padding: 18px 16px; }}
+      .stamp {{ padding: 8px 10px; font-size: 10px; letter-spacing: .07em; }}
+      h1 {{ margin-top: 16px; font-size: clamp(34px, 11vw, 48px); letter-spacing: -.07em; }}
+      .subtitle {{ font-size: 10px; letter-spacing: .13em; margin-bottom: 16px; }}
+      .grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; margin: 14px 0; }}
+      .cell {{ border-radius: 13px; padding: 11px 10px; min-height: 72px; }}
+      .label {{ font-size: 9px; letter-spacing: .10em; margin-bottom: 6px; }}
+      .value {{ font-size: 13px; line-height: 1.18; word-break: break-word; }}
+      .message {{ margin-top: 14px; padding: 14px; font-size: 14px; line-height: 1.35; border-radius: 12px; }}
+      .btn {{ padding: 16px; font-size: 14px; }}
+      .classified {{ margin-top: 14px; padding-top: 12px; font-size: 9px; letter-spacing: .07em; line-height: 1.35; }}
+    }}
+  </style>
+</head>
+<body>
+  <main class="terminal">
+    <div class="topbar">
+      <div>DUALITY // SATCOM TERMINAL</div>
+      <div class="signal"><span class="dot"></span>STANDBY LINK</div>
+    </div>
+    <section class="content">
+      <div class="stamp">CONFIRMAÇÃO MANUAL NECESSÁRIA</div>
+      <h1>VALIDAR NFC?</h1>
+      <div class="subtitle">COMANDO CENTRAL • AUTORIZAÇÃO OPERACIONAL</div>
+      <div class="grid">
+        <div class="cell"><div class="label">Operação</div><div class="value">{operation_state}</div></div>
+        <div class="cell"><div class="label">Equipa</div><div class="value">{team_label}</div></div>
+        <div class="cell"><div class="label">Ação</div><div class="value">{action_label}</div></div>
+        <div class="cell"><div class="label">Fase</div><div class="value">{escape(phase)}</div></div>
+        <div class="cell"><div class="label">Missão atual</div><div class="value">{escape(current)}</div></div>
+        <div class="cell"><div class="label">Tempo restante</div><div class="value">{escape(timer)}</div></div>
+        <div class="cell"><div class="label">HVT</div><div class="value">{escape(hvt_public)}</div></div>
+        <div class="cell"><div class="label">Código</div><div class="value">CLASSIFICADO</div></div>
+      </div>
+      <div class="message">NFC detetado. Confirma apenas se a equipa está fisicamente no objetivo e autorizada a validar.</div>
+      <form method="get" action="/api/nfc/milsim/tap">
+        <input type="hidden" name="confirm" value="1">
+        <input type="hidden" name="team" value="{hidden_team}">
+        <input type="hidden" name="action" value="{hidden_action}">
+        <input type="hidden" name="codigo" value="{hidden_codigo}">
+        <input type="hidden" name="token" value="{hidden_token}">
+        <button class="btn" type="submit">VALIDAR OPERAÇÃO</button>
+      </form>
+      <div class="classified">Códigos, tokens e identificadores operacionais foram ocultados para evitar comprometimento da missão.</div>
+    </section>
+  </main>
+</body>
+</html>"""
+    return web.Response(text=html, status=200, content_type="text/html")
+
+
 async def _processar_nfc_milsim(team: str, codigo_lido: str, action: str):
     team = str(team or "").strip().lower()
     codigo_lido = str(codigo_lido or "").strip().upper()
@@ -9702,10 +9879,20 @@ async def nfc_milsim_tap(request: web.Request):
     if not _nfc_authorized(request):
         return _nfc_html(False, "Não autorizado.", status=401)
 
+    team_in = request.query.get("team", "")
+    codigo_in = request.query.get("codigo", "")
+    action_in = request.query.get("action", "codigo")
+    token_in = request.query.get("token", "")
+    confirmed = request.query.get("confirm", "") in ("1", "true", "sim", "yes")
+
+    # Primeiro toque NFC: abre terminal de confirmação, sem executar Discord.
+    if not confirmed:
+        return _nfc_confirm_html(team_in, codigo_in, action_in, token_in)
+
     ok, resposta, status, team, codigo_lido, action = await _processar_nfc_milsim(
-        request.query.get("team", ""),
-        request.query.get("codigo", ""),
-        request.query.get("action", "codigo"),
+        team_in,
+        codigo_in,
+        action_in,
     )
 
     return _nfc_html(
