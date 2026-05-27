@@ -9249,7 +9249,6 @@ class NFCFakeCtx:
         self.team = team
         self.channel = NFCFakeChannel(AZUL_CHANNEL_ID if team == "azul" else VERMELHO_CHANNEL_ID)
         self.messages = []
-        self.last_embed_payload = None
 
     async def send(self, content=None, *, embed=None, delete_after=None, view=None):
         if content:
@@ -9263,28 +9262,6 @@ class NFCFakeCtx:
                 partes.append(str(titulo))
             if descricao:
                 partes.append(str(descricao))
-            fields = []
-            for field in getattr(embed, "fields", []) or []:
-                try:
-                    fname = str(getattr(field, "name", "") or "").strip()
-                    fvalue = str(getattr(field, "value", "") or "").strip()
-                    if fname or fvalue:
-                        fields.append({"name": fname, "value": fvalue})
-                        if fname and fvalue:
-                            partes.append(f"{fname}\n{fvalue}")
-                except Exception:
-                    pass
-            footer_text = ""
-            try:
-                footer_text = str(embed.footer.text or "") if embed.footer else ""
-            except Exception:
-                footer_text = ""
-            self.last_embed_payload = {
-                "title": str(titulo or ""),
-                "description": str(descricao or ""),
-                "fields": fields,
-                "footer": footer_text,
-            }
             if partes:
                 self.messages.append("\n".join(partes))
 
@@ -9340,80 +9317,6 @@ def _nfc_public_message(message: str) -> str:
     return texto.strip() or "Pedido processado pelo terminal."
 
 
-
-
-def _nfc_safe_lines_html(texto: str) -> str:
-    """Texto seguro para HTML, sem códigos/tokens, preservando quebras de linha."""
-    return escape(_nfc_public_message(texto)).replace("\n", "<br>")
-
-
-def _nfc_next_step_hint(ok: bool, message: str, action: str) -> str:
-    """Fallback seguro quando o comando não devolve embed com campos de ordem."""
-    msg = _nfc_public_message(message).lower()
-    action = str(action or "codigo").lower()
-
-    if ok:
-        if action in ("extracao_hvt", "extrair_hvt", "extracaohtv"):
-            return "HVT entregue com sucesso. Reorganizem no HQ e aguardem novas ordens do Comando Central."
-        return "Objetivo registado. Cumpram a ordem apresentada no Discord e aguardem atualização operacional."
-
-    if "fora da fase" in msg:
-        return "Este objetivo existe, mas ainda não pertence à fase atual. Aguardem nova janela operacional ou instruções do Comando Central."
-    if "tempo" in msg or "10 minutos" in msg or "bloquead" in msg:
-        return "Validação final ainda não autorizada. Aguardem o tempo mínimo operacional ou concluam o protocolo HVT, se aplicável."
-    if "hvt" in msg and ("nenhum" in msg or "capturado" in msg):
-        return "Antes da extração, capturem o HVT inimigo e transportem-no fisicamente até à base/HQ."
-    if "já foi utilizado" in msg or "ja foi utilizado" in msg:
-        return "Este objetivo já foi processado. Reagrupem e aguardem novas ordens."
-    if "não pertence" in msg or "nao pertence" in msg:
-        return "Código rejeitado pela cadeia operacional. Confirmem se estão a usar a tag da vossa equipa."
-    if "operação" in msg and "ativa" in msg:
-        return "Aguardem o início oficial da operação pelo Game Master."
-    return "Validem as condições da missão no briefing Discord antes de tentar novamente."
-
-
-def _nfc_details_html(details, ok: bool, message: str, action: str) -> str:
-    """Cria blocos de relatório/ordens a partir do embed Discord, sem expor códigos."""
-    details = details or {}
-    sections = []
-
-    title = _nfc_public_message(details.get("title", ""))
-    desc = _nfc_public_message(details.get("description", ""))
-    if title or desc:
-        body = ""
-        if title:
-            body += f'<div class="detail-title">{escape(title)}</div>'
-        if desc:
-            body += f'<div class="detail-text">{escape(desc).replace(chr(10), "<br>")}</div>'
-        sections.append(f'<div class="detail-card primary"><div class="detail-label">RELATÓRIO</div>{body}</div>')
-
-    for field in details.get("fields", []) or []:
-        name = _nfc_public_message(field.get("name", ""))
-        value = _nfc_public_message(field.get("value", ""))
-        if not (name or value):
-            continue
-        lname = name.lower()
-        card_class = ""
-        label = name or "INFORMAÇÃO"
-        if any(k in lname for k in ("ordem", "próximo", "proximo", "objetivo", "instru")):
-            card_class = " order"
-        elif any(k in lname for k in ("pontos", "resultado")):
-            card_class = " points"
-        elif any(k in lname for k in ("tempo", "timer")):
-            card_class = " time"
-        sections.append(
-            f'<div class="detail-card{card_class}"><div class="detail-label">{escape(label)}</div>'
-            f'<div class="detail-text">{escape(value).replace(chr(10), "<br>")}</div></div>'
-        )
-
-    hint = _nfc_next_step_hint(ok, message, action)
-    sections.append(
-        f'<div class="detail-card next"><div class="detail-label">PRÓXIMO PASSO</div>'
-        f'<div class="detail-text">{escape(hint)}</div></div>'
-    )
-
-    return '<div class="details">' + ''.join(sections) + '</div>'
-
 def _nfc_action_label(action: str) -> str:
     action = str(action or "codigo").strip().lower()
     if action in ("extracao_hvt", "extrair_hvt", "extracaohtv"):
@@ -9464,7 +9367,6 @@ def _nfc_html(ok: bool, message: str, status: int = 200, **extra):
     team = "TASK FORCE AZUL" if team_raw == "azul" else "TASK FORCE VERMELHA" if team_raw == "vermelho" else "EQUIPA DESCONHECIDA"
     action = escape(_nfc_action_label(action_raw))
     mensagem = escape(_nfc_public_message(message)).replace("\n", "<br>")
-    details_html = _nfc_details_html(extra.get("details"), ok, message, action_raw)
     operation_state = "ATIVA" if active else "INATIVA"
     pulse = "online" if ok else "denied"
 
@@ -9580,42 +9482,6 @@ def _nfc_html(ok: bool, message: str, status: int = 200, **extra):
       font-family: Arial, sans-serif;
       font-size: 16px;
     }}
-    .details {{
-      display: grid;
-      gap: 12px;
-      margin-top: 16px;
-    }}
-    .detail-card {{
-      border: 1px solid rgba(125,211,252,.18);
-      border-radius: 14px;
-      padding: 15px;
-      background: rgba(15,23,42,.62);
-      font-family: Arial, sans-serif;
-    }}
-    .detail-card.primary {{ border-color: rgba(125,211,252,.28); background: rgba(8,47,73,.35); }}
-    .detail-card.order, .detail-card.next {{ border-color: rgba(34,197,94,.32); background: rgba(22,101,52,.16); }}
-    .detail-card.points {{ border-color: rgba(250,204,21,.32); background: rgba(113,63,18,.18); }}
-    .detail-card.time {{ border-color: rgba(56,189,248,.32); background: rgba(12,74,110,.20); }}
-    .detail-title {{
-      color: #f8fafc;
-      font-weight: 900;
-      font-size: 17px;
-      margin-bottom: 8px;
-      letter-spacing: .02em;
-    }}
-    .detail-label {{
-      color: #7dd3fc;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace;
-      font-size: 11px;
-      letter-spacing: .13em;
-      text-transform: uppercase;
-      margin-bottom: 7px;
-    }}
-    .detail-text {{
-      color: #e5e7eb;
-      line-height: 1.42;
-      font-size: 15px;
-    }}
     .classified {{
       margin-top: 18px;
       padding-top: 14px;
@@ -9697,11 +9563,6 @@ def _nfc_html(ok: bool, message: str, status: int = 200, **extra):
         line-height: 1.35;
         border-radius: 12px;
       }}
-      .details {{ gap: 9px; margin-top: 12px; }}
-      .detail-card {{ padding: 12px; border-radius: 12px; }}
-      .detail-title {{ font-size: 15px; }}
-      .detail-label {{ font-size: 9px; letter-spacing: .10em; }}
-      .detail-text {{ font-size: 13px; line-height: 1.35; }}
       .classified {{
         margin-top: 14px;
         padding-top: 12px;
@@ -9750,7 +9611,6 @@ def _nfc_html(ok: bool, message: str, status: int = 200, **extra):
       </div>
 
       <div class="message">{mensagem}</div>
-      {details_html}
       <div class="classified">Códigos, tokens e identificadores operacionais foram ocultados para evitar comprometimento da missão.</div>
     </section>
   </main>
@@ -9930,10 +9790,10 @@ async def _processar_nfc_milsim(team: str, codigo_lido: str, action: str):
     action = str(action or "codigo").strip().lower()
 
     if team not in ("azul", "vermelho"):
-        return False, "Equipa inválida.", 400, team, codigo_lido, action, None
+        return False, "Equipa inválida.", 400, team, codigo_lido, action
 
     if not milsim_state.get("active"):
-        return False, "A operação Milsim ainda não está ativa.", 409, team, codigo_lido, action, None
+        return False, "A operação Milsim ainda não está ativa.", 409, team, codigo_lido, action
 
     fake_ctx = NFCFakeCtx(team)
 
@@ -9949,15 +9809,15 @@ async def _processar_nfc_milsim(team: str, codigo_lido: str, action: str):
                 ) or ""
 
                 if not codigo_lido:
-                    return False, "Nenhum HVT capturado para extração nesta equipa.", 409, team, "-", action, None
+                    return False, "Nenhum HVT capturado para extração nesta equipa.", 409, team, "-", action
 
             if codigo_lido not in ALL_OPERATOR_CODES:
-                return False, "Código HVT inválido.", 400, team, codigo_lido, action, None
+                return False, "Código HVT inválido.", 400, team, codigo_lido, action
 
             await extracaohtv.callback(fake_ctx, codigo_lido)
         else:
             if not codigo_lido:
-                return False, "Código vazio.", 400, team, codigo_lido, action, None
+                return False, "Código vazio.", 400, team, codigo_lido, action
 
             # Usa a mesma lógica do comando !codigo:
             # códigos de missão, checkpoints, HVT/captura, equipa, fase, timers, etc.
@@ -9965,11 +9825,11 @@ async def _processar_nfc_milsim(team: str, codigo_lido: str, action: str):
 
     except Exception as e:
         print(f"Erro NFC Milsim: {repr(e)}")
-        return False, f"Erro interno ao validar código: {e}", 500, team, codigo_lido, action, None
+        return False, f"Erro interno ao validar código: {e}", 500, team, codigo_lido, action
 
     resposta = fake_ctx.messages[-1] if fake_ctx.messages else "Código processado pelo bot."
     negado = resposta.startswith(("⚠️", "❌", "⛔"))
-    return not negado, resposta, 200 if not negado else 409, team, codigo_lido, action, fake_ctx.last_embed_payload
+    return not negado, resposta, 200 if not negado else 409, team, codigo_lido, action
 
 
 async def nfc_milsim_api(request: web.Request):
@@ -9981,7 +9841,7 @@ async def nfc_milsim_api(request: web.Request):
     except Exception:
         return _nfc_json(False, "JSON inválido.", status=400)
 
-    ok, resposta, status, team, codigo_lido, action, details = await _processar_nfc_milsim(
+    ok, resposta, status, team, codigo_lido, action = await _processar_nfc_milsim(
         data.get("team", ""),
         data.get("codigo", ""),
         data.get("action", "codigo"),
@@ -9994,7 +9854,6 @@ async def nfc_milsim_api(request: web.Request):
         team=team,
         codigo=codigo_lido,
         action=action,
-        details=details,
     )
 
 
@@ -10024,7 +9883,7 @@ async def nfc_milsim_confirm(request: web.Request):
     if NFC_API_TOKEN and data.get("token", "") != NFC_API_TOKEN:
         return _nfc_html(False, "Não autorizado.", status=401)
 
-    ok, resposta, status, team, codigo_lido, action, details = await _processar_nfc_milsim(
+    ok, resposta, status, team, codigo_lido, action = await _processar_nfc_milsim(
         data.get("team", ""),
         data.get("codigo", ""),
         data.get("action", "codigo"),
@@ -10037,7 +9896,6 @@ async def nfc_milsim_confirm(request: web.Request):
         team=team,
         codigo=codigo_lido,
         action=action,
-        details=details,
     )
 
 
