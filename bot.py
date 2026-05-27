@@ -5711,7 +5711,7 @@ def apply_early_validation_note_to_embed(team: str, embed: discord.Embed):
             "▸ Registar captura com `!codigo CODIGO-OPERADOR`\n"
             "▸ A captura desbloqueia validação antecipada antes dos 10 minutos\n"
             "▸ Transportar até ao HQ/base da vossa Task Force\n"
-            "▸ Confirmar extração na base com `!extracaohtv CODIGO-OPERADOR`\n"
+            "▸ Confirmar extração na base com `!extracaohtv CODIGO-OPERADOR` ou tag NFC fixa da base\n"
             "▸ Capturas podem repetir durante a missão\n"
             "▸ Só é permitida 1 extração HVT por missão\n"
             "▸ Sem timer — objetivo secundário opcional"
@@ -9325,9 +9325,6 @@ async def _processar_nfc_milsim(team: str, codigo_lido: str, action: str):
     if team not in ("azul", "vermelho"):
         return False, "Equipa inválida.", 400, team, codigo_lido, action
 
-    if not codigo_lido:
-        return False, "Código vazio.", 400, team, codigo_lido, action
-
     if not milsim_state.get("active"):
         return False, "A operação Milsim ainda não está ativa.", 409, team, codigo_lido, action
 
@@ -9335,11 +9332,26 @@ async def _processar_nfc_milsim(team: str, codigo_lido: str, action: str):
 
     try:
         if action in ("extracao_hvt", "extrair_hvt", "extracaohtv"):
+            # Tag fixa da base: se não vier código, extrai automaticamente o HVT capturado pela equipa.
+            if not codigo_lido:
+                codigo_lido = (
+                    milsim_state
+                    .get("hvt", {})
+                    .get("captured", {})
+                    .get(team)
+                ) or ""
+
+                if not codigo_lido:
+                    return False, "Nenhum HVT capturado para extração nesta equipa.", 409, team, "-", action
+
             if codigo_lido not in ALL_OPERATOR_CODES:
                 return False, "Código HVT inválido.", 400, team, codigo_lido, action
 
             await extracaohtv.callback(fake_ctx, codigo_lido)
         else:
+            if not codigo_lido:
+                return False, "Código vazio.", 400, team, codigo_lido, action
+
             # Usa a mesma lógica do comando !codigo:
             # códigos de missão, checkpoints, HVT/captura, equipa, fase, timers, etc.
             await codigo.callback(fake_ctx, codigo_lido)
