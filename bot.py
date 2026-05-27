@@ -9237,6 +9237,12 @@ class NFCFakeChannel:
         self.id = channel_id
 
 
+class NFCFakeMessage:
+    """Mensagem mínima para comandos que precisam de msg.id quando executados via NFC."""
+    def __init__(self, message_id: int = 0):
+        self.id = message_id
+
+
 class NFCFakeCtx:
     """Contexto mínimo para executar a lógica real dos comandos Milsim via NFC."""
     def __init__(self, team: str):
@@ -9259,7 +9265,16 @@ class NFCFakeCtx:
             if partes:
                 self.messages.append("\n".join(partes))
 
-        return None
+        # Quando um comando real precisa de msg.id (ex.: BUNKER-551), tentamos enviar
+        # para o canal real da equipa. Se falhar, devolvemos uma mensagem fake para não rebentar.
+        canal = bot.get_channel(self.channel.id)
+        if canal is not None:
+            try:
+                return await canal.send(content=content, embed=embed, delete_after=delete_after, view=view)
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+
+        return NFCFakeMessage(int(datetime.now(timezone.utc).timestamp() * 1000))
 
 
 def _nfc_json(ok: bool, message: str, status: int = 200, **extra):
@@ -9604,6 +9619,171 @@ def _nfc_html(ok: bool, message: str, status: int = 200, **extra):
     return web.Response(text=html, status=status, content_type="text/html")
 
 
+
+def _nfc_hidden_payload(team: str, codigo_lido: str, action: str) -> str:
+    return (
+        f'<input type="hidden" name="team" value="{escape(str(team or ""))}">'
+        f'<input type="hidden" name="codigo" value="{escape(str(codigo_lido or ""))}">'
+        f'<input type="hidden" name="action" value="{escape(str(action or "codigo"))}">'
+        f'<input type="hidden" name="token" value="{escape(NFC_API_TOKEN)}">'
+    )
+
+
+def _nfc_confirm_html(team: str, codigo_lido: str, action: str, status: int = 200):
+    """Página intermédia: NFC detetado, mas ainda sem validar no Discord."""
+    team_raw = str(team or "-").strip().lower()
+    action_raw = str(action or "codigo").strip().lower()
+    active, current, phase, timer, hvt_public = _nfc_operation_snapshot(team_raw)
+
+    team_label = "TASK FORCE AZUL" if team_raw == "azul" else "TASK FORCE VERMELHA" if team_raw == "vermelho" else "EQUIPA DESCONHECIDA"
+    action_label = escape(_nfc_action_label(action_raw))
+    operation_state = "ATIVA" if active else "INATIVA"
+    payload = _nfc_hidden_payload(team_raw, codigo_lido, action_raw)
+
+    html = f"""<!doctype html>
+<html lang="pt">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DUALITY SATCOM - CONFIRMAR</title>
+  <style>
+    :root {{ color-scheme: dark; }}
+    * {{ box-sizing: border-box; }}
+    body {{ margin:0; min-height:100dvh; display:grid; place-items:center; padding:10px; background:radial-gradient(circle at 50% 20%, rgba(14,165,233,.20), transparent 34%), linear-gradient(180deg,#020617,#07111f 48%,#020617); color:#dbeafe; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Courier New",monospace; }}
+    body:before {{ content:""; position:fixed; inset:0; pointer-events:none; background:repeating-linear-gradient(to bottom, rgba(148,163,184,.08) 0, rgba(148,163,184,.08) 1px, transparent 1px, transparent 4px); opacity:.34; }}
+    .terminal {{ position:relative; z-index:1; width:min(94vw,760px); border:1px solid rgba(125,211,252,.36); border-radius:22px; background:rgba(2,6,23,.9); box-shadow:0 24px 90px rgba(0,0,0,.55),0 0 45px rgba(14,165,233,.12); overflow:hidden; }}
+    .topbar {{ display:flex; justify-content:space-between; gap:12px; padding:15px 18px; border-bottom:1px solid rgba(125,211,252,.22); background:linear-gradient(90deg,rgba(8,47,73,.72),rgba(15,23,42,.65)); color:#93c5fd; font-size:12px; letter-spacing:.12em; }}
+    .content {{ padding:26px; }}
+    .stamp {{ display:inline-flex; padding:9px 12px; border:1px solid #38bdf8; border-radius:999px; background:rgba(56,189,248,.14); color:#7dd3fc; font-weight:800; font-size:12px; letter-spacing:.08em; }}
+    h1 {{ margin:18px 0 4px; color:#f8fafc; font-size:clamp(32px,8vw,58px); line-height:.95; letter-spacing:-.06em; text-transform:uppercase; }}
+    .subtitle {{ color:#7dd3fc; letter-spacing:.16em; font-size:12px; margin-bottom:20px; }}
+    .grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin:18px 0; }}
+    .cell {{ border:1px solid rgba(125,211,252,.18); border-radius:16px; padding:13px; background:rgba(15,23,42,.72); }}
+    .label {{ color:#64748b; font-size:11px; letter-spacing:.12em; text-transform:uppercase; margin-bottom:7px; }}
+    .value {{ color:#e0f2fe; font-weight:800; font-size:15px; }}
+    .message {{ margin-top:18px; padding:16px; border-left:3px solid #38bdf8; background:linear-gradient(90deg,rgba(56,189,248,.13),rgba(15,23,42,.45)); border-radius:14px; color:#e5e7eb; line-height:1.45; font-family:Arial,sans-serif; font-size:16px; }}
+    button {{ width:100%; margin-top:18px; padding:18px 16px; border:0; border-radius:16px; background:linear-gradient(90deg,#0ea5e9,#22c55e); color:#020617; font-weight:900; letter-spacing:.12em; font-size:16px; cursor:pointer; box-shadow:0 0 30px rgba(34,197,94,.22); }}
+    button:active {{ transform:scale(.99); }}
+    .classified {{ margin-top:14px; color:#64748b; font-size:12px; letter-spacing:.08em; text-transform:uppercase; }}
+    @media (max-width:640px) {{ .terminal{{width:100%; border-radius:18px}} .content{{padding:18px 16px}} .topbar{{font-size:10px; flex-wrap:wrap; padding:13px 14px}} .grid{{gap:9px}} .cell{{padding:11px 10px; min-height:70px}} .label{{font-size:9px}} .value{{font-size:13px}} h1{{font-size:clamp(34px,11vw,48px)}} button{{padding:17px 14px; font-size:14px}} }}
+  </style>
+</head>
+<body>
+  <main class="terminal">
+    <div class="topbar"><div>DUALITY // SATCOM TERMINAL</div><div>NFC DETETADO</div></div>
+    <section class="content">
+      <div class="stamp">AGUARDA CONFIRMAÇÃO MANUAL</div>
+      <h1>VALIDAR?</h1>
+      <div class="subtitle">O CÓDIGO CONTINUA CLASSIFICADO - NADA FOI EXECUTADO</div>
+      <div class="grid">
+        <div class="cell"><div class="label">Operação</div><div class="value">{operation_state}</div></div>
+        <div class="cell"><div class="label">Equipa</div><div class="value">{team_label}</div></div>
+        <div class="cell"><div class="label">Ação</div><div class="value">{action_label}</div></div>
+        <div class="cell"><div class="label">Fase</div><div class="value">{escape(phase)}</div></div>
+        <div class="cell"><div class="label">Missão atual</div><div class="value">{escape(current)}</div></div>
+        <div class="cell"><div class="label">Tempo restante</div><div class="value">{escape(timer)}</div></div>
+        <div class="cell"><div class="label">HVT</div><div class="value">{escape(hvt_public)}</div></div>
+        <div class="cell"><div class="label">Código</div><div class="value">CLASSIFICADO</div></div>
+      </div>
+      <div class="message">Confirma apenas se a equipa está fisicamente no objetivo e autorizada a validar esta ação.</div>
+      <form method="post" action="/api/nfc/milsim/confirm">
+        {payload}
+        <button type="submit">VALIDAR OPERAÇÃO</button>
+      </form>
+      <div class="classified">Tokens e códigos operacionais ocultados da interface.</div>
+    </section>
+  </main>
+</body>
+</html>"""
+    return web.Response(text=html, status=status, content_type="text/html")
+
+
+def _nfc_bunker_bar_html(team: str, codigo_lido: str, action: str, status: int = 200):
+    """Mini-game da barra para BUNKER-551. Só valida depois de sincronizar."""
+    team_raw = str(team or "azul").strip().lower()
+    action_raw = str(action or "codigo").strip().lower()
+    payload = _nfc_hidden_payload(team_raw, codigo_lido, action_raw)
+
+    html = f"""<!doctype html>
+<html lang="pt">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BUNKER UPLINK - SATCOM</title>
+  <style>
+    :root {{ color-scheme: dark; }} * {{ box-sizing:border-box; }}
+    body {{ margin:0; min-height:100dvh; display:grid; place-items:center; padding:12px; background:radial-gradient(circle at 50% 18%,rgba(34,211,238,.20),transparent 34%),linear-gradient(180deg,#020617,#07111f 52%,#020617); color:#dbeafe; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Courier New",monospace; overflow:hidden; }}
+    body:before {{ content:""; position:fixed; inset:0; pointer-events:none; background:repeating-linear-gradient(to bottom,rgba(148,163,184,.08) 0,rgba(148,163,184,.08) 1px,transparent 1px,transparent 4px); opacity:.36; }}
+    .terminal {{ width:min(94vw,680px); border:1px solid rgba(125,211,252,.38); border-radius:22px; background:rgba(2,6,23,.91); box-shadow:0 24px 90px rgba(0,0,0,.58),0 0 55px rgba(14,165,233,.14); overflow:hidden; position:relative; z-index:1; }}
+    .topbar {{ display:flex; justify-content:space-between; gap:12px; padding:15px 18px; border-bottom:1px solid rgba(125,211,252,.22); background:linear-gradient(90deg,rgba(8,47,73,.78),rgba(15,23,42,.68)); color:#93c5fd; font-size:12px; letter-spacing:.12em; }}
+    .content {{ padding:26px; }}
+    .stamp {{ display:inline-flex; padding:9px 12px; border:1px solid #38bdf8; border-radius:999px; background:rgba(56,189,248,.14); color:#7dd3fc; font-weight:800; font-size:12px; letter-spacing:.08em; }}
+    h1 {{ margin:18px 0 6px; color:#f8fafc; font-size:clamp(34px,9vw,60px); line-height:.92; letter-spacing:-.07em; text-transform:uppercase; }}
+    .subtitle {{ color:#7dd3fc; letter-spacing:.14em; font-size:12px; margin-bottom:20px; }}
+    .panel {{ padding:18px; border:1px solid rgba(125,211,252,.18); border-radius:18px; background:rgba(15,23,42,.72); }}
+    .bar {{ position:relative; width:100%; height:34px; border-radius:999px; overflow:hidden; background:#020617; border:1px solid rgba(125,211,252,.26); box-shadow:inset 0 0 22px rgba(0,0,0,.7); }}
+    .zone {{ position:absolute; top:0; bottom:0; left:42%; width:16%; background:rgba(34,197,94,.42); box-shadow:0 0 22px rgba(34,197,94,.5); }}
+    .cursor {{ position:absolute; top:-6px; bottom:-6px; width:5px; border-radius:999px; background:#f8fafc; box-shadow:0 0 18px #38bdf8; left:0%; animation:sweep 1.55s linear infinite alternate; }}
+    @keyframes sweep {{ from {{ left:0%; }} to {{ left:calc(100% - 5px); }} }}
+    .readout {{ display:flex; justify-content:space-between; gap:10px; margin-top:13px; color:#94a3b8; font-size:12px; letter-spacing:.08em; }}
+    .msg {{ margin-top:16px; min-height:42px; padding:14px; border-left:3px solid #38bdf8; border-radius:12px; background:rgba(56,189,248,.10); font-family:Arial,sans-serif; color:#e5e7eb; line-height:1.35; }}
+    button {{ width:100%; margin-top:18px; padding:18px 16px; border:0; border-radius:16px; background:linear-gradient(90deg,#0ea5e9,#22c55e); color:#020617; font-weight:900; letter-spacing:.12em; font-size:16px; cursor:pointer; }}
+    button.fail {{ background:linear-gradient(90deg,#ef4444,#f97316); }}
+    form {{ display:none; }}
+    @media (max-width:640px) {{ .terminal{{width:100%; border-radius:18px}} .content{{padding:18px 16px}} .topbar{{font-size:10px; flex-wrap:wrap; padding:13px 14px}} h1{{font-size:clamp(36px,12vw,52px)}} .panel{{padding:15px}} button{{padding:17px 14px; font-size:14px}} }}
+  </style>
+</head>
+<body>
+  <main class="terminal">
+    <div class="topbar"><div>DUALITY // BUNKER TERMINAL</div><div>SIGNAL LOCK</div></div>
+    <section class="content">
+      <div class="stamp">SATCOM UPLINK</div>
+      <h1>SINCRONIZAR</h1>
+      <div class="subtitle">ALINHA A FREQUÊNCIA NA JANELA VERDE</div>
+      <div class="panel">
+        <div class="bar" id="bar"><div class="zone"></div><div class="cursor" id="cursor"></div></div>
+        <div class="readout"><span>FREQ LOCK</span><span id="pct">--%</span></div>
+        <div class="msg" id="msg">Aguarda alinhamento e pressiona sincronizar no momento certo.</div>
+        <button id="sync" type="button">SINCRONIZAR UPLINK</button>
+        <form id="confirm" method="post" action="/api/nfc/milsim/confirm">{payload}</form>
+      </div>
+    </section>
+  </main>
+  <script>
+    const cursor = document.getElementById('cursor');
+    const msg = document.getElementById('msg');
+    const pct = document.getElementById('pct');
+    const btn = document.getElementById('sync');
+    const form = document.getElementById('confirm');
+    let locked = false;
+    function cursorPercent() {{
+      const bar = document.getElementById('bar').getBoundingClientRect();
+      const cur = cursor.getBoundingClientRect();
+      const center = cur.left + cur.width/2 - bar.left;
+      return Math.max(0, Math.min(100, (center / bar.width) * 100));
+    }}
+    setInterval(() => {{ if (!locked) pct.textContent = Math.round(cursorPercent()) + '%'; }}, 80);
+    btn.addEventListener('click', () => {{
+      if (locked) return;
+      const p = cursorPercent();
+      if (p >= 42 && p <= 58) {{
+        locked = true;
+        cursor.style.animationPlayState = 'paused';
+        msg.textContent = 'SIGNAL LOCK confirmado. A transmitir validação para o Comando Central...';
+        btn.textContent = 'UPLINK AUTORIZADO';
+        setTimeout(() => form.submit(), 450);
+      }} else {{
+        msg.textContent = 'SIGNAL LOST. Frequência fora da janela. Tenta novamente.';
+        btn.classList.add('fail');
+        setTimeout(() => {{ btn.classList.remove('fail'); msg.textContent = 'Recalibra a frequência e pressiona sincronizar na zona verde.'; }}, 900);
+      }}
+    }});
+  </script>
+</body>
+</html>"""
+    return web.Response(text=html, status=status, content_type="text/html")
+
+
 async def _processar_nfc_milsim(team: str, codigo_lido: str, action: str):
     team = str(team or "").strip().lower()
     codigo_lido = str(codigo_lido or "").strip().upper()
@@ -9681,10 +9861,32 @@ async def nfc_milsim_tap(request: web.Request):
     if not _nfc_authorized(request):
         return _nfc_html(False, "Não autorizado.", status=401)
 
+    team = str(request.query.get("team", "")).strip().lower()
+    codigo_lido = str(request.query.get("codigo", "")).strip().upper()
+    action = str(request.query.get("action", "codigo")).strip().lower()
+
+    # GET da tag NFC nunca executa diretamente. Primeiro mostra confirmação.
+    # Exceção visual: BUNKER-551 mostra o mini-game da barra antes de confirmar.
+    if action == "codigo" and codigo_lido == "BUNKER-551":
+        return _nfc_bunker_bar_html(team, codigo_lido, action)
+
+    return _nfc_confirm_html(team, codigo_lido, action)
+
+
+async def nfc_milsim_confirm(request: web.Request):
+    try:
+        data = await request.post()
+    except Exception:
+        return _nfc_html(False, "Pedido inválido.", status=400)
+
+    # Confirmação por botão: aceita o token enviado pelo formulário interno.
+    if NFC_API_TOKEN and data.get("token", "") != NFC_API_TOKEN:
+        return _nfc_html(False, "Não autorizado.", status=401)
+
     ok, resposta, status, team, codigo_lido, action = await _processar_nfc_milsim(
-        request.query.get("team", ""),
-        request.query.get("codigo", ""),
-        request.query.get("action", "codigo"),
+        data.get("team", ""),
+        data.get("codigo", ""),
+        data.get("action", "codigo"),
     )
 
     return _nfc_html(
@@ -9706,6 +9908,7 @@ async def start_nfc_api_server():
     app_api = web.Application()
     app_api.router.add_post("/api/nfc/milsim", nfc_milsim_api)
     app_api.router.add_get("/api/nfc/milsim/tap", nfc_milsim_tap)
+    app_api.router.add_post("/api/nfc/milsim/confirm", nfc_milsim_confirm)
 
     nfc_api_runner = web.AppRunner(app_api)
     await nfc_api_runner.setup()
