@@ -9262,6 +9262,15 @@ class NFCFakeCtx:
                 partes.append(str(titulo))
             if descricao:
                 partes.append(str(descricao))
+
+            # Guardamos campos do embed apenas para o terminal NFC conseguir perceber motivos
+            # como tempo restante. A interface pública continua a ocultar códigos sensíveis.
+            for field in getattr(embed, "fields", []) or []:
+                nome = getattr(field, "name", "")
+                valor = getattr(field, "value", "")
+                if nome or valor:
+                    partes.append(f"{nome}: {valor}")
+
             if partes:
                 self.messages.append("\n".join(partes))
 
@@ -9317,6 +9326,104 @@ def _nfc_public_message(message: str) -> str:
     return texto.strip() or "Pedido processado pelo terminal."
 
 
+
+def _nfc_extract_mmss(texto: str):
+    match = re.search(r"\b(\d{1,2}:\d{2})\b", str(texto or ""))
+    return match.group(1) if match else None
+
+
+def _nfc_terminal_result(ok: bool, message: str, status: int = 200):
+    """Converte respostas do bot em mensagens curtas e seguras para o terminal NFC."""
+    raw = str(message or "")
+    safe = _nfc_public_message(raw)
+    low = raw.lower()
+    tempo = _nfc_extract_mmss(raw)
+    discord_line = "Para mais informações consulte o Discord."
+
+    def join(*parts):
+        return "\n\n".join([p for p in parts if p])
+
+    if ok:
+        return (
+            "TRANSMISSÃO ACEITE",
+            "PROTOCOLO NFC APROVADO",
+            join("Objetivo validado com sucesso.", "Aguardem novas ordens operacionais.", discord_line),
+        )
+
+    if "operação milsim ainda não está ativa" in low or "operação ainda não está ativa" in low:
+        return (
+            "LINK INATIVO",
+            "OPERAÇÃO INATIVA",
+            join("Esta operação ainda não está ativa.", "Aguardem o início pelo Game Master.", discord_line),
+        )
+
+    if "tempo mínimo" in low or "validação antecipada" in low or "protocolo de validação" in low:
+        if tempo:
+            detalhe = f"Tempo mínimo operacional ainda não atingido.\nFaltam {tempo} para autorização."
+        else:
+            detalhe = "Tempo mínimo operacional ainda não atingido."
+        return (
+            "OPERAÇÃO BLOQUEADA",
+            "AUTORIZAÇÃO PENDENTE",
+            join(detalhe, "Aguardem autorização operacional ou completem o objetivo secundário necessário.", discord_line),
+        )
+
+    if "fora da fase" in low:
+        return (
+            "OPERAÇÃO BLOQUEADA",
+            "FASE INCORRETA",
+            join("Código correto, mas ainda não autorizado nesta fase operacional.", "Aguardem novas instruções do Comando Central.", discord_line),
+        )
+
+    if "já foi utilizado" in low or "já utilizado" in low:
+        return (
+            "OBJETIVO CONCLUÍDO",
+            "VALIDAÇÃO JÁ REGISTADA",
+            join("Este objetivo já foi validado anteriormente.", "Aguardem reagrupamento ou novas ordens.", discord_line),
+        )
+
+    if "nenhum hvt capturado" in low:
+        return (
+            "EXTRAÇÃO BLOQUEADA",
+            "HVT NÃO CAPTURADO",
+            join("Nenhum HVT capturado para extração nesta equipa.", "Capturem o HVT e transportem-no até à base antes de validar a extração.", discord_line),
+        )
+
+    if "hvt inválido" in low or "código hvt inválido" in low:
+        return (
+            "ACESSO NEGADO",
+            "HVT INVÁLIDO",
+            join("Código HVT inválido ou não autorizado.", "Confirmem a tag correta ou contactem o staff.", discord_line),
+        )
+
+    if "equipa inválida" in low or "não pertence" in low or "apenas a task force" in low:
+        return (
+            "ACESSO NEGADO",
+            "EQUIPA NÃO AUTORIZADA",
+            join("Esta tag não está autorizada para a tua equipa.", "Confirmem o objetivo correto ou contactem o staff.", discord_line),
+        )
+
+    if "código vazio" in low or "código inválido" in low or "intel comprometida" in low or "não autorizado" in low:
+        return (
+            "ACESSO NEGADO",
+            "CÓDIGO INVÁLIDO",
+            join("Código inválido ou não autorizado para esta operação.", "Confirmem a tag correta ou contactem o staff.", discord_line),
+        )
+
+    if "já existe" in low or "em curso" in low or "bloqueado" in low:
+        return (
+            "OPERAÇÃO BLOQUEADA",
+            "AÇÃO INDISPONÍVEL",
+            join(safe, discord_line),
+        )
+
+    return (
+        "ACESSO NEGADO",
+        "VALIDAÇÃO RECUSADA",
+        join(safe, discord_line),
+    )
+
+
 def _nfc_action_label(action: str) -> str:
     action = str(action or "codigo").strip().lower()
     if action in ("extracao_hvt", "extrair_hvt", "extracaohtv"):
@@ -9360,13 +9467,13 @@ def _nfc_html(ok: bool, message: str, status: int = 200, **extra):
     action_raw = str(extra.get("action", "-"))
     active, current, phase, timer, hvt_public = _nfc_operation_snapshot(team_raw)
 
+    titulo, subtitulo, mensagem_limpa = _nfc_terminal_result(ok, message, status)
+
     cor = "#22c55e" if ok else "#ef4444"
     cor_soft = "rgba(34,197,94,.16)" if ok else "rgba(239,68,68,.16)"
-    titulo = "ACESSO AUTORIZADO" if ok else "ACESSO NEGADO"
-    subtitulo = "PROTOCOLO NFC VALIDADO" if ok else "PROTOCOLO NFC BLOQUEADO"
     team = "TASK FORCE AZUL" if team_raw == "azul" else "TASK FORCE VERMELHA" if team_raw == "vermelho" else "EQUIPA DESCONHECIDA"
     action = escape(_nfc_action_label(action_raw))
-    mensagem = escape(_nfc_public_message(message)).replace("\n", "<br>")
+    mensagem = escape(mensagem_limpa).replace("\n", "<br>")
     operation_state = "ATIVA" if active else "INATIVA"
     pulse = "online" if ok else "denied"
 
