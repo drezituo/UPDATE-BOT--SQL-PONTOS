@@ -7688,30 +7688,24 @@ async def codigo(ctx, codigo: str):
         if milsim_state.get("decryption", {}).get("active"):
             return await ctx.send("⚠️ Já existe uma transmissão ativa no BUNKER.", delete_after=10)
 
+        # BUNKER-551 também respeita o protocolo mínimo de 10 minutos/HVT.
+        # Se bloquear aqui, o código NÃO é marcado como usado.
         elapsed = mission_elapsed_seconds(team)
         if elapsed < MIN_VALIDATION_SECONDS and not early_validation_unlocked(team):
             remaining = MIN_VALIDATION_SECONDS - elapsed
             minutes = remaining // 60
             seconds = remaining % 60
-
             return await ctx.send(embed=tactical_embed(
                 "⛔ TRANSMISSÃO BLOQUEADA",
                 (
-                    "Transmissão bloqueada.\n\n"
-                    "Protocolo de validação de **10 minutos** ainda não validado.\n"
-                    f"Tempo restante: **{minutes:02d}:{seconds:02d}**.\n\n"
-                    "HVT não capturado/extraído para validação antecipada.\n\n"
+                    "Protocolo de validação de **10 minutos** não validado.\n\n"
+                    f"Tempo restante: **{minutes:02d}:{seconds:02d}**\n"
+                    "HVT não capturado para validação antecipada.\n\n"
                     "Para mais informações consulta o Discord."
                 ),
                 discord.Color.orange(),
-                [
-                    {"name": "⏱️ TEMPO MÍNIMO OPERACIONAL", "value": "**10 MINUTOS**", "inline": True},
-                    {"name": "⌛ Tempo restante", "value": f"**{minutes:02d}:{seconds:02d}**", "inline": True},
-                    {"name": "🎯 DESBLOQUEIO ANTECIPADO", "value": "Capturar e extrair o HVT inimigo.", "inline": False},
-                    {"name": "📡 ORDEM", "value": "Aguardem autorização operacional ou concluam o protocolo HVT.", "inline": False},
-                ],
-                footer="COMANDO CENTRAL • BUNKER LOCKED"
-            ), delete_after=20)
+                footer="COMANDO CENTRAL • PROTOCOLO BUNKER"
+            ))
 
         team_state["completed_codes"].append(codigo)
 
@@ -9058,7 +9052,18 @@ async def painel_gm(ctx):
             {"name": "📌 Seletor de missão", "value": "Força/reinicia uma missão específica.", "inline": False},
         ]
     )
-    await ctx.send(embed=embed, view=GMControlPanelView())
+
+    old_msg_id = milsim_state.get("gm_panel_message_id")
+    if old_msg_id:
+        try:
+            old_msg = await ctx.channel.fetch_message(old_msg_id)
+            await old_msg.edit(embed=embed, view=GMControlPanelView())
+            return await ctx.send("✅ Painel GM atualizado.", delete_after=8)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            milsim_state["gm_panel_message_id"] = None
+
+    msg = await ctx.send(embed=embed, view=GMControlPanelView())
+    milsim_state["gm_panel_message_id"] = msg.id
 
 
 # =========================
