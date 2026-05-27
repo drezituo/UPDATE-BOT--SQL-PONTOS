@@ -9283,34 +9283,239 @@ def _nfc_authorized(request: web.Request) -> bool:
     return header_token or query_token
 
 
+def _nfc_public_message(message: str) -> str:
+    """Remove códigos sensíveis da resposta pública mostrada no browser NFC."""
+    texto = str(message or "")
+
+    # Remove blocos/backticks do Discord sem expor conteúdo sensível.
+    texto = texto.replace("```fix", "").replace("```", "").replace("`", "")
+
+    # Redige padrões de códigos operacionais / HVT / checkpoints.
+    sensitive_patterns = [
+        r"\b(?:AZ|VR)-\d{3}\b",
+        r"\bRED-CP\d+\b",
+        r"\b[A-Z]{3,}-\d{3}\b",
+    ]
+    for pattern in sensitive_patterns:
+        texto = re.sub(pattern, "[CLASSIFICADO]", texto, flags=re.IGNORECASE)
+
+    return texto.strip() or "Pedido processado pelo terminal."
+
+
+def _nfc_action_label(action: str) -> str:
+    action = str(action or "codigo").strip().lower()
+    if action in ("extracao_hvt", "extrair_hvt", "extracaohtv"):
+        return "EXTRAÇÃO HVT"
+    if action == "codigo":
+        return "VALIDAÇÃO OPERACIONAL"
+    return action.replace("_", " ").upper()
+
+
+def _nfc_operation_snapshot(team: str):
+    """Resumo seguro do estado atual, sem revelar códigos secretos."""
+    team = str(team or "").strip().lower()
+    active = bool(milsim_state.get("active"))
+    team_state = milsim_state.get("teams", {}).get(team, {}) if team in ("azul", "vermelho") else {}
+    current = str(team_state.get("current") or "-").replace("mission_", "MISSÃO ").upper()
+    phase = str(team_state.get("phase") or "-").replace("_", " ").upper()
+
+    end_time = milsim_state.get("mission_end_times", {}).get(team)
+    timer = "SEM TIMER"
+    if end_time:
+        if getattr(end_time, "tzinfo", None) is None:
+            end_time = end_time.replace(tzinfo=timezone.utc)
+        remaining = max(0, int((end_time - datetime.now(timezone.utc)).total_seconds()))
+        timer = f"{remaining // 60:02d}:{remaining % 60:02d}"
+
+    hvt_state = milsim_state.get("hvt", {})
+    captured = bool(hvt_state.get("captured", {}).get(team))
+    extracted = bool(hvt_state.get("extracted", {}).get(team))
+    if extracted:
+        hvt_public = "EXTRAÍDO"
+    elif captured:
+        hvt_public = "CAPTURADO / AGUARDA EXTRAÇÃO"
+    else:
+        hvt_public = "SEM HVT CAPTURADO"
+
+    return active, current, phase, timer, hvt_public
+
+
 def _nfc_html(ok: bool, message: str, status: int = 200, **extra):
-    cor = "#16a34a" if ok else "#dc2626"
-    titulo = "✅ NFC validado" if ok else "❌ NFC negado"
-    team = escape(str(extra.get("team", "-")))
-    codigo_lido = escape(str(extra.get("codigo", "-")))
-    action = escape(str(extra.get("action", "-")))
-    mensagem = escape(str(message)).replace("\n", "<br>")
+    team_raw = str(extra.get("team", "-")).strip().lower()
+    action_raw = str(extra.get("action", "-"))
+    active, current, phase, timer, hvt_public = _nfc_operation_snapshot(team_raw)
+
+    cor = "#22c55e" if ok else "#ef4444"
+    cor_soft = "rgba(34,197,94,.16)" if ok else "rgba(239,68,68,.16)"
+    titulo = "ACESSO AUTORIZADO" if ok else "ACESSO NEGADO"
+    subtitulo = "PROTOCOLO NFC VALIDADO" if ok else "PROTOCOLO NFC BLOQUEADO"
+    team = "TASK FORCE AZUL" if team_raw == "azul" else "TASK FORCE VERMELHA" if team_raw == "vermelho" else "EQUIPA DESCONHECIDA"
+    action = escape(_nfc_action_label(action_raw))
+    mensagem = escape(_nfc_public_message(message)).replace("\n", "<br>")
+    operation_state = "ATIVA" if active else "INATIVA"
+    pulse = "online" if ok else "denied"
 
     html = f"""<!doctype html>
 <html lang="pt">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{titulo}</title>
+  <title>DUALITY SATCOM • {titulo}</title>
   <style>
-    body {{ margin:0; min-height:100vh; display:grid; place-items:center; background:#0f172a; color:#e5e7eb; font-family:Arial, sans-serif; }}
-    .card {{ width:min(92vw, 520px); padding:28px; border-radius:22px; background:#111827; box-shadow:0 18px 50px rgba(0,0,0,.35); border:1px solid #334155; }}
-    h1 {{ margin:0 0 14px; color:{cor}; font-size:28px; }}
-    .msg {{ line-height:1.45; font-size:17px; margin:16px 0; }}
-    .meta {{ margin-top:18px; padding-top:16px; border-top:1px solid #334155; color:#94a3b8; font-size:14px; }}
-    code {{ color:#e2e8f0; }}
+    :root {{ color-scheme: dark; }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      overflow-x: hidden;
+      background:
+        radial-gradient(circle at 50% 20%, rgba(14,165,233,.18), transparent 32%),
+        linear-gradient(180deg, #020617 0%, #07111f 48%, #020617 100%);
+      color: #dbeafe;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    }}
+    body:before {{
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background: repeating-linear-gradient(to bottom, rgba(148,163,184,.08) 0, rgba(148,163,184,.08) 1px, transparent 1px, transparent 4px);
+      mix-blend-mode: screen;
+      opacity: .35;
+    }}
+    body:after {{
+      content: "";
+      position: fixed;
+      width: 75vmin;
+      height: 75vmin;
+      border: 1px solid rgba(56,189,248,.20);
+      border-radius: 50%;
+      box-shadow: 0 0 80px rgba(56,189,248,.10), inset 0 0 80px rgba(56,189,248,.05);
+      pointer-events: none;
+    }}
+    .terminal {{
+      position: relative;
+      z-index: 1;
+      width: min(94vw, 760px);
+      border: 1px solid rgba(125,211,252,.36);
+      border-radius: 22px;
+      background: rgba(2, 6, 23, .88);
+      box-shadow: 0 24px 90px rgba(0,0,0,.55), 0 0 45px rgba(14,165,233,.12);
+      overflow: hidden;
+    }}
+    .topbar {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 16px 18px;
+      border-bottom: 1px solid rgba(125,211,252,.22);
+      background: linear-gradient(90deg, rgba(8,47,73,.72), rgba(15,23,42,.65));
+      letter-spacing: .12em;
+      font-size: 12px;
+      color: #93c5fd;
+    }}
+    .signal {{ display:flex; align-items:center; gap:8px; white-space:nowrap; }}
+    .dot {{
+      width: 10px; height: 10px; border-radius: 50%; background: {cor};
+      box-shadow: 0 0 18px {cor}; animation: blink 1.4s infinite;
+    }}
+    @keyframes blink {{ 0%,100% {{ opacity:1 }} 50% {{ opacity:.35 }} }}
+    .content {{ padding: 26px; }}
+    .stamp {{
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 12px;
+      border: 1px solid {cor};
+      border-radius: 999px;
+      background: {cor_soft};
+      color: {cor};
+      font-weight: 800;
+      letter-spacing: .08em;
+      font-size: 12px;
+    }}
+    h1 {{
+      margin: 18px 0 4px;
+      color: #f8fafc;
+      font-size: clamp(30px, 8vw, 58px);
+      line-height: .95;
+      letter-spacing: -.06em;
+      text-transform: uppercase;
+      text-shadow: 0 0 24px rgba(125,211,252,.22);
+    }}
+    .subtitle {{ color: #7dd3fc; letter-spacing: .16em; font-size: 12px; margin-bottom: 22px; }}
+    .grid {{ display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 18px 0; }}
+    .cell {{
+      border: 1px solid rgba(125,211,252,.18);
+      border-radius: 16px;
+      padding: 13px;
+      background: rgba(15,23,42,.72);
+    }}
+    .label {{ color:#64748b; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; margin-bottom: 7px; }}
+    .value {{ color:#e0f2fe; font-weight: 800; font-size: 15px; }}
+    .message {{
+      margin-top: 18px;
+      padding: 18px;
+      border-left: 3px solid {cor};
+      background: linear-gradient(90deg, {cor_soft}, rgba(15,23,42,.45));
+      border-radius: 14px;
+      color: #e5e7eb;
+      line-height: 1.5;
+      font-family: Arial, sans-serif;
+      font-size: 16px;
+    }}
+    .classified {{
+      margin-top: 18px;
+      padding-top: 14px;
+      border-top: 1px solid rgba(125,211,252,.18);
+      color: #64748b;
+      font-size: 12px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }}
+    .radar {{
+      position:absolute; right:-70px; bottom:-90px; width:240px; height:240px; border-radius:50%;
+      border:1px solid rgba(34,211,238,.18);
+      background: conic-gradient(from 0deg, rgba(34,211,238,.22), transparent 34%, transparent);
+      animation: spin 4s linear infinite; opacity:.45;
+    }}
+    @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+    @media (max-width: 640px) {{
+      .content {{ padding: 20px; }}
+      .grid {{ grid-template-columns: 1fr; }}
+      .topbar {{ align-items:flex-start; flex-direction:column; }}
+    }}
   </style>
 </head>
 <body>
-  <main class="card">
-    <h1>{titulo}</h1>
-    <div class="msg">{mensagem}</div>
-    <div class="meta">Equipa: <code>{team}</code><br>Código: <code>{codigo_lido}</code><br>Ação: <code>{action}</code></div>
+  <main class="terminal">
+    <div class="radar"></div>
+    <div class="topbar">
+      <div>DUALITY // SATCOM TERMINAL</div>
+      <div class="signal"><span class="dot"></span>{pulse.upper()} LINK</div>
+    </div>
+    <section class="content">
+      <div class="stamp">{subtitulo}</div>
+      <h1>{titulo}</h1>
+      <div class="subtitle">COMANDO CENTRAL • INFORMAÇÃO OPERACIONAL SEGURA</div>
+
+      <div class="grid">
+        <div class="cell"><div class="label">Operação</div><div class="value">{operation_state}</div></div>
+        <div class="cell"><div class="label">Equipa</div><div class="value">{team}</div></div>
+        <div class="cell"><div class="label">Ação</div><div class="value">{action}</div></div>
+        <div class="cell"><div class="label">Fase</div><div class="value">{escape(phase)}</div></div>
+        <div class="cell"><div class="label">Missão atual</div><div class="value">{escape(current)}</div></div>
+        <div class="cell"><div class="label">Tempo restante</div><div class="value">{escape(timer)}</div></div>
+        <div class="cell"><div class="label">HVT</div><div class="value">{escape(hvt_public)}</div></div>
+        <div class="cell"><div class="label">Código</div><div class="value">CLASSIFICADO</div></div>
+      </div>
+
+      <div class="message">{mensagem}</div>
+      <div class="classified">Códigos, tokens e identificadores operacionais foram ocultados para evitar comprometimento da missão.</div>
+    </section>
   </main>
 </body>
 </html>"""
