@@ -7696,7 +7696,13 @@ async def codigo(ctx, codigo: str):
 
             return await ctx.send(embed=tactical_embed(
                 "⛔ TRANSMISSÃO BLOQUEADA",
-                "O terminal BUNKER foi sincronizado, mas o protocolo de envio ainda não autorizou o início da transmissão.",
+                (
+                    "Transmissão bloqueada.\n\n"
+                    "Protocolo de validação de **10 minutos** ainda não validado.\n"
+                    f"Tempo restante: **{minutes:02d}:{seconds:02d}**.\n\n"
+                    "HVT não capturado/extraído para validação antecipada.\n\n"
+                    "Para mais informações consulta o Discord."
+                ),
                 discord.Color.orange(),
                 [
                     {"name": "⏱️ TEMPO MÍNIMO OPERACIONAL", "value": "**10 MINUTOS**", "inline": True},
