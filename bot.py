@@ -224,7 +224,7 @@ async def obter_avatar_url_jogador(guild: discord.Guild, nome_jogador: str, memb
 
 
 async def obter_valor_jogador_embed(guild: discord.Guild, nome_jogador: str, membro: discord.Member = None):
-    """Mostra a menção e também o nome escrito, para evitar embeds com nicknames/menções pouco legíveis."""
+    """Mostra a menção e também o nome escrito para evitar nicks/menções pouco legíveis no embed."""
     if membro is not None:
         nome_escrito = formatar_nome_operador(membro, nome_jogador)
         return f"{membro.mention}\nNome: **{nome_escrito}**"
@@ -234,7 +234,8 @@ async def obter_valor_jogador_embed(guild: discord.Guild, nome_jogador: str, mem
         nome_escrito = formatar_nome_operador(membro_encontrado, nome_jogador)
         return f"{membro_encontrado.mention}\nNome: **{nome_escrito}**"
 
-    return f"Nome: **{nome_jogador}**"
+    nome_escrito = normalizar_nome(nome_jogador) or "Jogador"
+    return f"{nome_escrito}\nNome: **{nome_escrito}**"
 
 
 async def apagar_mensagem_comando(ctx):
@@ -592,6 +593,7 @@ async def criar_embed_inscricao_cancelada(guild: discord.Guild, thread_name: str
 
 
 async def atualizar_embed_estado(channel: discord.Thread):
+    """Atualiza o painel de inscrições e garante que fica sempre como última mensagem visível da thread."""
     conn = get_connection()
     if not conn:
         return
@@ -628,12 +630,29 @@ async def atualizar_embed_estado(channel: discord.Thread):
     embed.add_field(name="✅ Inscrições ativas", value=str(total), inline=True)
     embed.add_field(name="📉 Vagas restantes", value=str(max(limite - total, 0)), inline=True)
 
+    # Remove o painel antigo registado na base de dados.
     if estado_msg_id:
         try:
             old_msg = await channel.fetch_message(estado_msg_id)
             await old_msg.delete()
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             pass
+
+    # Segurança extra: remove outros painéis antigos que possam ter ficado para trás
+    # depois de reinícios, erros de permissões ou mensagens duplicadas.
+    try:
+        async for msg in channel.history(limit=50):
+            if msg.author.id != bot.user.id:
+                continue
+            if not msg.embeds:
+                continue
+            if any((embed_msg.title or "") == "📋 Estado das Inscrições" for embed_msg in msg.embeds):
+                try:
+                    await msg.delete()
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    pass
+    except (discord.Forbidden, discord.HTTPException):
+        pass
 
     try:
         new_msg = await channel.send(embed=embed, view=InscricoesView())
@@ -1313,6 +1332,8 @@ async def criar_inscricao_interaction(interaction: discord.Interaction, numero_t
                 "⚠️ Só podes fazer a tua própria inscrição.",
                 ephemeral=True
             )
+
+
     membro_jogador = await obter_membro_por_numero_jogador(interaction.guild, numero)
     if membro_jogador is None:
         return await interaction.response.send_message(
@@ -1699,6 +1720,8 @@ async def inscrever(ctx, *, nome: str):
         if membro_jogador is not None and membro_jogador.id != ctx.author.id:
             await apagar_mensagem_comando(ctx)
             return await ctx.send("⚠️ Só podes fazer a tua própria inscrição.", delete_after=10)
+
+
         membro_jogador = ctx.author
         nome = formatar_nome_operador(ctx.author)
     else:
