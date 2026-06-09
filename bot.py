@@ -224,18 +224,14 @@ async def obter_avatar_url_jogador(guild: discord.Guild, nome_jogador: str, memb
 
 
 async def obter_valor_jogador_embed(guild: discord.Guild, nome_jogador: str, membro: discord.Member = None):
-    """Mostra a menção e também o nome escrito para evitar nicks/menções pouco legíveis no embed."""
     if membro is not None:
-        nome_escrito = formatar_nome_operador(membro, nome_jogador)
-        return f"{membro.mention}\nNome: **{nome_escrito}**"
+        return membro.mention
 
     membro_encontrado = await encontrar_membro_por_nome(guild, nome_jogador)
     if membro_encontrado:
-        nome_escrito = formatar_nome_operador(membro_encontrado, nome_jogador)
-        return f"{membro_encontrado.mention}\nNome: **{nome_escrito}**"
+        return membro_encontrado.mention
 
-    nome_escrito = normalizar_nome(nome_jogador) or "Jogador"
-    return f"{nome_escrito}\nNome: **{nome_escrito}**"
+    return nome_jogador
 
 
 async def apagar_mensagem_comando(ctx):
@@ -593,7 +589,6 @@ async def criar_embed_inscricao_cancelada(guild: discord.Guild, thread_name: str
 
 
 async def atualizar_embed_estado(channel: discord.Thread):
-    """Atualiza o painel de inscrições e garante que fica sempre como última mensagem visível da thread."""
     conn = get_connection()
     if not conn:
         return
@@ -630,29 +625,12 @@ async def atualizar_embed_estado(channel: discord.Thread):
     embed.add_field(name="✅ Inscrições ativas", value=str(total), inline=True)
     embed.add_field(name="📉 Vagas restantes", value=str(max(limite - total, 0)), inline=True)
 
-    # Remove o painel antigo registado na base de dados.
     if estado_msg_id:
         try:
             old_msg = await channel.fetch_message(estado_msg_id)
             await old_msg.delete()
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             pass
-
-    # Segurança extra: remove outros painéis antigos que possam ter ficado para trás
-    # depois de reinícios, erros de permissões ou mensagens duplicadas.
-    try:
-        async for msg in channel.history(limit=50):
-            if msg.author.id != bot.user.id:
-                continue
-            if not msg.embeds:
-                continue
-            if any((embed_msg.title or "") == "📋 Estado das Inscrições" for embed_msg in msg.embeds):
-                try:
-                    await msg.delete()
-                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                    pass
-    except (discord.Forbidden, discord.HTTPException):
-        pass
 
     try:
         new_msg = await channel.send(embed=embed, view=InscricoesView())
@@ -1051,9 +1029,9 @@ class TermoAprovacaoView(discord.ui.View):
         await interaction.message.edit(embed=embed, view=TermoAprovacaoView(self.upload_id, self.user_id, bloqueado=True))
         await self._notificar_jogador(
             interaction,
-            "✅ O teu termo de responsabilidade foi aprovado."
+            "✅ O teu termo de responsabilidade foi aprovado. Já podes usar o botão 🎟️ Inscrever."
         )
-        await interaction.response.send_message("✅ Termo aprovado.", ephemeral=True)
+        await interaction.response.send_message("✅ Termo aprovado e jogador autorizado a inscrever-se.", ephemeral=True)
 
     @discord.ui.button(label="Rejeitar", emoji="❌", style=discord.ButtonStyle.red, custom_id="termo:rejeitar")
     async def rejeitar(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1333,6 +1311,13 @@ async def criar_inscricao_interaction(interaction: discord.Interaction, numero_t
                 ephemeral=True
             )
 
+        if not termo_assinado_sync(interaction.user.id):
+            return await interaction.response.send_message(
+                "❌ Não tens um termo de responsabilidade validado.\n\n"
+                f"📄 Documento: {LINK_TERMO}\n"
+                "Usa o botão 📄 Enviar termo e aguarda aprovação da staff.",
+                ephemeral=True
+            )
 
     membro_jogador = await obter_membro_por_numero_jogador(interaction.guild, numero)
     if membro_jogador is None:
@@ -1721,6 +1706,14 @@ async def inscrever(ctx, *, nome: str):
             await apagar_mensagem_comando(ctx)
             return await ctx.send("⚠️ Só podes fazer a tua própria inscrição.", delete_after=10)
 
+        if not termo_assinado_sync(ctx.author.id):
+            await apagar_mensagem_comando(ctx)
+            return await ctx.send(
+                "❌ Não tens um termo de responsabilidade validado.\n"
+                f"📄 Documento: {LINK_TERMO}\n"
+                "Usa o botão 📄 Enviar termo e aguarda aprovação da staff.",
+                delete_after=10
+            )
 
         membro_jogador = ctx.author
         nome = formatar_nome_operador(ctx.author)
@@ -3097,97 +3090,32 @@ async def corrigirinscricao(ctx, numero: str):
 # =========================
 @bot.command()
 async def comandos(ctx):
-    """Mostra todos os comandos do bot, separados por categoria, com a função de cada um."""
-    paginas = []
-
-    def criar_pagina(titulo: str, descricao: str):
-        embed = discord.Embed(
-            title=titulo,
-            description=descricao,
-            color=discord.Color.blurple(),
-            timestamp=discord.utils.utcnow()
-        )
-        embed.set_footer(text="⚡ Prefixo do bot: ! • Alguns comandos são exclusivos de staff/admin")
-        paginas.append(embed)
-        return embed
-
-    embed = criar_pagina(
-        "📜 Comandos do Stunhouse Bot — Página 1/5",
-        "Comandos principais de inscrições, termos, números e perfil."
+    embed = discord.Embed(
+        title="📜 Lista de Comandos",
+        description="Aqui estão todos os comandos disponíveis no bot:",
+        color=discord.Color.blurple(),
+        timestamp=discord.utils.utcnow()
     )
 
     embed.add_field(
-        name="✅ Básicos",
+        name="🎟️ Inscrições",
         value=(
-            "`!ping` — testa se o bot está online.\n"
-            "`!comandos` — mostra esta lista completa de comandos."
+            "`!abrir_inscricoes [limite]`\n"
+            "`!fechar_inscricoes`\n"
+            "`!estado_inscricoes`\n"
+            "`!inscrever nome`\n"
+            "`!cancelarinscricao nome`"
         ),
         inline=False
     )
 
     embed.add_field(
-        name="🎟️ Inscrições em threads",
+        name="⭐ Pontos / Presenças",
         value=(
-            "`!abrir_inscricoes [limite]` — abre inscrições na thread atual. Admin.\n"
-            "`!fechar_inscricoes` — fecha inscrições na thread atual. Admin.\n"
-            "`!estado_inscricoes` — recria/atualiza o painel de inscrições. Admin.\n"
-            "`!inscrever nome` — cria uma inscrição manual na thread.\n"
-            "`!cancelarinscricao nome` — cancela uma inscrição ativa.\n"
-            "`!painel_jogo` — mostra painéis de gestão dos inscritos pagos. Admin.\n"
-            "`!corrigirinscricao número` — corrige uma inscrição antiga respondendo ao embed. Admin."
-        ),
-        inline=False
-    )
-
-    embed.add_field(
-        name="📄 Termos de responsabilidade",
-        value=(
-            "`!validartermo número` — marca o termo de um jogador como válido. Admin.\n"
-            "`!removertermo número` — remove a validação do termo de um jogador. Admin.\n"
-            "Botão `📄 Enviar termo` — envia DM ao jogador com o link do documento e aceita PDF/JPG/PNG."
-        ),
-        inline=False
-    )
-
-    embed.add_field(
-        name="🆔 Números fixos / nicknames",
-        value=(
-            "`!numero [@user]` — mostra/cria o número fixo de jogador.\n"
-            "`!setnumero @user número` — define manualmente o número de um jogador. Admin.\n"
-            "`!corrigirnick @user` — corrige o nickname de um jogador numerado. Admin.\n"
-            "`!atribuirnumeros` — atribui números a todos os membros sem número. Admin.\n"
-            "`!corrigirnicks` — corrige nicknames de todos os jogadores numerados. Admin."
-        ),
-        inline=False
-    )
-
-    embed.add_field(
-        name="👤 Perfil geral",
-        value=(
-            "`!status [@user]` — mostra presenças, solo, team wins, tempo em pista, total e inatividade."
-        ),
-        inline=False
-    )
-
-    embed = criar_pagina(
-        "📜 Comandos do Stunhouse Bot — Página 2/5",
-        "Comandos de pontos, presenças e rankings."
-    )
-
-    embed.add_field(
-        name="⭐ Presenças / pontos normais",
-        value=(
-            "`!addpontos @user quantidade` — adiciona presenças/pontos normais. Admin.\n"
-            "`!addpresenca @user quantidade` — alias de `!addpontos`. Admin.\n"
-            "`!addpresencas @user quantidade` — alias de `!addpontos`. Admin.\n"
-            "`!removepontos @user quantidade` — remove presenças/pontos normais. Admin.\n"
-            "`!removerpresenca @user quantidade` — alias de `!removepontos`. Admin.\n"
-            "`!removerpresencas @user quantidade` — alias de `!removepontos`. Admin.\n"
-            "`!pontos [@user]` — mostra as presenças/pontos normais.\n"
-            "`!presenca [@user]` — alias de `!pontos`.\n"
-            "`!presencas [@user]` — alias de `!pontos`.\n"
-            "`!ranking` — ranking de presenças/pontos normais.\n"
-            "`!rankingpresencas` — alias de `!ranking`."
+            "`!addpresenca @user quantidade` / `!addpontos`\n"
+            "`!removerpresenca @user quantidade` / `!removepontos`\n"
+            "`!presencas [@user]` / `!pontos`\n"
+            "`!rankingpresencas` / `!ranking`"
         ),
         inline=False
     )
@@ -3195,167 +3123,90 @@ async def comandos(ctx):
     embed.add_field(
         name="🔥 Solo Rebirth",
         value=(
-            "`!addsolo @user quantidade` — adiciona pontos Solo Rebirth. Admin.\n"
-            "`!removesolo @user quantidade` — remove pontos Solo Rebirth. Admin.\n"
-            "`!pontossolo [@user]` — mostra pontos Solo Rebirth.\n"
-            "`!rankingsolo` — ranking Solo Rebirth."
+            "`!addsolo @user quantidade`\n"
+            "`!removesolo @user quantidade`\n"
+            "`!pontossolo [@user]`\n"
+            "`!rankingsolo`"
         ),
         inline=False
     )
 
     embed.add_field(
-        name="👥 Team Wins",
+        name="👥 Team Win",
         value=(
-            "`!addteam @user quantidade` — adiciona Team Wins. Admin.\n"
-            "`!removeteam @user quantidade` — remove Team Wins. Admin.\n"
-            "`!pontosteam [@user]` — mostra Team Wins.\n"
-            "`!rankingteam` — ranking de Team Wins."
+            "`!addteam @user quantidade`\n"
+            "`!removeteam @user quantidade`\n"
+            "`!pontosteam [@user]`\n"
+            "`!rankingteam`"
         ),
         inline=False
     )
 
     embed.add_field(
-        name="⏱️ Tempo em pista",
+        name="⏱️ Tempo em Pista",
         value=(
-            "`!addtempo @user quantidade` — adiciona pontos de tempo em pista. Admin.\n"
-            "`!removetempo @user quantidade` — remove pontos de tempo em pista. Admin.\n"
-            "`!tempopista [@user]` — mostra tempo em pista.\n"
-            "`!rankingtempo` — ranking de tempo em pista."
+            "`!addtempo @user quantidade`\n"
+            "`!removetempo @user quantidade`\n"
+            "`!tempopista [@user]`\n"
+            "`!rankingtempo`"
         ),
         inline=False
-    )
-
-    embed = criar_pagina(
-        "📜 Comandos do Stunhouse Bot — Página 3/5",
-        "Equipas, modos de jogo e painéis."
     )
 
     embed.add_field(
         name="🛡️ Equipas",
         value=(
-            "`!criarequipa nome [logo_url]` — cria uma equipa. Admin.\n"
-            "`!adicionarmembroequipa nome_equipa @user` — adiciona membro à equipa. Admin.\n"
-            "`!removermembroequipa nome_equipa @user` — remove membro da equipa. Admin.\n"
-            "`!mudarlogoequipa nome_equipa logo_url` — altera o logo da equipa. Admin.\n"
-            "`!apagarequipa nome` — apaga uma equipa. Admin.\n"
-            "`!equipa nome` — mostra informação, membros e pontos da equipa.\n"
-            "`!rankingequipas` — ranking geral de equipas.\n"
-            "`!listarequipas` — lista todas as equipas existentes."
+            "`!criarequipa nome [logo_url]`\n"
+            "`!adicionarmembroequipa nome @user`\n"
+            "`!removermembroequipa nome @user`\n"
+            "`!mudarlogoequipa nome url`\n"
+            "`!apagarequipa nome`\n"
+            "`!equipa nome`\n"
+            "`!rankingequipas`\n"
+            "`!listarequipas`"
         ),
         inline=False
     )
 
     embed.add_field(
-        name="🎮 Modos de jogo / painéis interativos",
+        name="🎮 Perfil / Utilidades",
         value=(
-            "`!teste_modos` — envia painel de testes dos modos/NFC. Admin.\n"
-            "`!testemodos` — alias de `!teste_modos`. Admin.\n"
-            "`!teste_nfc` — alias de `!teste_modos`. Admin.\n"
-            "Painéis dos modos — permitem gerir Plantar Bomba, Captura Bandeiras, Extração VIP e Dominação por botões."
+            "`!status [@user]`\n"
+            "`!numero [@user]`\n"
+            "`!ping`\n"
+            "`!comandos`"
         ),
         inline=False
     )
 
     embed.add_field(
-        name="🪖 Respawn / operação",
+        name="🎖️ Milsim — Operação Duality",
         value=(
-            "`!painel_respawn` — cria painel de respawn. Admin.\n"
-            "`!respawn_now` — força respawn imediato. Admin."
+            "`!start_op`\n"
+            "`!codigo CÓDIGO`\n"
+            "`!reagrupado`\n"
+            "`!codigo CODIGO-OPERADOR`\n"
+            "`!extracaohtv CODIGO-OPERADOR`\n"
+            "`!opstatus`\n"
+            "`!score`\n"
+            "`!painel_op`\n"
+            "`!gm_blackout`\n"
+            "`!gm_next`\n"
+            "`!gm_end`"
         ),
         inline=False
     )
 
-    embed = criar_pagina(
-        "📜 Comandos do Stunhouse Bot — Página 4/5",
-        "Operação Milsim / Duality."
-    )
 
     embed.add_field(
-        name="🎖️ Operação — jogador/equipa",
-        value=(
-            "`!start_op` — inicia/entra no fluxo da operação, conforme canal e estado.\n"
-            "`!codigo código` — valida/usa um código operacional.\n"
-            "`!reagrupado` — informa que a equipa está reagrupada.\n"
-            "`!capturar código_operador` — captura operador inimigo e atribui pontos.\n"
-            "`!extracaohtv código_operador` — regista extração de HVT.\n"
-            "`!extrairhvt código_operador` — alias de `!extracaohtv`.\n"
-            "`!extracaohvt código_operador` — alias de `!extracaohtv`.\n"
-            "`!extracao_hvt código_operador` — alias de `!extracaohtv`.\n"
-            "`!extrair_hvt código_operador` — alias de `!extracaohtv`."
-        ),
+        name="🔐 Nota",
+        value="Comandos de adicionar/remover pontos, inscrições admin e gestão de equipas precisam de permissão de administrador.",
         inline=False
     )
 
-    embed.add_field(
-        name="📡 Operação — estado e score",
-        value=(
-            "`!opstatus` — mostra o estado operacional atual.\n"
-            "`!painel_op` — cria o painel operacional no canal de comando.\n"
-            "`!score` — mostra a pontuação Azul/Vermelho."
-        ),
-        inline=False
-    )
+    embed.set_footer(text="⚡ Prefixo do bot: !")
 
-    embed.add_field(
-        name="🧭 Game Master",
-        value=(
-            "`!gm_blackout` — envia alerta global de blackout.\n"
-            "`!skip_pausa` — salta a pausa operacional.\n"
-            "`!passarpausa` — passa/avança a pausa operacional.\n"
-            "`!limpar_timers` — limpa timers operacionais.\n"
-            "`!gm_next` — avança para a próxima fase/missão.\n"
-            "`!gm_end` — termina a operação.\n"
-            "`!gm_restart` — reinicia a operação.\n"
-            "`!gm_set` — configura estado/pontos da operação.\n"
-            "`!gm_newhvt` — gera/define novo HVT.\n"
-            "`!gm_debug` — mostra informação de debug da operação.\n"
-            "`!painel_gm` — cria painel de controlo GM."
-        ),
-        inline=False
-    )
-
-    embed = criar_pagina(
-        "📜 Comandos do Stunhouse Bot — Página 5/5",
-        "Administração, limpeza e notas importantes."
-    )
-
-    embed.add_field(
-        name="🧹 Administração",
-        value=(
-            "`!limpardados` — limpa dados/estado da operação. Admin.\n"
-            "`!codigos_operadores` — mostra/gera códigos dos operadores. Admin.\n"
-            "`!limparchat [quantidade]` — apaga mensagens do canal. Admin."
-        ),
-        inline=False
-    )
-
-    embed.add_field(
-        name="🧩 Botões principais",
-        value=(
-            "`🎟️ Inscrever` — abre modal para inscrição por número de jogador.\n"
-            "`❌ Cancelar inscrição` — abre modal para cancelar inscrição por número.\n"
-            "`📄 Enviar termo` — envia DM com o link do termo e recebe o ficheiro.\n"
-            "`✅ Aprovar` / `❌ Rejeitar` — usados pela staff no canal de termos.\n"
-            "`Marcar presença` — painel de staff; soma/remove presença.\n"
-            "`Chrony feito` — marca/remove chrony no painel de staff.\n"
-            "`Termo assinado` — valida termo no painel de staff.\n"
-            "`Equipa A / Equipa B` — coloca/remove jogador das equipas do jogo."
-        ),
-        inline=False
-    )
-
-    embed.add_field(
-        name="🔐 Permissões",
-        value=(
-            "Comandos marcados com **Admin** exigem permissão de administrador.\n"
-            "Alguns comandos Milsim só funcionam nos canais operacionais corretos.\n"
-            "Alguns comandos de inscrição só funcionam dentro de threads de jogo."
-        ),
-        inline=False
-    )
-
-    for embed in paginas:
-        await ctx.send(embed=embed)
+    await ctx.send(embed=embed)
 
 
 # =========================
