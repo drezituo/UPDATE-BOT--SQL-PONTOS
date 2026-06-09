@@ -18,6 +18,7 @@ DB_ERROR_MSG = "✅ Bot ativado, volta a digitar o comando."
 PONTOS_LOG_CHANNEL_ID = 1466622709772582963
 PONTOS_LOG_CHANNEL_ID = 1466622709772582963
 TERMOS_CHANNEL_ID = int(os.getenv("TERMOS_CHANNEL_ID", "1513707988022595755"))
+LINK_TERMO = os.getenv("LINK_TERMO", "https://drive.google.com/file/d/1cgApoLpDJbtvviCOfN4cYRWyILR7mMHe/view?usp=sharing")
 TERMOS_EXTENSOES_PERMITIDAS = {"pdf", "jpg", "jpeg", "png"}
 
 # ---------- NFC API ----------
@@ -788,6 +789,13 @@ if conn:
         """)
 
         cursor.execute("""
+        CREATE TABLE IF NOT EXISTS termos_pedidos (
+            user_id BIGINT PRIMARY KEY,
+            pedido_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """)
+
+        cursor.execute("""
         CREATE TABLE IF NOT EXISTS equipas (
             id BIGSERIAL PRIMARY KEY,
             nome TEXT NOT NULL UNIQUE,
@@ -851,6 +859,12 @@ async def on_member_join(member):
 @bot.event
 async def on_message(message):
     if message.author.bot:
+        return
+
+    # Processa termos enviados por DM sem limite de tempo.
+    if isinstance(message.channel, discord.DMChannel):
+        if await processar_termo_recebido_dm(message):
+            return
         return
 
     print(f"[MSG] {message.author} em #{message.channel}: {message.content}")
@@ -1111,11 +1125,36 @@ async def enviar_termo_interaction(interaction: discord.Interaction):
             ephemeral=True
         )
 
+    conn = get_connection()
+    if not conn:
+        return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
+
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO termos_pedidos (user_id, pedido_em)
+            VALUES (%s, NOW())
+            ON CONFLICT (user_id)
+            DO UPDATE SET pedido_em = NOW()
+        """, (interaction.user.id,))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"Erro ao guardar pedido de termo: {e}")
+        return await interaction.response.send_message("⚠️ Erro ao preparar o envio do termo.", ephemeral=True)
+    finally:
+        cursor.close()
+        conn.close()
+
     try:
         dm = await interaction.user.create_dm()
         await dm.send(
-            "📄 Envia aqui o teu termo de responsabilidade em **PDF, JPG ou PNG**.\n"
-            "Tens 5 minutos para enviar o ficheiro."
+            "📄 **Termo de Responsabilidade**\n\n"
+            f"🔗 Documento para descarregar:\n{LINK_TERMO}\n\n"
+            "1️⃣ Descarrega o documento\n"
+            "2️⃣ Preenche e assina\n"
+            "3️⃣ Envia aqui o PDF ou uma fotografia legível em **PDF, JPG ou PNG**\n\n"
+            "Podes enviar quando estiver pronto. Não existe tempo limite."
         )
     except (discord.Forbidden, discord.HTTPException):
         return await interaction.response.send_message(
@@ -1124,34 +1163,61 @@ async def enviar_termo_interaction(interaction: discord.Interaction):
         )
 
     await interaction.response.send_message(
-        "📩 Enviei-te uma mensagem privada. Envia lá o teu termo de responsabilidade.",
+        "📩 Enviei-te uma mensagem privada com o link do documento. Envia lá o teu termo quando estiver pronto.",
         ephemeral=True
     )
 
-    def check(message: discord.Message):
-        return (
-            message.author.id == interaction.user.id
-            and isinstance(message.channel, discord.DMChannel)
-            and len(message.attachments) > 0
-        )
 
+async def processar_termo_recebido_dm(message: discord.Message) -> bool:
+    """Processa ficheiros de termo enviados por DM, sem timeout.
+    Retorna True quando a DM foi tratada como fluxo de termo.
+    """
+    conn = get_connection()
+    if not conn:
+        if message.attachments:
+            await message.channel.send(DB_ERROR_MSG)
+            return True
+        return False
+
+    cursor = conn.cursor()
     try:
-        msg = await bot.wait_for("message", timeout=300, check=check)
-    except asyncio.TimeoutError:
-        try:
-            await dm.send("⌛ Tempo expirado. Clica novamente em **📄 Enviar termo** para tentares outra vez.")
-        except (discord.Forbidden, discord.HTTPException):
-            pass
-        return
+        cursor.execute("SELECT 1 FROM termos_pedidos WHERE user_id = %s", (message.author.id,))
+        tem_pedido = cursor.fetchone() is not None
+    finally:
+        cursor.close()
+        conn.close()
 
-    anexo = msg.attachments[0]
+    if not tem_pedido:
+        return False
+
+    if not message.attachments:
+        await message.channel.send(
+            "📄 Envia o termo como anexo em **PDF, JPG ou PNG**.\n"
+            f"Se ainda precisares do documento, está aqui:\n{LINK_TERMO}"
+        )
+        return True
+
+    anexo = message.attachments[0]
     extensao = anexo.filename.rsplit(".", 1)[-1].lower() if "." in anexo.filename else ""
     if extensao not in TERMOS_EXTENSOES_PERMITIDAS:
-        return await dm.send("⚠️ Formato inválido. Envia apenas ficheiros PDF, JPG ou PNG.")
+        await message.channel.send("⚠️ Formato inválido. Envia apenas ficheiros **PDF, JPG ou PNG**.")
+        return True
+
+    canal_staff = bot.get_channel(TERMOS_CHANNEL_ID)
+    if canal_staff is None:
+        try:
+            canal_staff = await bot.fetch_channel(TERMOS_CHANNEL_ID)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            canal_staff = None
+
+    if canal_staff is None:
+        await message.channel.send("⚠️ Recebi o ficheiro, mas não encontrei a sala da staff. Contacta a staff.")
+        return True
 
     conn = get_connection()
     if not conn:
-        return await dm.send(DB_ERROR_MSG)
+        await message.channel.send(DB_ERROR_MSG)
+        return True
 
     cursor = conn.cursor()
     try:
@@ -1159,24 +1225,20 @@ async def enviar_termo_interaction(interaction: discord.Interaction):
             INSERT INTO termos_uploads (user_id, file_url, file_name, staff_channel_id)
             VALUES (%s, %s, %s, %s)
             RETURNING id
-        """, (interaction.user.id, anexo.url, anexo.filename, TERMOS_CHANNEL_ID))
+        """, (message.author.id, anexo.url, anexo.filename, TERMOS_CHANNEL_ID))
         upload_id = cursor.fetchone()[0]
         conn.commit()
     except Exception as e:
         conn.rollback()
+        print(f"Erro ao guardar upload de termo: {e}")
+        await message.channel.send("⚠️ Erro ao guardar o termo. Tenta novamente mais tarde.")
+        return True
+    finally:
         cursor.close()
         conn.close()
-        print(f"Erro ao guardar upload de termo: {e}")
-        return await dm.send("⚠️ Erro ao guardar o termo. Tenta novamente mais tarde.")
-    finally:
-        try:
-            cursor.close()
-            conn.close()
-        except Exception:
-            pass
 
-    numero = obter_numero_jogador_sync(interaction.user.id)
-    nome = formatar_nome_operador(interaction.user)
+    numero = obter_numero_jogador_sync(message.author.id)
+    nome = formatar_nome_operador(message.author)
     titulo_numero = f"#{numero:02d}" if numero else "Sem número"
 
     embed = discord.Embed(
@@ -1185,7 +1247,7 @@ async def enviar_termo_interaction(interaction: discord.Interaction):
         timestamp=discord.utils.utcnow()
     )
     embed.add_field(name="👤 Jogador", value=f"{titulo_numero} — {nome}", inline=False)
-    embed.add_field(name="Discord", value=interaction.user.mention, inline=True)
+    embed.add_field(name="Discord", value=message.author.mention, inline=True)
     embed.add_field(name="Ficheiro", value=anexo.filename, inline=True)
     embed.add_field(name="📌 Estado", value="Pendente de validação", inline=False)
     embed.set_footer(text=f"Upload ID: {upload_id}")
@@ -1193,23 +1255,22 @@ async def enviar_termo_interaction(interaction: discord.Interaction):
     try:
         ficheiro = await anexo.to_file()
         staff_msg = await canal_staff.send(
-            content=f"📄 Termo recebido de {interaction.user.mention}",
+            content=f"📄 Termo recebido de {message.author.mention}",
             embed=embed,
             file=ficheiro,
-            view=TermoAprovacaoView(upload_id, interaction.user.id)
+            view=TermoAprovacaoView(upload_id, message.author.id)
         )
     except (discord.Forbidden, discord.HTTPException) as e:
         print(f"Erro ao enviar termo para canal da staff: {e}")
-        return await dm.send("⚠️ Recebi o ficheiro, mas não consegui enviá-lo para a sala da staff. Contacta a staff.")
+        await message.channel.send("⚠️ Recebi o ficheiro, mas não consegui enviá-lo para a sala da staff. Contacta a staff.")
+        return True
 
     conn = get_connection()
     if conn:
         cursor = conn.cursor()
         try:
-            cursor.execute(
-                "UPDATE termos_uploads SET staff_message_id = %s WHERE id = %s",
-                (staff_msg.id, upload_id)
-            )
+            cursor.execute("UPDATE termos_uploads SET staff_message_id = %s WHERE id = %s", (staff_msg.id, upload_id))
+            cursor.execute("DELETE FROM termos_pedidos WHERE user_id = %s", (message.author.id,))
             conn.commit()
         except Exception as e:
             conn.rollback()
@@ -1218,7 +1279,8 @@ async def enviar_termo_interaction(interaction: discord.Interaction):
             cursor.close()
             conn.close()
 
-    await dm.send("✅ Termo enviado com sucesso. Agora aguarda validação da staff.")
+    await message.channel.send("✅ Termo enviado com sucesso. Agora aguarda validação da staff.")
+    return True
 
 
 async def criar_inscricao_interaction(interaction: discord.Interaction, numero_texto: str = None):
@@ -1239,19 +1301,23 @@ async def criar_inscricao_interaction(interaction: discord.Interaction, numero_t
             ephemeral=True
         )
 
-    numero_do_utilizador = obter_numero_jogador_sync(interaction.user.id)
-    if numero_do_utilizador != numero:
-        return await interaction.response.send_message(
-            "⚠️ Só podes fazer a tua própria inscrição.",
-            ephemeral=True
-        )
+    is_admin = interaction.user.guild_permissions.administrator
 
-    if not termo_assinado_sync(interaction.user.id):
-        return await interaction.response.send_message(
-            "❌ Não tens um termo de responsabilidade validado.\n"
-            "Usa o botão 📄 Enviar termo e aguarda aprovação da staff.",
-            ephemeral=True
-        )
+    if not is_admin:
+        numero_do_utilizador = obter_numero_jogador_sync(interaction.user.id)
+        if numero_do_utilizador != numero:
+            return await interaction.response.send_message(
+                "⚠️ Só podes fazer a tua própria inscrição.",
+                ephemeral=True
+            )
+
+        if not termo_assinado_sync(interaction.user.id):
+            return await interaction.response.send_message(
+                "❌ Não tens um termo de responsabilidade validado.\n\n"
+                f"📄 Documento: {LINK_TERMO}\n"
+                "Usa o botão 📄 Enviar termo e aguarda aprovação da staff.",
+                ephemeral=True
+            )
 
     membro_jogador = await obter_membro_por_numero_jogador(interaction.guild, numero)
     if membro_jogador is None:
@@ -1633,19 +1699,32 @@ async def inscrever(ctx, *, nome: str):
         await apagar_mensagem_comando(ctx)
         return await ctx.send("⚠️ Este comando só pode ser usado dentro da thread do jogo.", delete_after=10)
 
-    if membro_jogador is not None and membro_jogador.id != ctx.author.id:
-        await apagar_mensagem_comando(ctx)
-        return await ctx.send("⚠️ Só podes fazer a tua própria inscrição.", delete_after=10)
+    is_admin = ctx.author.guild_permissions.administrator
 
-    if not termo_assinado_sync(ctx.author.id):
-        await apagar_mensagem_comando(ctx)
-        return await ctx.send(
-            "❌ Não tens um termo de responsabilidade validado. Usa o botão 📄 Enviar termo e aguarda aprovação da staff.",
-            delete_after=10
-        )
+    if not is_admin:
+        if membro_jogador is not None and membro_jogador.id != ctx.author.id:
+            await apagar_mensagem_comando(ctx)
+            return await ctx.send("⚠️ Só podes fazer a tua própria inscrição.", delete_after=10)
 
-    membro_jogador = ctx.author
-    nome = formatar_nome_operador(ctx.author)
+        if not termo_assinado_sync(ctx.author.id):
+            await apagar_mensagem_comando(ctx)
+            return await ctx.send(
+                "❌ Não tens um termo de responsabilidade validado.\n"
+                f"📄 Documento: {LINK_TERMO}\n"
+                "Usa o botão 📄 Enviar termo e aguarda aprovação da staff.",
+                delete_after=10
+            )
+
+        membro_jogador = ctx.author
+        nome = formatar_nome_operador(ctx.author)
+    else:
+        if membro_jogador is None:
+            membro_encontrado = await encontrar_membro_por_nome(ctx.guild, nome)
+            if membro_encontrado:
+                membro_jogador = membro_encontrado
+                nome = formatar_nome_operador(membro_jogador)
+        else:
+            nome = formatar_nome_operador(membro_jogador)
 
     if len(normalizar_nome(nome)) < 3:
         await apagar_mensagem_comando(ctx)
