@@ -4141,7 +4141,7 @@ async def status(ctx, membro: discord.Member = None):
     )
 
     embed.add_field(
-        name="🔥 SOLO REBIRTH",
+        name="🔥 SOLO WINS",
         value=(
             f"**Tier {tier_solo} • {nome_tier_solo}**\n"
             f"{barra_solo}\n"
@@ -4162,14 +4162,6 @@ async def status(ctx, membro: discord.Member = None):
         inline=False
     )
 
-    embed.add_field(
-        name="⏱️ TEMPO EM PISTA",
-        value=(
-            f"🏅 Ranking: `#{rank_tempo}`\n"
-            f"Total: **{pontos_tempo:02}**"
-        ),
-        inline=False
-    )
 
     embed.add_field(
         name="🕒 ATIVIDADE",
