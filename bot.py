@@ -224,14 +224,17 @@ async def obter_avatar_url_jogador(guild: discord.Guild, nome_jogador: str, memb
 
 
 async def obter_valor_jogador_embed(guild: discord.Guild, nome_jogador: str, membro: discord.Member = None):
+    """Mostra a menção e também o nome escrito, para evitar embeds com nicknames/menções pouco legíveis."""
     if membro is not None:
-        return membro.mention
+        nome_escrito = formatar_nome_operador(membro, nome_jogador)
+        return f"{membro.mention}\nNome: **{nome_escrito}**"
 
     membro_encontrado = await encontrar_membro_por_nome(guild, nome_jogador)
     if membro_encontrado:
-        return membro_encontrado.mention
+        nome_escrito = formatar_nome_operador(membro_encontrado, nome_jogador)
+        return f"{membro_encontrado.mention}\nNome: **{nome_escrito}**"
 
-    return nome_jogador
+    return f"Nome: **{nome_jogador}**"
 
 
 async def apagar_mensagem_comando(ctx):
@@ -1029,9 +1032,9 @@ class TermoAprovacaoView(discord.ui.View):
         await interaction.message.edit(embed=embed, view=TermoAprovacaoView(self.upload_id, self.user_id, bloqueado=True))
         await self._notificar_jogador(
             interaction,
-            "✅ O teu termo de responsabilidade foi aprovado. Já podes usar o botão 🎟️ Inscrever."
+            "✅ O teu termo de responsabilidade foi aprovado."
         )
-        await interaction.response.send_message("✅ Termo aprovado e jogador autorizado a inscrever-se.", ephemeral=True)
+        await interaction.response.send_message("✅ Termo aprovado.", ephemeral=True)
 
     @discord.ui.button(label="Rejeitar", emoji="❌", style=discord.ButtonStyle.red, custom_id="termo:rejeitar")
     async def rejeitar(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1310,15 +1313,6 @@ async def criar_inscricao_interaction(interaction: discord.Interaction, numero_t
                 "⚠️ Só podes fazer a tua própria inscrição.",
                 ephemeral=True
             )
-
-        if not termo_assinado_sync(interaction.user.id):
-            return await interaction.response.send_message(
-                "❌ Não tens um termo de responsabilidade validado.\n\n"
-                f"📄 Documento: {LINK_TERMO}\n"
-                "Usa o botão 📄 Enviar termo e aguarda aprovação da staff.",
-                ephemeral=True
-            )
-
     membro_jogador = await obter_membro_por_numero_jogador(interaction.guild, numero)
     if membro_jogador is None:
         return await interaction.response.send_message(
@@ -1705,16 +1699,6 @@ async def inscrever(ctx, *, nome: str):
         if membro_jogador is not None and membro_jogador.id != ctx.author.id:
             await apagar_mensagem_comando(ctx)
             return await ctx.send("⚠️ Só podes fazer a tua própria inscrição.", delete_after=10)
-
-        if not termo_assinado_sync(ctx.author.id):
-            await apagar_mensagem_comando(ctx)
-            return await ctx.send(
-                "❌ Não tens um termo de responsabilidade validado.\n"
-                f"📄 Documento: {LINK_TERMO}\n"
-                "Usa o botão 📄 Enviar termo e aguarda aprovação da staff.",
-                delete_after=10
-            )
-
         membro_jogador = ctx.author
         nome = formatar_nome_operador(ctx.author)
     else:
