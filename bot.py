@@ -2917,9 +2917,6 @@ class PainelJogoView(discord.ui.View):
 
     @discord.ui.button(label="Ver equipas", emoji="👥", style=discord.ButtonStyle.primary, row=1)
     async def ver_equipas(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self._staff_only(interaction):
-            return
-
         await interaction.response.defer(ephemeral=True)
 
         conn = get_connection()
