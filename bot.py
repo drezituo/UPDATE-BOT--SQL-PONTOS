@@ -2331,9 +2331,14 @@ async def atribuir_teamwins_modo(interaction: discord.Interaction, thread_id: in
         motivo = f"Vitória da Equipa {vencedor} no modo {modo_nome}"
         resultado_txt = f"🏆 Vitória da Equipa {vencedor}. TeamWin atribuída à equipa vencedora."
     elif vencedor == "EMPATE":
-        user_ids = obter_user_ids_equipa_thread_sync(thread_id, None)
+        # Em caso de empate, atribui TeamWin apenas aos jogadores que já têm equipa definida.
+        # Jogadores pagos mas ainda sem Equipa A/B ficam excluídos.
+        user_ids = (
+            obter_user_ids_equipa_thread_sync(thread_id, "A") +
+            obter_user_ids_equipa_thread_sync(thread_id, "B")
+        )
         motivo = f"Empate no modo {modo_nome}"
-        resultado_txt = "🤝 Empate. TeamWin atribuída a todos os jogadores."
+        resultado_txt = "🤝 Empate. TeamWin atribuída aos jogadores das Equipas A e B."
     else:
         return "⚠️ Sem vencedor definido. Nenhuma TeamWin foi atribuída."
 
