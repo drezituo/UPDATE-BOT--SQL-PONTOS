@@ -2833,6 +2833,9 @@ def criar_embed_escolher_modo():
     return embed
 
 
+PAINEL_JOGADORES_MSGS = {}
+
+
 class PainelJogoView(discord.ui.View):
     def __init__(self, thread_id: int):
         super().__init__(timeout=None)
@@ -2844,14 +2847,84 @@ class PainelJogoView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label="Ver equipas", emoji="👥", style=discord.ButtonStyle.primary, row=0)
+    def _obter_inscricoes_pagas(self):
+        conn = get_connection()
+        if not conn:
+            return None
+
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id
+            FROM inscricoes_jogos
+            WHERE thread_id = %s
+              AND estado = 'pago'
+            ORDER BY id ASC
+        """, (self.thread_id,))
+        inscricoes = [r[0] for r in cursor.fetchall()]
+        cursor.close()
+        conn.close()
+        return inscricoes
+
+    @discord.ui.button(label="Mostrar jogadores", emoji="👥", style=discord.ButtonStyle.secondary, row=0)
+    async def mostrar_jogadores(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction):
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        mensagens_antigas = PAINEL_JOGADORES_MSGS.get(self.thread_id, [])
+        if mensagens_antigas:
+            return await interaction.followup.send("ℹ️ Os jogadores já estão visíveis neste painel.", ephemeral=True)
+
+        inscricoes = self._obter_inscricoes_pagas()
+        if inscricoes is None:
+            return await interaction.followup.send(DB_ERROR_MSG, ephemeral=True)
+
+        if not inscricoes:
+            return await interaction.followup.send("⚠️ Ainda não há jogadores pagos para gerir nesta thread.", ephemeral=True)
+
+        mensagens = []
+        for inscricao_id in inscricoes:
+            embed, view = await criar_embed_gestao_jogador(interaction.guild, inscricao_id)
+            if embed:
+                msg = await interaction.channel.send(embed=embed, view=view)
+                mensagens.append(msg.id)
+
+        PAINEL_JOGADORES_MSGS[self.thread_id] = mensagens
+        await interaction.followup.send(f"✅ Mostrei **{len(mensagens)}** jogadores.", ephemeral=True)
+
+    @discord.ui.button(label="Esconder jogadores", emoji="🙈", style=discord.ButtonStyle.secondary, row=0)
+    async def esconder_jogadores(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction):
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        mensagens = PAINEL_JOGADORES_MSGS.pop(self.thread_id, [])
+        if not mensagens:
+            return await interaction.followup.send("ℹ️ Não há cartões de jogadores para esconder.", ephemeral=True)
+
+        apagadas = 0
+        for message_id in mensagens:
+            try:
+                msg = await interaction.channel.fetch_message(message_id)
+                await msg.delete()
+                apagadas += 1
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+
+        await interaction.followup.send(f"✅ Escondi **{apagadas}** cartões de jogadores.", ephemeral=True)
+
+    @discord.ui.button(label="Ver equipas", emoji="👥", style=discord.ButtonStyle.primary, row=1)
     async def ver_equipas(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._staff_only(interaction):
             return
 
+        await interaction.response.defer(ephemeral=True)
+
         conn = get_connection()
         if not conn:
-            return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
+            return await interaction.followup.send(DB_ERROR_MSG, ephemeral=True)
 
         cursor = conn.cursor()
         cursor.execute("""
@@ -2882,9 +2955,9 @@ class PainelJogoView(discord.ui.View):
         embed.add_field(name=f"🔵 Equipa A — {len(grupos['A'])}", value=bloco(grupos["A"])[:1024], inline=False)
         embed.add_field(name=f"🔴 Equipa B — {len(grupos['B'])}", value=bloco(grupos["B"])[:1024], inline=False)
         embed.add_field(name=f"⚪ Sem equipa — {len(grupos[None])}", value=bloco(grupos[None])[:1024], inline=False)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="Começar jogo", emoji="🎮", style=discord.ButtonStyle.success, row=0)
+    @discord.ui.button(label="Começar jogo", emoji="🎮", style=discord.ButtonStyle.success, row=1)
     async def comecar_jogo(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._staff_only(interaction):
             return
@@ -2944,12 +3017,8 @@ async def painel_jogo(ctx):
     )
     resumo.add_field(name="🔵 Equipa A", value=str(equipa_a), inline=True)
     resumo.add_field(name="🔴 Equipa B", value=str(equipa_b), inline=True)
+    PAINEL_JOGADORES_MSGS.pop(ctx.channel.id, None)
     await ctx.send(embed=resumo, view=PainelJogoView(ctx.channel.id))
-
-    for inscricao_id in inscricoes:
-        embed, view = await criar_embed_gestao_jogador(ctx.guild, inscricao_id)
-        if embed:
-            await ctx.send(embed=embed, view=view)
 
 
 # =========================
