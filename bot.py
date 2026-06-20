@@ -2331,9 +2331,13 @@ async def atribuir_teamwins_modo(interaction: discord.Interaction, thread_id: in
         motivo = f"Vitória da Equipa {vencedor} no modo {modo_nome}"
         resultado_txt = f"🏆 Vitória da Equipa {vencedor}. TeamWin atribuída à equipa vencedora."
     elif vencedor == "EMPATE":
-        user_ids = obter_user_ids_equipa_thread_sync(thread_id, None)
+        # Em caso de empate, atribui TeamWin apenas aos jogadores colocados numa equipa.
+        # Jogadores sem equipa no painel de jogo ficam excluídos.
+        user_ids_a = obter_user_ids_equipa_thread_sync(thread_id, "A")
+        user_ids_b = obter_user_ids_equipa_thread_sync(thread_id, "B")
+        user_ids = sorted(set(user_ids_a + user_ids_b))
         motivo = f"Empate no modo {modo_nome}"
-        resultado_txt = "🤝 Empate. TeamWin atribuída a todos os jogadores."
+        resultado_txt = "🤝 Empate. TeamWin atribuída apenas aos jogadores das Equipas A e B."
     else:
         return "⚠️ Sem vencedor definido. Nenhuma TeamWin foi atribuída."
 
@@ -2842,12 +2846,16 @@ class PainelJogoView(discord.ui.View):
 
     @discord.ui.button(label="Ver equipas", emoji="👥", style=discord.ButtonStyle.primary, row=0)
     async def ver_equipas(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not await self._staff_only(interaction):
-            return
+        # Responder/deferir rapidamente evita o erro 10062 "Unknown interaction"
+        # quando a base de dados ou a procura de membros demora mais de ~3 segundos.
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("❌ Apenas staff/admin pode usar este painel.", ephemeral=True)
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
 
         conn = get_connection()
         if not conn:
-            return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
+            return await interaction.followup.send(DB_ERROR_MSG, ephemeral=True)
 
         cursor = conn.cursor()
         cursor.execute("""
@@ -2878,7 +2886,7 @@ class PainelJogoView(discord.ui.View):
         embed.add_field(name=f"🔵 Equipa A — {len(grupos['A'])}", value=bloco(grupos["A"])[:1024], inline=False)
         embed.add_field(name=f"🔴 Equipa B — {len(grupos['B'])}", value=bloco(grupos["B"])[:1024], inline=False)
         embed.add_field(name=f"⚪ Sem equipa — {len(grupos[None])}", value=bloco(grupos[None])[:1024], inline=False)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="Começar jogo", emoji="🎮", style=discord.ButtonStyle.success, row=0)
     async def comecar_jogo(self, interaction: discord.Interaction, button: discord.ui.Button):
