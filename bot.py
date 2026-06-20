@@ -2538,6 +2538,36 @@ def criar_embed_dominacao(tempos: dict, finalizado: bool = False):
     return embed
 
 
+def criar_embed_shl(pontos_a: int, pontos_b: int, finalizado: bool = False):
+    if pontos_a > pontos_b:
+        estado = "🏆 Equipa A em vantagem" if not finalizado else "🏆 Vitória Equipa A"
+        cor = discord.Color.blue()
+    elif pontos_b > pontos_a:
+        estado = "🏆 Equipa B em vantagem" if not finalizado else "🏆 Vitória Equipa B"
+        cor = discord.Color.red()
+    else:
+        estado = "🤝 Empate" if finalizado else "🏆 Sem vencedor"
+        cor = discord.Color.gold() if finalizado else discord.Color.dark_teal()
+
+    embed = discord.Embed(
+        title="⚡ SHL",
+        description=(
+            "```fix\n"
+            "SHL - MORTE SÚBITA\n\n"
+            "Jogos de 5 minutos\n"
+            "Cada ponto = 1 TeamWin\n\n"
+            f"Equipa A: {pontos_a} pontos\n"
+            f"Equipa B: {pontos_b} pontos\n\n"
+            f"{estado}\n"
+            "```"
+        ),
+        color=cor,
+        timestamp=discord.utils.utcnow()
+    )
+    embed.set_footer(text="Modo de jogo • cada ponto atribui 1 TeamWin à equipa")
+    return embed
+
+
 class PlantarBombaView(discord.ui.View):
     def __init__(self, thread_id: int, pontos_a: int = 0, pontos_b: int = 0, finalizado: bool = False):
         super().__init__(timeout=None)
@@ -2778,6 +2808,66 @@ class ExtracaoVIPView(discord.ui.View):
         await interaction.followup.send(texto, ephemeral=True)
 
 
+class SHLView(discord.ui.View):
+    def __init__(self, thread_id: int, pontos_a: int = 0, pontos_b: int = 0, finalizado: bool = False):
+        super().__init__(timeout=None)
+        self.thread_id = thread_id
+        self.pontos_a = pontos_a
+        self.pontos_b = pontos_b
+        self.finalizado = finalizado
+        if finalizado:
+            for item in self.children:
+                item.disabled = True
+
+    async def _staff_only(self, interaction: discord.Interaction) -> bool:
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Apenas staff/admin pode usar este painel.", ephemeral=True)
+            return False
+        return True
+
+    async def add_teamwin(self, interaction: discord.Interaction, equipa: str):
+        if not await self._staff_only(interaction):
+            return
+        if self.finalizado:
+            return await interaction.response.send_message("⚠️ Este painel SHL já foi fechado.", ephemeral=True)
+
+        if equipa == "A":
+            self.pontos_a += 1
+            equipa_nome = "Equipa A"
+        else:
+            self.pontos_b += 1
+            equipa_nome = "Equipa B"
+
+        await interaction.response.edit_message(
+            embed=criar_embed_shl(self.pontos_a, self.pontos_b, self.finalizado),
+            view=self
+        )
+
+        texto = await atribuir_teamwins_modo(interaction, self.thread_id, equipa, "SHL")
+        await interaction.followup.send(f"✅ TeamWin atribuída à **{equipa_nome}**.\\n{texto}", ephemeral=True)
+
+    @discord.ui.button(label="Equipa A +1 TeamWin", emoji="🔵", style=discord.ButtonStyle.primary, row=0)
+    async def equipa_a_ponto(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.add_teamwin(interaction, "A")
+
+    @discord.ui.button(label="Equipa B +1 TeamWin", emoji="🔴", style=discord.ButtonStyle.danger, row=0)
+    async def equipa_b_ponto(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.add_teamwin(interaction, "B")
+
+    @discord.ui.button(label="Fechar SHL", emoji="🏁", style=discord.ButtonStyle.secondary, row=1)
+    async def finalizar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction):
+            return
+        if self.finalizado:
+            return await interaction.response.send_message("⚠️ Este painel SHL já foi fechado.", ephemeral=True)
+
+        self.finalizado = True
+        for item in self.children:
+            item.disabled = True
+
+        await interaction.response.edit_message(embed=criar_embed_shl(self.pontos_a, self.pontos_b, True), view=self)
+
+
 class EscolherModoJogoView(discord.ui.View):
     def __init__(self, thread_id: int):
         super().__init__(timeout=None)
@@ -2807,6 +2897,12 @@ class EscolherModoJogoView(discord.ui.View):
         view = ExtracaoVIPView(self.thread_id)
         await interaction.response.send_message(embed=criar_embed_extracao(False, False), view=view)
 
+    @discord.ui.button(label="SHL", emoji="⚡", style=discord.ButtonStyle.primary, row=1)
+    async def shl(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction): return
+        view = SHLView(self.thread_id)
+        await interaction.response.send_message(embed=criar_embed_shl(0, 0), view=view)
+
     @discord.ui.button(label="Captura Bandeiras", emoji="🏳️", style=discord.ButtonStyle.primary, row=1)
     async def captura_bandeiras(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._staff_only(interaction): return
@@ -2824,6 +2920,7 @@ def criar_embed_escolher_modo():
             "Dominação\n"
             "Extração VIP\n"
             "Captura Bandeiras\n"
+            "SHL\n"
             "```"
         ),
         color=discord.Color.dark_teal(),
