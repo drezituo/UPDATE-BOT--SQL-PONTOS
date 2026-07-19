@@ -1348,6 +1348,13 @@ async def criar_inscricao_interaction(interaction: discord.Interaction, numero_t
 
     nome = formatar_nome_operador(membro_jogador)
 
+    if not termo_assinado_sync(membro_jogador.id):
+        return await interaction.response.send_message(
+            f"⚠️ O jogador **{nome}** ainda não tem um termo de responsabilidade válido. "
+            "Envia o termo primeiro através do botão **📄 Enviar termo** e aguarda a aprovação da staff.",
+            ephemeral=True
+        )
+
     dados = obter_thread_config(interaction.channel.id)
     if not dados:
         return await interaction.response.send_message(
@@ -1736,6 +1743,21 @@ async def inscrever(ctx, *, nome: str):
                 nome = formatar_nome_operador(membro_jogador)
         else:
             nome = formatar_nome_operador(membro_jogador)
+
+    if membro_jogador is None:
+        await apagar_mensagem_comando(ctx)
+        return await ctx.send(
+            "⚠️ Não consegui identificar o jogador no Discord para validar o termo. Usa uma menção ao jogador.",
+            delete_after=10
+        )
+
+    if not termo_assinado_sync(membro_jogador.id):
+        await apagar_mensagem_comando(ctx)
+        return await ctx.send(
+            f"⚠️ O jogador **{formatar_nome_operador(membro_jogador)}** ainda não tem um termo de responsabilidade válido. "
+            "Tem de enviar o termo primeiro através do botão **📄 Enviar termo** e aguardar a aprovação da staff.",
+            delete_after=15
+        )
 
     if len(normalizar_nome(nome)) < 3:
         await apagar_mensagem_comando(ctx)
