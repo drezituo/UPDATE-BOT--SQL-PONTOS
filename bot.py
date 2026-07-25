@@ -20,8 +20,6 @@ PONTOS_LOG_CHANNEL_ID = 1466622709772582963
 TERMOS_CHANNEL_ID = int(os.getenv("TERMOS_CHANNEL_ID", "1513707988022595755"))
 LINK_TERMO = os.getenv("LINK_TERMO", "https://drive.google.com/file/d/1cgApoLpDJbtvviCOfN4cYRWyILR7mMHe/view?usp=sharing")
 TERMOS_EXTENSOES_PERMITIDAS = {"pdf", "jpg", "jpeg", "png"}
-COMPROVATIVOS_CHANNEL_ID = int(os.getenv("COMPROVATIVOS_CHANNEL_ID", "1530687012850499674"))
-COMPROVATIVOS_EXTENSOES_PERMITIDAS = {"pdf", "jpg", "jpeg", "png"}
 
 # ---------- NFC API ----------
 NFC_API_TOKEN = os.getenv("NFC_API_TOKEN", "").strip()
@@ -786,16 +784,6 @@ if conn:
         """)
 
         cursor.execute("""
-        ALTER TABLE inscricoes_jogos
-        ADD COLUMN IF NOT EXISTS comprovativo_message_id BIGINT
-        """)
-
-        cursor.execute("""
-        ALTER TABLE inscricoes_jogos
-        ADD COLUMN IF NOT EXISTS comprovativo_enviado_em TIMESTAMPTZ
-        """)
-
-        cursor.execute("""
         CREATE TABLE IF NOT EXISTS termos_responsabilidade (
             user_id BIGINT PRIMARY KEY,
             assinado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -880,7 +868,6 @@ async def on_ready():
 
     # Regista os botões persistentes das inscrições e dos termos pendentes.
     bot.add_view(InscricoesView())
-    bot.add_view(ComprovativoPagamentoView())
     await carregar_views_termos_pendentes()
 
     if not verificar_inscricoes.is_running():
@@ -902,11 +889,9 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    # Processa termos e comprovativos enviados por DM.
+    # Processa termos enviados por DM sem limite de tempo.
     if isinstance(message.channel, discord.DMChannel):
         if await processar_termo_recebido_dm(message):
-            return
-        if await processar_comprovativo_recebido_dm(message):
             return
         return
 
@@ -1326,245 +1311,6 @@ async def processar_termo_recebido_dm(message: discord.Message) -> bool:
     return True
 
 
-async def enviar_instrucoes_pagamento_dm(user, thread_name: str):
-    try:
-        await user.send(
-            "💳 **Inscrição pendente de pagamento**\n\n"
-            f"A tua inscrição em **{thread_name}** foi criada e está pendente de pagamento.\n"
-            "Envia nesta conversa o comprovativo em **PDF, JPG ou PNG**.\n\n"
-            "Depois do envio, a staff irá validar o comprovativo e a inscrição será finalizada."
-        )
-        return True
-    except (discord.Forbidden, discord.HTTPException):
-        return False
-
-
-async def obter_canal_comprovativos():
-    canal = bot.get_channel(COMPROVATIVOS_CHANNEL_ID)
-    if canal is None:
-        try:
-            canal = await bot.fetch_channel(COMPROVATIVOS_CHANNEL_ID)
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-            canal = None
-    return canal
-
-
-class ComprovativoPagamentoView(discord.ui.View):
-    def __init__(self, confirmado: bool = False):
-        super().__init__(timeout=None)
-        self.confirmar_pagamento.disabled = confirmado
-
-    @discord.ui.button(
-        label="Confirmar pagamento",
-        emoji="✅",
-        style=discord.ButtonStyle.success,
-        custom_id="comprovativo_confirmar_pagamento"
-    )
-    async def confirmar_pagamento(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.guild is None or not await utilizador_e_admin_no_guild(interaction.guild, interaction.user.id):
-            await interaction.response.send_message(
-                "❌ Apenas a staff pode confirmar pagamentos.",
-                ephemeral=True
-            )
-            return
-
-        conn = get_connection()
-        if not conn:
-            await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
-            return
-
-        cursor = conn.cursor()
-        try:
-            cursor.execute("""
-                SELECT thread_id, message_id, user_id, nome_jogador, estado,
-                       COALESCE(inscrito_por, user_id)
-                FROM inscricoes_jogos
-                WHERE comprovativo_message_id = %s
-            """, (interaction.message.id,))
-            row = cursor.fetchone()
-
-            if not row:
-                await interaction.response.send_message(
-                    "⚠️ Não encontrei a inscrição associada a este comprovativo.",
-                    ephemeral=True
-                )
-                return
-
-            thread_id, inscricao_message_id, user_id, nome_jogador, estado, inscrito_por = row
-
-            if estado != "pendente_pagamento":
-                await interaction.response.send_message(
-                    "ℹ️ Este pagamento já foi confirmado ou a inscrição já não está pendente.",
-                    ephemeral=True
-                )
-                return
-
-            cursor.execute("""
-                UPDATE inscricoes_jogos
-                SET estado = 'pago', confirmado_por = %s, confirmado_em = NOW()
-                WHERE message_id = %s AND estado = 'pendente_pagamento'
-            """, (interaction.user.id, inscricao_message_id))
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            print(f"Erro ao confirmar pagamento por botão: {e}")
-            await interaction.response.send_message(
-                "⚠️ Ocorreu um erro ao confirmar o pagamento.",
-                ephemeral=True
-            )
-            return
-        finally:
-            cursor.close()
-            conn.close()
-
-        await interaction.response.defer(ephemeral=True)
-
-        thread = bot.get_channel(thread_id)
-        if thread is None:
-            try:
-                thread = await bot.fetch_channel(thread_id)
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                thread = None
-
-        membro_jogador = interaction.guild.get_member(user_id)
-        if membro_jogador is None:
-            try:
-                membro_jogador = await interaction.guild.fetch_member(user_id)
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                membro_jogador = None
-
-        if thread:
-            try:
-                inscricao_msg = await thread.fetch_message(inscricao_message_id)
-                embed_inscricao = await criar_embed_inscricao_paga(
-                    interaction.guild, thread.name, nome_jogador, f"<@{inscrito_por}>", membro_jogador
-                )
-                await inscricao_msg.edit(embed=embed_inscricao)
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                pass
-            await atualizar_embed_estado(thread)
-
-        if interaction.message.embeds:
-            embed = interaction.message.embeds[0]
-            embed.color = discord.Color.green()
-            for indice, campo in enumerate(embed.fields):
-                if campo.name == "📌 Estado":
-                    embed.set_field_at(indice, name="📌 Estado", value="✅ Pagamento confirmado", inline=False)
-                    break
-            embed.add_field(
-                name="✅ Validado por",
-                value=interaction.user.mention,
-                inline=False
-            )
-            embed.set_footer(text="Pagamento confirmado")
-            await interaction.message.edit(embed=embed, view=ComprovativoPagamentoView(confirmado=True))
-
-        user = bot.get_user(user_id)
-        if user is None:
-            try:
-                user = await bot.fetch_user(user_id)
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                user = None
-
-        if user:
-            try:
-                await user.send(
-                    f"✅ O teu pagamento foi confirmado e a inscrição em "
-                    f"**{thread.name if thread else 'o jogo'}** foi finalizada."
-                )
-            except (discord.Forbidden, discord.HTTPException):
-                pass
-
-        await interaction.followup.send("✅ Pagamento confirmado com sucesso.", ephemeral=True)
-
-
-async def processar_comprovativo_recebido_dm(message: discord.Message) -> bool:
-    if not message.attachments:
-        return False
-
-    conn = get_connection()
-    if not conn:
-        await message.channel.send(DB_ERROR_MSG)
-        return True
-
-    cursor = conn.cursor()
-    try:
-        cursor.execute("""
-            SELECT id, thread_id, message_id, nome_jogador
-            FROM inscricoes_jogos
-            WHERE user_id = %s
-              AND estado = 'pendente_pagamento'
-            ORDER BY criado_em DESC
-            LIMIT 1
-        """, (message.author.id,))
-        row = cursor.fetchone()
-    finally:
-        cursor.close()
-        conn.close()
-
-    if not row:
-        return False
-
-    inscricao_id, thread_id, inscricao_message_id, nome_jogador = row
-    anexo = message.attachments[0]
-    extensao = anexo.filename.rsplit(".", 1)[-1].lower() if "." in anexo.filename else ""
-
-    if extensao not in COMPROVATIVOS_EXTENSOES_PERMITIDAS:
-        await message.channel.send("⚠️ Formato inválido. Envia o comprovativo em **PDF, JPG ou PNG**.")
-        return True
-
-    thread = bot.get_channel(thread_id)
-    guild = thread.guild if thread else None
-    canal_comprovativos = await obter_canal_comprovativos()
-
-    if canal_comprovativos is None:
-        await message.channel.send("⚠️ Recebi o comprovativo, mas não encontrei a sala **#comprovativos**. Contacta a staff.")
-        return True
-
-    embed = discord.Embed(
-        title="💳 Novo comprovativo de pagamento",
-        color=discord.Color.orange(),
-        timestamp=discord.utils.utcnow()
-    )
-    embed.add_field(name="👤 Jogador", value=f"{message.author.mention}\n**{nome_jogador}**", inline=False)
-    embed.add_field(name="🎟️ Jogo", value=thread.mention if thread else f"Thread ID: {thread_id}", inline=False)
-    embed.add_field(name="📎 Ficheiro", value=anexo.filename, inline=False)
-    embed.add_field(name="📌 Estado", value="⏳ Pendente de validação", inline=False)
-    embed.set_footer(text="Usa o botão abaixo para confirmar o pagamento")
-
-    try:
-        ficheiro = await anexo.to_file()
-        staff_msg = await canal_comprovativos.send(
-            embed=embed,
-            file=ficheiro,
-            view=ComprovativoPagamentoView()
-        )
-    except (discord.Forbidden, discord.HTTPException) as e:
-        print(f"Erro ao enviar comprovativo para a staff: {e}")
-        await message.channel.send("⚠️ Não consegui enviar o comprovativo para a sala da staff. Contacta a staff.")
-        return True
-
-    conn = get_connection()
-    if conn:
-        cursor = conn.cursor()
-        try:
-            cursor.execute("""
-                UPDATE inscricoes_jogos
-                SET comprovativo_message_id = %s, comprovativo_enviado_em = NOW()
-                WHERE id = %s
-            """, (staff_msg.id, inscricao_id))
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            print(f"Erro ao associar comprovativo à inscrição: {e}")
-        finally:
-            cursor.close()
-            conn.close()
-
-    await message.channel.send("✅ Comprovativo enviado para a staff. Aguarda a validação do pagamento.")
-    return True
-
-
 async def criar_inscricao_interaction(interaction: discord.Interaction, numero_texto: str = None):
     """Inscreve o jogador indicado pelo número fixo de operador.
     user_id = jogador inscrito. inscrito_por = quem clicou/fez a inscrição.
@@ -1694,13 +1440,10 @@ async def criar_inscricao_interaction(interaction: discord.Interaction, numero_t
     cursor.close()
     conn.close()
 
-    dm_enviada = await enviar_instrucoes_pagamento_dm(membro_jogador, interaction.channel.name)
-
-    resposta = f"✅ Inscrição criada para **{nome}**. Está pendente de pagamento."
-    if not dm_enviada:
-        resposta += " ⚠️ Não consegui enviar DM ao jogador; ele deve ativar as mensagens privadas do servidor."
-
-    await interaction.response.send_message(resposta, ephemeral=True)
+    await interaction.response.send_message(
+        f"✅ Inscrição criada para **{nome}**.",
+        ephemeral=True
+    )
 
     await atualizar_embed_estado(interaction.channel)
 
@@ -2099,17 +1842,7 @@ async def inscrever(ctx, *, nome: str):
 
     cursor.close()
     conn.close()
-
-    jogador_dm = membro_jogador or ctx.author
-    dm_enviada = await enviar_instrucoes_pagamento_dm(jogador_dm, ctx.channel.name)
-
     await apagar_mensagem_comando(ctx)
-    if not dm_enviada:
-        await ctx.send(
-            f"⚠️ A inscrição de **{nome}** foi criada, mas não consegui enviar DM ao jogador. "
-            "Ele deve ativar as mensagens privadas do servidor.",
-            delete_after=15
-        )
     await atualizar_embed_estado(ctx.channel)
 
 
@@ -4681,7 +4414,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
 
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT thread_id, message_id, user_id, nome_jogador, estado, COALESCE(inscrito_por, user_id)
+        SELECT thread_id, user_id, nome_jogador, estado, COALESCE(inscrito_por, user_id)
         FROM inscricoes_jogos
         WHERE message_id = %s
     """, (payload.message_id,))
@@ -4692,7 +4425,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         conn.close()
         return
 
-    thread_id, inscricao_message_id, user_id, nome_jogador, estado, inscrito_por = row
+    thread_id, user_id, nome_jogador, estado, inscrito_por = row
 
     if estado != "pendente_pagamento":
         cursor.close()
@@ -4705,7 +4438,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
             confirmado_por = %s,
             confirmado_em = NOW()
         WHERE message_id = %s
-    """, (payload.user_id, inscricao_message_id))
+    """, (payload.user_id, payload.message_id))
     conn.commit()
     cursor.close()
     conn.close()
@@ -4729,7 +4462,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
 
     if canal:
         try:
-            msg = await canal.fetch_message(inscricao_message_id)
+            msg = await canal.fetch_message(payload.message_id)
             embed = await criar_embed_inscricao_paga(guild, canal.name, nome_jogador, autor_inscricao_mention, membro_jogador)
             await msg.edit(embed=embed)
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
