@@ -902,12 +902,25 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    # Processa termos e comprovativos enviados por DM.
+    # Processa ficheiros enviados por DM no fluxo correto.
+    # A escolha é feita pela ação mais recente do jogador:
+    # pedido de termo ou inscrição pendente de pagamento.
     if isinstance(message.channel, discord.DMChannel):
-        if await processar_termo_recebido_dm(message):
+        fluxo_dm = obter_fluxo_upload_dm_sync(message.author.id)
+
+        if fluxo_dm == "termo":
+            await processar_termo_recebido_dm(message)
             return
-        if await processar_comprovativo_recebido_dm(message):
+
+        if fluxo_dm == "comprovativo":
+            await processar_comprovativo_recebido_dm(message)
             return
+
+        if message.attachments:
+            await message.channel.send(
+                "⚠️ Não tenho nenhum envio pendente associado à tua conta.\n"
+                "Usa primeiro o botão **📄 Enviar termo** ou faz uma inscrição pendente de pagamento."
+            )
         return
 
     print(f"[MSG] {message.author} em #{message.channel}: {message.content}")
@@ -1209,6 +1222,50 @@ async def enviar_termo_interaction(interaction: discord.Interaction):
         "📩 Enviei-te uma mensagem privada com o link do documento. Envia lá o teu termo quando estiver pronto.",
         ephemeral=True
     )
+
+
+def obter_fluxo_upload_dm_sync(user_id: int):
+    """Determina se a próxima DM pertence ao fluxo de termo ou comprovativo.
+
+    Quando os dois fluxos estão pendentes, prevalece o que foi iniciado mais
+    recentemente pelo jogador. Assim, um comprovativo não é enviado para a
+    sala dos termos e um termo pedido depois da inscrição continua a ser
+    tratado como termo.
+    """
+    conn = get_connection()
+    if not conn:
+        return None
+
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "SELECT MAX(pedido_em) FROM termos_pedidos WHERE user_id = %s",
+            (user_id,)
+        )
+        termo_em = cursor.fetchone()[0]
+
+        cursor.execute("""
+            SELECT MAX(criado_em)
+            FROM inscricoes_jogos
+            WHERE user_id = %s
+              AND estado = 'pendente_pagamento'
+              AND comprovativo_message_id IS NULL
+        """, (user_id,))
+        comprovativo_em = cursor.fetchone()[0]
+    except Exception as e:
+        print(f"Erro ao determinar fluxo de upload por DM: {e}")
+        return None
+    finally:
+        cursor.close()
+        conn.close()
+
+    if termo_em and comprovativo_em:
+        return "termo" if termo_em >= comprovativo_em else "comprovativo"
+    if termo_em:
+        return "termo"
+    if comprovativo_em:
+        return "comprovativo"
+    return None
 
 
 async def processar_termo_recebido_dm(message: discord.Message) -> bool:
