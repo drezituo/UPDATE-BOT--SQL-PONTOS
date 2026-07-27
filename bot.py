@@ -1383,40 +1383,17 @@ async def processar_termo_recebido_dm(message: discord.Message) -> bool:
     return True
 
 
-async def enviar_instrucoes_pagamento_dm(jogador, thread_name: str, inscrito_por=None):
-    """Envia a notificação ao jogador inscrito e a quem criou a inscrição.
-
-    Se forem a mesma pessoa, envia apenas uma DM para evitar mensagens duplicadas.
-    Retorna um dicionário com o resultado de cada envio.
-    """
-    resultados = {"jogador": False, "inscrito_por": True}
-
+async def enviar_instrucoes_pagamento_dm(user, thread_name: str):
     try:
-        await jogador.send(
+        await user.send(
             "💳 **Inscrição pendente de pagamento**\n\n"
             f"A tua inscrição em **{thread_name}** foi criada e está pendente de pagamento.\n"
             "Envia nesta conversa o comprovativo em **PDF, JPG ou PNG**.\n\n"
             "Depois do envio, a staff irá validar o comprovativo e a inscrição será finalizada."
         )
-        resultados["jogador"] = True
+        return True
     except (discord.Forbidden, discord.HTTPException):
-        resultados["jogador"] = False
-
-    if inscrito_por is not None and inscrito_por.id != jogador.id:
-        try:
-            await inscrito_por.send(
-                "💳 **Inscrição pendente de pagamento**\n\n"
-                f"A inscrição de **{formatar_nome_operador(jogador)}** em **{thread_name}** "
-                "foi criada por ti e está pendente de pagamento.\n"
-                "O jogador inscrito recebeu uma mensagem para enviar o comprovativo em "
-                "**PDF, JPG ou PNG**.\n\n"
-                "Depois da validação da staff, a inscrição será finalizada."
-            )
-            resultados["inscrito_por"] = True
-        except (discord.Forbidden, discord.HTTPException):
-            resultados["inscrito_por"] = False
-
-    return resultados
+        return False
 
 
 async def obter_canal_comprovativos():
@@ -1665,8 +1642,14 @@ async def criar_inscricao_interaction(interaction: discord.Interaction, numero_t
 
     is_admin = interaction.user.guild_permissions.administrator
 
-    # Qualquer jogador pode inscrever outro jogador através do respetivo número.
-    # A validação do termo é feita sobre o jogador que está a ser inscrito.
+    if not is_admin:
+        numero_do_utilizador = obter_numero_jogador_sync(interaction.user.id)
+        if numero_do_utilizador != numero:
+            return await interaction.response.send_message(
+                "⚠️ Só podes fazer a tua própria inscrição.",
+                ephemeral=True
+            )
+
     membro_jogador = await obter_membro_por_numero_jogador(interaction.guild, numero)
     if membro_jogador is None:
         return await interaction.response.send_message(
@@ -1768,17 +1751,11 @@ async def criar_inscricao_interaction(interaction: discord.Interaction, numero_t
     cursor.close()
     conn.close()
 
-    dms_enviadas = await enviar_instrucoes_pagamento_dm(
-        membro_jogador,
-        interaction.channel.name,
-        interaction.user
-    )
+    dm_enviada = await enviar_instrucoes_pagamento_dm(membro_jogador, interaction.channel.name)
 
     resposta = f"✅ Inscrição criada para **{nome}**. Está pendente de pagamento."
-    if not dms_enviadas["jogador"]:
+    if not dm_enviada:
         resposta += " ⚠️ Não consegui enviar DM ao jogador; ele deve ativar as mensagens privadas do servidor."
-    if not dms_enviadas["inscrito_por"]:
-        resposta += " ⚠️ Também não consegui enviar-te a confirmação por DM."
 
     await interaction.response.send_message(resposta, ephemeral=True)
 
@@ -2065,21 +2042,26 @@ async def inscrever(ctx, *, nome: str):
 
     is_admin = ctx.author.guild_permissions.administrator
 
-    # Qualquer utilizador pode inscrever outro jogador. O alvo pode ser indicado
-    # por menção ou por um nome que corresponda a um membro do servidor.
-    if membro_jogador is None:
-        membro_encontrado = await encontrar_membro_por_nome(ctx.guild, nome)
-        if membro_encontrado:
-            membro_jogador = membro_encontrado
+    if not is_admin:
+        if membro_jogador is not None and membro_jogador.id != ctx.author.id:
+            await apagar_mensagem_comando(ctx)
+            return await ctx.send("⚠️ Só podes fazer a tua própria inscrição.", delete_after=10)
 
-    if membro_jogador is not None:
-        nome = formatar_nome_operador(membro_jogador)
+        membro_jogador = ctx.author
+        nome = formatar_nome_operador(ctx.author)
+    else:
+        if membro_jogador is None:
+            membro_encontrado = await encontrar_membro_por_nome(ctx.guild, nome)
+            if membro_encontrado:
+                membro_jogador = membro_encontrado
+                nome = formatar_nome_operador(membro_jogador)
+        else:
+            nome = formatar_nome_operador(membro_jogador)
 
-    if membro_jogador is None:
+    if not is_admin and membro_jogador is None:
         await apagar_mensagem_comando(ctx)
         return await ctx.send(
-            "⚠️ Não consegui identificar o jogador no Discord para validar o termo. "
-            "Usa uma menção ou escreve o nome exato do jogador.",
+            "⚠️ Não consegui identificar o jogador no Discord para validar o termo. Usa uma menção ao jogador.",
             delete_after=10
         )
 
@@ -2126,19 +2108,16 @@ async def inscrever(ctx, *, nome: str):
         SELECT 1
         FROM inscricoes_jogos
         WHERE thread_id = %s
-          AND user_id = %s
+          AND LOWER(nome_jogador) = LOWER(%s)
           AND estado IN ('pendente_pagamento', 'pago')
-    """, (ctx.channel.id, membro_jogador.id))
-    existe_jogador = cursor.fetchone()
+    """, (ctx.channel.id, nome))
+    existe_nome = cursor.fetchone()
 
-    if existe_jogador:
+    if existe_nome:
         cursor.close()
         conn.close()
         await apagar_mensagem_comando(ctx)
-        return await ctx.send(
-            f"⚠️ O jogador **{nome}** já tem uma inscrição ativa neste jogo.",
-            delete_after=10
-        )
+        return await ctx.send("⚠️ Já existe uma inscrição com esse nome neste jogo.", delete_after=10)
 
     criado_em = utc_now()
     expira_em = criado_em + timedelta(hours=HORAS_PAGAMENTO)
@@ -2179,23 +2158,13 @@ async def inscrever(ctx, *, nome: str):
     conn.close()
 
     jogador_dm = membro_jogador or ctx.author
-    dms_enviadas = await enviar_instrucoes_pagamento_dm(
-        jogador_dm,
-        ctx.channel.name,
-        ctx.author
-    )
+    dm_enviada = await enviar_instrucoes_pagamento_dm(jogador_dm, ctx.channel.name)
 
     await apagar_mensagem_comando(ctx)
-    avisos_dm = []
-    if not dms_enviadas["jogador"]:
-        avisos_dm.append("não consegui enviar DM ao jogador inscrito")
-    if not dms_enviadas["inscrito_por"]:
-        avisos_dm.append("não consegui enviar DM a quem realizou a inscrição")
-
-    if avisos_dm:
+    if not dm_enviada:
         await ctx.send(
-            f"⚠️ A inscrição de **{nome}** foi criada, mas " + " e ".join(avisos_dm) + ". "
-            "As mensagens privadas devem estar ativadas.",
+            f"⚠️ A inscrição de **{nome}** foi criada, mas não consegui enviar DM ao jogador. "
+            "Ele deve ativar as mensagens privadas do servidor.",
             delete_after=15
         )
     await atualizar_embed_estado(ctx.channel)
