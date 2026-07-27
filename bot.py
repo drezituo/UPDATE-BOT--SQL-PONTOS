@@ -591,11 +591,11 @@ def atribuir_creditos_por_presencas(cursor, user_id: int, total_presencas: int) 
     return novos
 
 
-def atribuir_creditos_por_solowins(cursor, user_id: int, total_solowins: int) -> int:
-    """Atribui 1 crédito por cada novo bloco completo de 10 SoloWins."""
-    blocos_atingidos = max(int(total_solowins) // 10, 0)
+def atribuir_creditos_por_teamwins(cursor, user_id: int, total_teamwins: int) -> int:
+    """Atribui 1 crédito por cada novo bloco completo de 10 Team Wins."""
+    blocos_atingidos = max(int(total_teamwins) // 10, 0)
     cursor.execute(
-        "SELECT saldo, blocos_solo_atribuidos FROM creditos_jogadores WHERE user_id = %s FOR UPDATE",
+        "SELECT saldo, blocos_team_atribuidos FROM creditos_jogadores WHERE user_id = %s FOR UPDATE",
         (user_id,)
     )
     row = cursor.fetchone()
@@ -604,7 +604,7 @@ def atribuir_creditos_por_solowins(cursor, user_id: int, total_solowins: int) ->
     else:
         blocos_atribuidos = 0
         cursor.execute(
-            "INSERT INTO creditos_jogadores (user_id, saldo, blocos_atribuidos, blocos_solo_atribuidos) VALUES (%s, 0, 0, 0)",
+            "INSERT INTO creditos_jogadores (user_id, saldo, blocos_atribuidos, blocos_team_atribuidos) VALUES (%s, 0, 0, 0)",
             (user_id,)
         )
 
@@ -613,12 +613,12 @@ def atribuir_creditos_por_solowins(cursor, user_id: int, total_solowins: int) ->
         return 0
 
     cursor.execute(
-        "UPDATE creditos_jogadores SET saldo = saldo + %s, blocos_solo_atribuidos = %s, atualizado_em = NOW() WHERE user_id = %s",
+        "UPDATE creditos_jogadores SET saldo = saldo + %s, blocos_team_atribuidos = %s, atualizado_em = NOW() WHERE user_id = %s",
         (novos, blocos_atingidos, user_id)
     )
     cursor.execute(
-        "INSERT INTO creditos_movimentos (user_id, quantidade, tipo, motivo) VALUES (%s, %s, 'solowins', %s)",
-        (user_id, novos, f"Prémio por atingir {blocos_atingidos * 10} SoloWins")
+        "INSERT INTO creditos_movimentos (user_id, quantidade, tipo, motivo) VALUES (%s, %s, 'teamwins', %s)",
+        (user_id, novos, f"Prémio por atingir {blocos_atingidos * 10} Team Wins")
     )
     return novos
 
@@ -928,11 +928,16 @@ if conn:
         """)
 
         cursor.execute("""
+        ALTER TABLE creditos_jogadores
+        ADD COLUMN IF NOT EXISTS blocos_team_atribuidos INTEGER NOT NULL DEFAULT 0
+        """)
+
+        cursor.execute("""
         CREATE TABLE IF NOT EXISTS creditos_movimentos (
             id BIGSERIAL PRIMARY KEY,
             user_id BIGINT NOT NULL,
             quantidade INTEGER NOT NULL,
-            tipo TEXT NOT NULL CHECK (tipo IN ('presencas', 'solowins', 'utilizacao', 'devolucao', 'ajuste')),
+            tipo TEXT NOT NULL CHECK (tipo IN ('presencas', 'solowins', 'teamwins', 'utilizacao', 'devolucao', 'ajuste')),
             motivo TEXT NOT NULL,
             inscricao_id BIGINT,
             criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -947,7 +952,7 @@ if conn:
         cursor.execute("""
         ALTER TABLE creditos_movimentos
         ADD CONSTRAINT creditos_movimentos_tipo_check
-        CHECK (tipo IN ('presencas', 'solowins', 'utilizacao', 'devolucao', 'ajuste'))
+        CHECK (tipo IN ('presencas', 'solowins', 'teamwins', 'utilizacao', 'devolucao', 'ajuste'))
         """)
 
         cursor.execute("""
@@ -1208,7 +1213,7 @@ class CreditoInscricaoView(discord.ui.View):
             credito = cursor.fetchone()
             if not credito or int(credito[0]) < 1:
                 conn.rollback()
-                return await interaction.response.send_message("⚠️ Não tens créditos disponíveis. Recebes 1 crédito por cada 10 presenças ou por cada 10 SoloWins.", ephemeral=True)
+                return await interaction.response.send_message("⚠️ Não tens créditos disponíveis. Recebes 1 crédito por cada 10 presenças ou por cada 10 Team Wins.", ephemeral=True)
 
             cursor.execute("UPDATE creditos_jogadores SET saldo = saldo - 1, atualizado_em = NOW() WHERE user_id = %s AND saldo > 0", (user_id,))
             cursor.execute("""
@@ -2969,18 +2974,24 @@ async def adicionar_teamwin_jogador(guild: discord.Guild, user_id: int, motivo: 
         return None
 
     cursor = conn.cursor()
-    cursor.execute("SELECT pontos FROM pontos_team WHERE user_id = %s", (user_id,))
-    row = cursor.fetchone()
-    total = (row[0] if row else 0) + 1
+    try:
+        cursor.execute("SELECT pontos FROM pontos_team WHERE user_id = %s", (user_id,))
+        row = cursor.fetchone()
+        total = (row[0] if row else 0) + 1
 
-    if row:
-        cursor.execute("UPDATE pontos_team SET pontos = %s WHERE user_id = %s", (total, user_id))
-    else:
-        cursor.execute("INSERT INTO pontos_team (user_id, pontos) VALUES (%s, %s)", (user_id, total))
+        if row:
+            cursor.execute("UPDATE pontos_team SET pontos = %s WHERE user_id = %s", (total, user_id))
+        else:
+            cursor.execute("INSERT INTO pontos_team (user_id, pontos) VALUES (%s, %s)", (user_id, total))
 
-    conn.commit()
-    cursor.close()
-    conn.close()
+        novos_creditos = atribuir_creditos_por_teamwins(cursor, user_id, total)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
 
     membro = guild.get_member(user_id) if guild else None
     if membro is None and guild is not None:
@@ -2990,12 +3001,28 @@ async def adicionar_teamwin_jogador(guild: discord.Guild, user_id: int, motivo: 
             membro = None
 
     nome = formatar_nome_operador(membro, f"ID:{user_id}")
+    saldo_atual = obter_creditos_sync(user_id)
+    extra_creditos = (
+        f"\n💎 Recebeu **{novos_creditos} crédito(s)** por completar um novo bloco de 10 Team Wins. "
+        f"Saldo atual: **{saldo_atual}**."
+        if novos_creditos else ""
+    )
     await enviar_log_pontos(
         guild,
         f"👥 Foi adicionada uma TeamWin a **{nome}**\n"
         f"Conta agora com: **{total:02} TeamWins**\n"
-        f"📌 {motivo}"
+        f"📌 {motivo}{extra_creditos}"
     )
+
+    if novos_creditos and membro is not None:
+        try:
+            await membro.send(
+                f"🎉 Atingiste **{total} Team Wins** e recebeste **{novos_creditos} crédito(s)** "
+                f"de entrada gratuita. Saldo atual: **{saldo_atual}**."
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
     return total
 
 
@@ -4617,15 +4644,15 @@ def criar_embed_creditos_jogador(membro: discord.Member):
         row = cursor.fetchone()
         presencas = int(row[0]) if row else 0
 
-        cursor.execute("SELECT pontos FROM pontos_solo WHERE user_id = %s", (membro.id,))
+        cursor.execute("SELECT pontos FROM pontos_team WHERE user_id = %s", (membro.id,))
         row = cursor.fetchone()
-        solo_wins = int(row[0]) if row else 0
+        team_wins = int(row[0]) if row else 0
     finally:
         cursor.close()
         conn.close()
 
     progresso_presencas = presencas % 10
-    progresso_solo = solo_wins % 10
+    progresso_team = team_wins % 10
 
     embed = discord.Embed(
         title="💎┃CRÉDITOS",
@@ -4645,10 +4672,10 @@ def criar_embed_creditos_jogador(membro: discord.Member):
         inline=False
     )
     embed.add_field(
-        name="🔥 Por Solo Wins",
+        name="👥 Por Team Wins",
         value=(
-            f"Total: **{solo_wins}**\n"
-            f"Progresso para o próximo crédito: **{progresso_solo}/10**"
+            f"Total: **{team_wins}**\n"
+            f"Progresso para o próximo crédito: **{progresso_team}/10**"
         ),
         inline=False
     )
@@ -4656,7 +4683,7 @@ def criar_embed_creditos_jogador(membro: discord.Member):
         name="ℹ️ Como funciona",
         value=(
             "Cada bloco de **10 presenças** atribui 1 crédito.\n"
-            "Cada bloco de **10 Solo Wins** atribui 1 crédito.\n"
+            "Cada bloco de **10 Team Wins** atribui 1 crédito.\n"
             "Cada crédito pode validar gratuitamente uma inscrição."
         ),
         inline=False
@@ -5046,6 +5073,320 @@ async def listarequipas(ctx):
 
 
 # =========================
+# 💎 GESTÃO INDIVIDUAL DE CRÉDITOS
+# =========================
+def obter_dados_creditos_jogador_sync(user_id: int):
+    """Obtém saldo, progresso e blocos já contabilizados de um jogador."""
+    conn = get_connection()
+    if not conn:
+        return None
+
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT pontos FROM pontos WHERE user_id = %s", (user_id,))
+        row = cursor.fetchone()
+        presencas = int(row[0]) if row else 0
+
+        cursor.execute("SELECT pontos FROM pontos_team WHERE user_id = %s", (user_id,))
+        row = cursor.fetchone()
+        team_wins = int(row[0]) if row else 0
+
+        cursor.execute(
+            "SELECT saldo, blocos_atribuidos, blocos_team_atribuidos "
+            "FROM creditos_jogadores WHERE user_id = %s",
+            (user_id,)
+        )
+        row = cursor.fetchone()
+        if row:
+            saldo, blocos_presencas, blocos_team = map(int, row)
+        else:
+            saldo = blocos_presencas = blocos_team = 0
+
+        return {
+            "saldo": saldo,
+            "presencas": presencas,
+            "team_wins": team_wins,
+            "blocos_presencas": blocos_presencas,
+            "blocos_team": blocos_team,
+        }
+    finally:
+        cursor.close()
+        conn.close()
+
+
+async def resolver_jogador_por_numero_creditos(ctx, numero_texto: str):
+    numero = extrair_numero_operador(numero_texto)
+    if numero is None:
+        await ctx.send("⚠️ Número inválido. Exemplo: `!creditos 149`.")
+        return None, None
+
+    membro = await obter_membro_por_numero_jogador(ctx.guild, numero)
+    if membro is None:
+        await ctx.send(f"⚠️ Não encontrei nenhum jogador com o número **#{numero:02d}**.")
+        return numero, None
+
+    return numero, membro
+
+
+@bot.command(name="creditos", aliases=["vercreditos", "saldo"])
+@commands.has_permissions(administrator=True)
+async def creditos_admin(ctx, numero: str):
+    """Consulta individual de créditos pelo número do jogador."""
+    numero_int, membro = await resolver_jogador_por_numero_creditos(ctx, numero)
+    if membro is None:
+        return
+
+    dados = obter_dados_creditos_jogador_sync(membro.id)
+    if dados is None:
+        return await ctx.send(DB_ERROR_MSG)
+
+    teoricos_presencas = dados["presencas"] // 10
+    teoricos_team = dados["team_wins"] // 10
+
+    embed = discord.Embed(
+        title=f"💎 Créditos — #{numero_int:02d} {membro.display_name}",
+        colour=discord.Colour.gold()
+    )
+    embed.add_field(name="Saldo atual", value=f"**{dados['saldo']} crédito(s)**", inline=False)
+    embed.add_field(
+        name="Presenças",
+        value=(
+            f"Total: **{dados['presencas']}**\n"
+            f"Blocos teóricos: **{teoricos_presencas}**\n"
+            f"Blocos já contabilizados: **{dados['blocos_presencas']}**"
+        ),
+        inline=True
+    )
+    embed.add_field(
+        name="Team Wins",
+        value=(
+            f"Total: **{dados['team_wins']}**\n"
+            f"Blocos teóricos: **{teoricos_team}**\n"
+            f"Blocos já contabilizados: **{dados['blocos_team']}**"
+        ),
+        inline=True
+    )
+    embed.set_footer(text="Consulta administrativa privada por comando.")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="definircreditos", aliases=["setcreditos"])
+@commands.has_permissions(administrator=True)
+async def definir_creditos_admin(ctx, numero: str, saldo: int, *, motivo: str = "Regularização manual inicial"):
+    """Define o saldo e marca os blocos atuais como já contabilizados."""
+    if saldo < 0:
+        return await ctx.send("⚠️ O saldo não pode ser negativo.")
+
+    numero_int, membro = await resolver_jogador_por_numero_creditos(ctx, numero)
+    if membro is None:
+        return
+
+    conn = get_connection()
+    if not conn:
+        return await ctx.send(DB_ERROR_MSG)
+
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT pontos FROM pontos WHERE user_id = %s", (membro.id,))
+        row = cursor.fetchone()
+        presencas = int(row[0]) if row else 0
+
+        cursor.execute("SELECT pontos FROM pontos_team WHERE user_id = %s", (membro.id,))
+        row = cursor.fetchone()
+        team_wins = int(row[0]) if row else 0
+
+        blocos_presencas = presencas // 10
+        blocos_team = team_wins // 10
+
+        cursor.execute(
+            "SELECT saldo FROM creditos_jogadores WHERE user_id = %s FOR UPDATE",
+            (membro.id,)
+        )
+        row = cursor.fetchone()
+        saldo_anterior = int(row[0]) if row else 0
+        diferenca = saldo - saldo_anterior
+
+        cursor.execute(
+            """
+            INSERT INTO creditos_jogadores
+                (user_id, saldo, blocos_atribuidos, blocos_team_atribuidos, atualizado_em)
+            VALUES (%s, %s, %s, %s, NOW())
+            ON CONFLICT (user_id) DO UPDATE SET
+                saldo = EXCLUDED.saldo,
+                blocos_atribuidos = EXCLUDED.blocos_atribuidos,
+                blocos_team_atribuidos = EXCLUDED.blocos_team_atribuidos,
+                atualizado_em = NOW()
+            """,
+            (membro.id, saldo, blocos_presencas, blocos_team)
+        )
+
+        if diferenca != 0:
+            cursor.execute(
+                "INSERT INTO creditos_movimentos (user_id, quantidade, tipo, motivo) "
+                "VALUES (%s, %s, 'ajuste', %s)",
+                (
+                    membro.id,
+                    diferenca,
+                    f"{motivo} — definido por {ctx.author} ({ctx.author.id})"
+                )
+            )
+
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"Erro ao definir créditos: {e}")
+        return await ctx.send("⚠️ Não foi possível definir os créditos.")
+    finally:
+        cursor.close()
+        conn.close()
+
+    await ctx.send(
+        f"✅ Saldo de **#{numero_int:02d} {membro.display_name}** definido para **{saldo} crédito(s)**.\n"
+        f"🔒 Foram marcados como contabilizados: **{blocos_presencas}** bloco(s) de presenças e "
+        f"**{blocos_team}** bloco(s) de Team Wins."
+    )
+
+
+@bot.command(name="adicionarcreditos", aliases=["addcreditos"])
+@commands.has_permissions(administrator=True)
+async def adicionar_creditos_admin(ctx, numero: str, quantidade: int, *, motivo: str = "Ajuste manual"):
+    if quantidade <= 0:
+        return await ctx.send("⚠️ A quantidade deve ser superior a zero.")
+
+    numero_int, membro = await resolver_jogador_por_numero_creditos(ctx, numero)
+    if membro is None:
+        return
+
+    conn = get_connection()
+    if not conn:
+        return await ctx.send(DB_ERROR_MSG)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            INSERT INTO creditos_jogadores (user_id, saldo, blocos_atribuidos, blocos_team_atribuidos)
+            VALUES (%s, %s, 0, 0)
+            ON CONFLICT (user_id) DO UPDATE SET
+                saldo = creditos_jogadores.saldo + EXCLUDED.saldo,
+                atualizado_em = NOW()
+            RETURNING saldo
+            """,
+            (membro.id, quantidade)
+        )
+        novo_saldo = int(cursor.fetchone()[0])
+        cursor.execute(
+            "INSERT INTO creditos_movimentos (user_id, quantidade, tipo, motivo) VALUES (%s, %s, 'ajuste', %s)",
+            (membro.id, quantidade, f"{motivo} — adicionado por {ctx.author} ({ctx.author.id})")
+        )
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"Erro ao adicionar créditos: {e}")
+        return await ctx.send("⚠️ Não foi possível adicionar os créditos.")
+    finally:
+        cursor.close()
+        conn.close()
+
+    await ctx.send(
+        f"✅ Foram adicionados **{quantidade} crédito(s)** a **#{numero_int:02d} {membro.display_name}**. "
+        f"Novo saldo: **{novo_saldo}**."
+    )
+
+
+@bot.command(name="removercreditos", aliases=["tirarcreditos"])
+@commands.has_permissions(administrator=True)
+async def remover_creditos_admin(ctx, numero: str, quantidade: int, *, motivo: str = "Correção manual"):
+    if quantidade <= 0:
+        return await ctx.send("⚠️ A quantidade deve ser superior a zero.")
+
+    numero_int, membro = await resolver_jogador_por_numero_creditos(ctx, numero)
+    if membro is None:
+        return
+
+    conn = get_connection()
+    if not conn:
+        return await ctx.send(DB_ERROR_MSG)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT saldo FROM creditos_jogadores WHERE user_id = %s FOR UPDATE", (membro.id,))
+        row = cursor.fetchone()
+        saldo_atual = int(row[0]) if row else 0
+        if quantidade > saldo_atual:
+            conn.rollback()
+            return await ctx.send(
+                f"⚠️ O jogador só tem **{saldo_atual} crédito(s)**. Não é possível remover **{quantidade}**."
+            )
+
+        novo_saldo = saldo_atual - quantidade
+        cursor.execute(
+            "UPDATE creditos_jogadores SET saldo = %s, atualizado_em = NOW() WHERE user_id = %s",
+            (novo_saldo, membro.id)
+        )
+        cursor.execute(
+            "INSERT INTO creditos_movimentos (user_id, quantidade, tipo, motivo) VALUES (%s, %s, 'ajuste', %s)",
+            (membro.id, -quantidade, f"{motivo} — removido por {ctx.author} ({ctx.author.id})")
+        )
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"Erro ao remover créditos: {e}")
+        return await ctx.send("⚠️ Não foi possível remover os créditos.")
+    finally:
+        cursor.close()
+        conn.close()
+
+    await ctx.send(
+        f"✅ Foram removidos **{quantidade} crédito(s)** de **#{numero_int:02d} {membro.display_name}**. "
+        f"Novo saldo: **{novo_saldo}**."
+    )
+
+
+@bot.command(name="historicocreditos", aliases=["movimentoscreditos"])
+@commands.has_permissions(administrator=True)
+async def historico_creditos_admin(ctx, numero: str, limite: int = 10):
+    numero_int, membro = await resolver_jogador_por_numero_creditos(ctx, numero)
+    if membro is None:
+        return
+
+    limite = max(1, min(limite, 25))
+    conn = get_connection()
+    if not conn:
+        return await ctx.send(DB_ERROR_MSG)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT quantidade, tipo, motivo, criado_em
+            FROM creditos_movimentos
+            WHERE user_id = %s
+            ORDER BY criado_em DESC, id DESC
+            LIMIT %s
+            """,
+            (membro.id, limite)
+        )
+        movimentos = cursor.fetchall()
+    finally:
+        cursor.close()
+        conn.close()
+
+    if not movimentos:
+        return await ctx.send(f"ℹ️ **#{numero_int:02d} {membro.display_name}** ainda não tem movimentos registados.")
+
+    linhas = []
+    for quantidade, tipo, motivo, criado_em in movimentos:
+        sinal = "+" if int(quantidade) > 0 else ""
+        data = discord.utils.format_dt(criado_em, style="d") if criado_em else "Data desconhecida"
+        linhas.append(f"`{sinal}{int(quantidade)}` • **{tipo}** • {motivo} • {data}")
+
+    embed = discord.Embed(
+        title=f"📜 Histórico de créditos — #{numero_int:02d} {membro.display_name}",
+        description="\n".join(linhas),
+        colour=discord.Colour.blurple()
+    )
+    await ctx.send(embed=embed)
+
+
+# =========================
 # 🔥 SISTEMA ANTIGO
 # =========================
 @bot.command(aliases=["addpresenca", "addpresencas"])
@@ -5195,17 +5536,11 @@ async def addsolo(ctx, membro: discord.Member, quantidade: int):
     else:
         cursor.execute("INSERT INTO pontos_solo VALUES (%s, %s)", (membro.id, total))
 
-    novos_creditos = atribuir_creditos_por_solowins(cursor, membro.id, total)
     conn.commit()
     cursor.close()
     conn.close()
 
-    saldo_atual = obter_creditos_sync(membro.id)
-    extra_creditos = (
-        f"\n💎 Recebeu **{novos_creditos} crédito(s)** por completar um novo bloco de 10 SoloWins. "
-        f"Saldo atual: **{saldo_atual}**."
-        if novos_creditos else ""
-    )
+    extra_creditos = ""
     await enviar_log_pontos(
         ctx.guild,
         f"🔥 Foi adicionada uma SoloWin a {membro.mention}\n"
@@ -5213,14 +5548,6 @@ async def addsolo(ctx, membro: discord.Member, quantidade: int):
     )
     await ctx.send(f"🔥 {membro.display_name} agora tem **{total} vitórias no Solo Rebirth**{extra_creditos}")
 
-    if novos_creditos:
-        try:
-            await membro.send(
-                f"🎉 Atingiste **{total} SoloWins** e recebeste **{novos_creditos} crédito(s)** "
-                f"de entrada gratuita. Saldo atual: **{saldo_atual}**."
-            )
-        except (discord.Forbidden, discord.HTTPException):
-            pass
 
 
 @bot.command()
@@ -5323,12 +5650,28 @@ async def addteam(ctx, membro: discord.Member, quantidade: int):
     else:
         cursor.execute("INSERT INTO pontos_team VALUES (%s, %s)", (membro.id, total))
 
+    novos_creditos = atribuir_creditos_por_teamwins(cursor, membro.id, total)
     conn.commit()
     cursor.close()
     conn.close()
 
-    await enviar_log_pontos(ctx.guild, f"👥 Foi adicionada uma TeamWin a {membro.mention}\nConta agora com: **{total:02} TeamWins**")
-    await ctx.send(f"👥 {membro.display_name} agora tem **{total} vitórias no TeamWin**")
+    saldo_atual = obter_creditos_sync(membro.id)
+    extra_creditos = (
+        f"\n💎 Recebeu **{novos_creditos} crédito(s)** por completar um novo bloco de 10 Team Wins. "
+        f"Saldo atual: **{saldo_atual}**."
+        if novos_creditos else ""
+    )
+    await enviar_log_pontos(ctx.guild, f"👥 Foi adicionada uma TeamWin a {membro.mention}\nConta agora com: **{total:02} TeamWins**{extra_creditos}")
+    await ctx.send(f"👥 {membro.display_name} agora tem **{total} vitórias no TeamWin**{extra_creditos}")
+
+    if novos_creditos:
+        try:
+            await membro.send(
+                f"🎉 Atingiste **{total} Team Wins** e recebeste **{novos_creditos} crédito(s)** "
+                f"de entrada gratuita. Saldo atual: **{saldo_atual}**."
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            pass
 
 
 @bot.command()
