@@ -545,6 +545,108 @@ def calcular_pontos_equipa_sync(equipa_id: int):
     conn.close()
     return totais
 
+# ---------- CRÉDITOS ----------
+def obter_creditos_sync(user_id: int) -> int:
+    conn = get_connection()
+    if not conn:
+        return 0
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT saldo FROM creditos_jogadores WHERE user_id = %s", (user_id,))
+        row = cursor.fetchone()
+        return int(row[0]) if row else 0
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def atribuir_creditos_por_presencas(cursor, user_id: int, total_presencas: int) -> int:
+    blocos_atingidos = max(int(total_presencas) // 10, 0)
+    cursor.execute(
+        "SELECT saldo, blocos_atribuidos FROM creditos_jogadores WHERE user_id = %s FOR UPDATE",
+        (user_id,)
+    )
+    row = cursor.fetchone()
+    if row:
+        blocos_atribuidos = int(row[1])
+    else:
+        blocos_atribuidos = 0
+        cursor.execute(
+            "INSERT INTO creditos_jogadores (user_id, saldo, blocos_atribuidos) VALUES (%s, 0, 0)",
+            (user_id,)
+        )
+
+    novos = max(blocos_atingidos - blocos_atribuidos, 0)
+    if novos <= 0:
+        return 0
+
+    cursor.execute(
+        "UPDATE creditos_jogadores SET saldo = saldo + %s, blocos_atribuidos = %s, atualizado_em = NOW() WHERE user_id = %s",
+        (novos, blocos_atingidos, user_id)
+    )
+    cursor.execute(
+        "INSERT INTO creditos_movimentos (user_id, quantidade, tipo, motivo) VALUES (%s, %s, 'presencas', %s)",
+        (user_id, novos, f"Prémio por atingir {blocos_atingidos * 10} presenças")
+    )
+    return novos
+
+
+def atribuir_creditos_por_solowins(cursor, user_id: int, total_solowins: int) -> int:
+    """Atribui 1 crédito por cada novo bloco completo de 10 SoloWins."""
+    blocos_atingidos = max(int(total_solowins) // 10, 0)
+    cursor.execute(
+        "SELECT saldo, blocos_solo_atribuidos FROM creditos_jogadores WHERE user_id = %s FOR UPDATE",
+        (user_id,)
+    )
+    row = cursor.fetchone()
+    if row:
+        blocos_atribuidos = int(row[1])
+    else:
+        blocos_atribuidos = 0
+        cursor.execute(
+            "INSERT INTO creditos_jogadores (user_id, saldo, blocos_atribuidos, blocos_solo_atribuidos) VALUES (%s, 0, 0, 0)",
+            (user_id,)
+        )
+
+    novos = max(blocos_atingidos - blocos_atribuidos, 0)
+    if novos <= 0:
+        return 0
+
+    cursor.execute(
+        "UPDATE creditos_jogadores SET saldo = saldo + %s, blocos_solo_atribuidos = %s, atualizado_em = NOW() WHERE user_id = %s",
+        (novos, blocos_atingidos, user_id)
+    )
+    cursor.execute(
+        "INSERT INTO creditos_movimentos (user_id, quantidade, tipo, motivo) VALUES (%s, %s, 'solowins', %s)",
+        (user_id, novos, f"Prémio por atingir {blocos_atingidos * 10} SoloWins")
+    )
+    return novos
+
+
+def devolver_credito_cancelamento(cursor, inscricao_id: int, user_id: int) -> bool:
+    cursor.execute(
+        "SELECT metodo_pagamento, credito_devolvido FROM inscricoes_jogos WHERE id = %s FOR UPDATE",
+        (inscricao_id,)
+    )
+    row = cursor.fetchone()
+    if not row or row[0] != 'credito' or bool(row[1]):
+        return False
+
+    cursor.execute(
+        "INSERT INTO creditos_jogadores (user_id, saldo, blocos_atribuidos) VALUES (%s, 1, 0) "
+        "ON CONFLICT (user_id) DO UPDATE SET saldo = creditos_jogadores.saldo + 1, atualizado_em = NOW()",
+        (user_id,)
+    )
+    cursor.execute(
+        "INSERT INTO creditos_movimentos (user_id, quantidade, tipo, motivo, inscricao_id) "
+        "VALUES (%s, 1, 'devolucao', 'Crédito devolvido por cancelamento da inscrição', %s) "
+        "ON CONFLICT DO NOTHING",
+        (user_id, inscricao_id)
+    )
+    cursor.execute("UPDATE inscricoes_jogos SET credito_devolvido = TRUE WHERE id = %s", (inscricao_id,))
+    return True
+
+
 # ---------- EMBEDS INSCRIÇÕES ----------
 async def criar_embed_inscricao_pendente(ctx, nome: str, expira_em: datetime, membro_jogador: discord.Member = None):
     # Esta função aceita tanto comandos tradicionais (ctx) como botões/modais (interaction).
@@ -570,7 +672,7 @@ async def criar_embed_inscricao_pendente(ctx, nome: str, expira_em: datetime, me
     return embed
 
 
-async def criar_embed_inscricao_paga(guild: discord.Guild, thread_name: str, nome: str, autor_inscricao_mention: str, membro_jogador: discord.Member = None):
+async def criar_embed_inscricao_paga(guild: discord.Guild, thread_name: str, nome: str, autor_inscricao_mention: str, membro_jogador: discord.Member = None, metodo_pagamento: str = None):
     avatar_url = await obter_avatar_url_jogador(guild, nome, membro_jogador)
     jogador_valor = await obter_valor_jogador_embed(guild, nome, membro_jogador)
 
@@ -583,6 +685,8 @@ async def criar_embed_inscricao_paga(guild: discord.Guild, thread_name: str, nom
     embed.add_field(name="👤 Jogador", value=jogador_valor, inline=True)
     embed.add_field(name="📝 Autor da inscrição", value=autor_inscricao_mention, inline=True)
     embed.add_field(name="📌 Estado", value="✅ Inscrição finalizada", inline=False)
+    if metodo_pagamento == "credito":
+        embed.add_field(name="💎 Método", value="Crédito de entrada gratuita", inline=False)
     embed.set_footer(text="✅ Inscrição concluída com sucesso")
     return embed
 
@@ -800,6 +904,65 @@ if conn:
         """)
 
         cursor.execute("""
+        ALTER TABLE inscricoes_jogos
+        ADD COLUMN IF NOT EXISTS metodo_pagamento TEXT
+        """)
+
+        cursor.execute("""
+        ALTER TABLE inscricoes_jogos
+        ADD COLUMN IF NOT EXISTS credito_devolvido BOOLEAN NOT NULL DEFAULT FALSE
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS creditos_jogadores (
+            user_id BIGINT PRIMARY KEY,
+            saldo INTEGER NOT NULL DEFAULT 0 CHECK (saldo >= 0),
+            blocos_atribuidos INTEGER NOT NULL DEFAULT 0 CHECK (blocos_atribuidos >= 0),
+            atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """)
+
+        cursor.execute("""
+        ALTER TABLE creditos_jogadores
+        ADD COLUMN IF NOT EXISTS blocos_solo_atribuidos INTEGER NOT NULL DEFAULT 0
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS creditos_movimentos (
+            id BIGSERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            quantidade INTEGER NOT NULL,
+            tipo TEXT NOT NULL CHECK (tipo IN ('presencas', 'solowins', 'utilizacao', 'devolucao', 'ajuste')),
+            motivo TEXT NOT NULL,
+            inscricao_id BIGINT,
+            criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """)
+
+        cursor.execute("""
+        ALTER TABLE creditos_movimentos
+        DROP CONSTRAINT IF EXISTS creditos_movimentos_tipo_check
+        """)
+
+        cursor.execute("""
+        ALTER TABLE creditos_movimentos
+        ADD CONSTRAINT creditos_movimentos_tipo_check
+        CHECK (tipo IN ('presencas', 'solowins', 'utilizacao', 'devolucao', 'ajuste'))
+        """)
+
+        cursor.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_credito_utilizacao_inscricao
+        ON creditos_movimentos (inscricao_id)
+        WHERE tipo = 'utilizacao' AND inscricao_id IS NOT NULL
+        """)
+
+        cursor.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_credito_devolucao_inscricao
+        ON creditos_movimentos (inscricao_id)
+        WHERE tipo = 'devolucao' AND inscricao_id IS NOT NULL
+        """)
+
+        cursor.execute("""
         CREATE TABLE IF NOT EXISTS termos_responsabilidade (
             user_id BIGINT PRIMARY KEY,
             assinado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -917,6 +1080,7 @@ async def on_ready():
 
     # Regista os botões persistentes das inscrições e dos termos pendentes.
     bot.add_view(InscricoesView())
+    bot.add_view(CreditoInscricaoView())
     bot.add_view(ComprovativoPagamentoView())
     bot.add_view(PainelEquipasView())
     await carregar_views_termos_pendentes()
@@ -1005,6 +1169,80 @@ class InscricaoModal(discord.ui.Modal, title="Inscrição no jogo"):
 
     async def on_submit(self, interaction: discord.Interaction):
         await criar_inscricao_interaction(interaction, str(self.numero))
+
+
+class CreditoInscricaoView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Usar crédito", emoji="💎", style=discord.ButtonStyle.success, custom_id="inscricoes:usar_credito")
+    async def usar_credito(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.message:
+            return await interaction.response.send_message("⚠️ Não encontrei a inscrição associada.", ephemeral=True)
+
+        conn = get_connection()
+        if not conn:
+            return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                SELECT id, user_id, nome_jogador, estado, COALESCE(inscrito_por, user_id)
+                FROM inscricoes_jogos
+                WHERE message_id = %s
+                FOR UPDATE
+            """, (interaction.message.id,))
+            row = cursor.fetchone()
+            if not row:
+                conn.rollback()
+                return await interaction.response.send_message("⚠️ Inscrição não encontrada.", ephemeral=True)
+
+            inscricao_id, user_id, nome_jogador, estado, inscrito_por = row
+            if interaction.user.id != user_id:
+                conn.rollback()
+                return await interaction.response.send_message("❌ Apenas o jogador inscrito pode usar um crédito.", ephemeral=True)
+            if estado != 'pendente_pagamento':
+                conn.rollback()
+                return await interaction.response.send_message("ℹ️ Esta inscrição já foi validada ou já não está ativa.", ephemeral=True)
+
+            cursor.execute("SELECT saldo FROM creditos_jogadores WHERE user_id = %s FOR UPDATE", (user_id,))
+            credito = cursor.fetchone()
+            if not credito or int(credito[0]) < 1:
+                conn.rollback()
+                return await interaction.response.send_message("⚠️ Não tens créditos disponíveis. Recebes 1 crédito por cada 10 presenças ou por cada 10 SoloWins.", ephemeral=True)
+
+            cursor.execute("UPDATE creditos_jogadores SET saldo = saldo - 1, atualizado_em = NOW() WHERE user_id = %s AND saldo > 0", (user_id,))
+            cursor.execute("""
+                UPDATE inscricoes_jogos
+                SET estado = 'pago', metodo_pagamento = 'credito', credito_devolvido = FALSE,
+                    confirmado_por = %s, confirmado_em = NOW()
+                WHERE id = %s AND estado = 'pendente_pagamento'
+            """, (user_id, inscricao_id))
+            if cursor.rowcount != 1:
+                conn.rollback()
+                return await interaction.response.send_message("⚠️ Não foi possível validar a inscrição.", ephemeral=True)
+
+            cursor.execute("""
+                INSERT INTO creditos_movimentos (user_id, quantidade, tipo, motivo, inscricao_id)
+                VALUES (%s, -1, 'utilizacao', 'Crédito usado para validar inscrição', %s)
+            """, (user_id, inscricao_id))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            print(f"Erro ao usar crédito: {e}")
+            return await interaction.response.send_message("⚠️ Ocorreu um erro ao usar o crédito.", ephemeral=True)
+        finally:
+            cursor.close()
+            conn.close()
+
+        membro = interaction.guild.get_member(user_id) if interaction.guild else None
+        embed = await criar_embed_inscricao_paga(interaction.guild, interaction.channel.name, nome_jogador, f"<@{inscrito_por}>", membro, "credito")
+        try:
+            await interaction.message.edit(embed=embed, view=None)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            pass
+        saldo = obter_creditos_sync(user_id)
+        await interaction.response.send_message(f"✅ Inscrição validada com 1 crédito. Créditos restantes: **{saldo}**.", ephemeral=True)
+        await atualizar_embed_estado(interaction.channel)
 
 
 class CancelarInscricaoModal(discord.ui.Modal, title="Cancelar inscrição"):
@@ -1778,7 +2016,7 @@ async def criar_inscricao_interaction(interaction: discord.Interaction, numero_t
     expira_em = criado_em + timedelta(hours=HORAS_PAGAMENTO)
 
     embed = await criar_embed_inscricao_pendente(interaction, nome, expira_em, membro_jogador)
-    msg = await interaction.channel.send(embed=embed)
+    msg = await interaction.channel.send(embed=embed, view=CreditoInscricaoView())
 
     try:
         cursor.execute("""
@@ -1898,6 +2136,7 @@ async def cancelar_inscricao_interaction(interaction: discord.Interaction, numer
         SET estado = 'cancelado'
         WHERE id = %s
     """, (inscricao_id,))
+    credito_devolvido = devolver_credito_cancelamento(cursor, inscricao_id, user_id)
 
     conn.commit()
     cursor.close()
@@ -1916,12 +2155,12 @@ async def cancelar_inscricao_interaction(interaction: discord.Interaction, numer
             cancelado_por,
             membro_jogador
         )
-        await msg.edit(embed=embed)
+        await msg.edit(embed=embed, view=None)
     except (discord.NotFound, discord.Forbidden, discord.HTTPException):
         pass
 
     await interaction.response.send_message(
-        f"✅ A inscrição de **{nome_jogador}** foi cancelada.",
+        (f"✅ A inscrição de **{nome_jogador}** foi cancelada." + (" 💎 O crédito utilizado foi devolvido." if credito_devolvido else "")),
         ephemeral=True
     )
 
@@ -2187,7 +2426,7 @@ async def inscrever(ctx, *, nome: str):
     expira_em = criado_em + timedelta(hours=HORAS_PAGAMENTO)
 
     embed = await criar_embed_inscricao_pendente(ctx, nome, expira_em, membro_jogador)
-    msg = await ctx.channel.send(embed=embed)
+    msg = await ctx.channel.send(embed=embed, view=CreditoInscricaoView())
 
     try:
         cursor.execute("""
@@ -2304,6 +2543,7 @@ async def cancelarinscricao(ctx, *, nome: str):
         SET estado = 'cancelado'
         WHERE id = %s
     """, (inscricao_id,))
+    credito_devolvido = devolver_credito_cancelamento(cursor, inscricao_id, user_id)
     conn.commit()
     cursor.close()
     conn.close()
@@ -2332,16 +2572,16 @@ async def cancelarinscricao(ctx, *, nome: str):
             cancelado_por,
             membro_jogador
         )
-        await msg.edit(embed=embed)
+        await msg.edit(embed=embed, view=None)
     except (discord.NotFound, discord.Forbidden, discord.HTTPException):
         pass
 
     await apagar_mensagem_comando(ctx)
 
     if ctx.author.id == user_id:
-        await ctx.send(f"✅ A inscrição de **{nome_jogador}** foi cancelada.", delete_after=10)
+        await ctx.send(f"✅ A inscrição de **{nome_jogador}** foi cancelada." + (" 💎 O crédito utilizado foi devolvido." if credito_devolvido else ""), delete_after=10)
     else:
-        await ctx.send(f"✅ A inscrição de **{nome_jogador}** foi cancelada por {ctx.author.mention}.", delete_after=10)
+        await ctx.send(f"✅ A inscrição de **{nome_jogador}** foi cancelada por {ctx.author.mention}." + (" 💎 O crédito utilizado foi devolvido." if credito_devolvido else ""), delete_after=10)
 
     if user and ctx.author.id != user_id:
         try:
@@ -2552,6 +2792,7 @@ class PainelJogadorView(discord.ui.View):
             )
 
         cursor.execute("UPDATE inscricoes_jogos SET presenca_marcada = TRUE WHERE id = %s", (self.inscricao_id,))
+        novos_creditos = atribuir_creditos_por_presencas(cursor, membro.id, novo_total)
         conn.commit()
         cursor.close()
         conn.close()
@@ -2567,7 +2808,20 @@ class PainelJogadorView(discord.ui.View):
             f"Conta agora com: **{novo_total:02} presenças**"
         )
 
-        await self.atualizar_painel(interaction, f"✅ Presença marcada para **{nome_log}**.")
+        if novos_creditos:
+            try:
+                await membro.send(
+                    f"🎉 Atingiste **{novo_total} presenças** e recebeste **{novos_creditos} crédito(s)** de entrada gratuita. "
+                    f"Saldo atual: **{obter_creditos_sync(membro.id)}**."
+                )
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+
+        await self.atualizar_painel(
+            interaction,
+            f"✅ Presença marcada para **{nome_log}**." +
+            (f" 💎 Recebeu **{novos_creditos} crédito(s)**." if novos_creditos else "")
+        )
 
     @discord.ui.button(label="Chrony feito", emoji="🎯", style=discord.ButtonStyle.primary)
     async def marcar_crony(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -4347,6 +4601,71 @@ class ConfirmarEliminarEquipaView(discord.ui.View):
         await interaction.response.edit_message(content="✅ Eliminação cancelada.", embed=None, view=self)
 
 
+def criar_embed_creditos_jogador(membro: discord.Member):
+    """Cria a consulta privada do saldo e do progresso dos créditos."""
+    conn = get_connection()
+    if not conn:
+        return None
+
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT saldo FROM creditos_jogadores WHERE user_id = %s", (membro.id,))
+        row = cursor.fetchone()
+        saldo = int(row[0]) if row else 0
+
+        cursor.execute("SELECT pontos FROM pontos WHERE user_id = %s", (membro.id,))
+        row = cursor.fetchone()
+        presencas = int(row[0]) if row else 0
+
+        cursor.execute("SELECT pontos FROM pontos_solo WHERE user_id = %s", (membro.id,))
+        row = cursor.fetchone()
+        solo_wins = int(row[0]) if row else 0
+    finally:
+        cursor.close()
+        conn.close()
+
+    progresso_presencas = presencas % 10
+    progresso_solo = solo_wins % 10
+
+    embed = discord.Embed(
+        title="💎┃CRÉDITOS",
+        description=(
+            f"Consulta privada de **{membro.display_name}**\n\n"
+            f"Saldo disponível: **{saldo} crédito(s)**"
+        ),
+        color=discord.Color.gold()
+    )
+    embed.set_thumbnail(url=membro.display_avatar.url)
+    embed.add_field(
+        name="⭐ Por presenças",
+        value=(
+            f"Total: **{presencas}**\n"
+            f"Progresso para o próximo crédito: **{progresso_presencas}/10**"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="🔥 Por Solo Wins",
+        value=(
+            f"Total: **{solo_wins}**\n"
+            f"Progresso para o próximo crédito: **{progresso_solo}/10**"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="ℹ️ Como funciona",
+        value=(
+            "Cada bloco de **10 presenças** atribui 1 crédito.\n"
+            "Cada bloco de **10 Solo Wins** atribui 1 crédito.\n"
+            "Cada crédito pode validar gratuitamente uma inscrição."
+        ),
+        inline=False
+    )
+    embed.set_footer(text="Esta informação é privada e não é incluída ao partilhar o status.")
+    embed.timestamp = discord.utils.utcnow()
+    return embed
+
+
 class PartilharStatusJogadorView(discord.ui.View):
     def __init__(self, user_id: int):
         super().__init__(timeout=300)
@@ -4361,7 +4680,15 @@ class PartilharStatusJogadorView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label="Partilhar", emoji="📤", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="Ver Créditos", emoji="💎", style=discord.ButtonStyle.secondary)
+    async def ver_creditos(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = criar_embed_creditos_jogador(interaction.user)
+        if embed is None:
+            await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
+            return
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Partilhar Status", emoji="📤", style=discord.ButtonStyle.success)
     async def partilhar(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         embed = criar_embed_status_jogador(interaction.user)
@@ -4868,12 +5195,32 @@ async def addsolo(ctx, membro: discord.Member, quantidade: int):
     else:
         cursor.execute("INSERT INTO pontos_solo VALUES (%s, %s)", (membro.id, total))
 
+    novos_creditos = atribuir_creditos_por_solowins(cursor, membro.id, total)
     conn.commit()
     cursor.close()
     conn.close()
 
-    await enviar_log_pontos(ctx.guild, f"🔥 Foi adicionada uma SoloWin a {membro.mention}\nConta agora com: **{total:02} SoloWins**")
-    await ctx.send(f"🔥 {membro.display_name} agora tem **{total} vitórias no Solo Rebirth**")
+    saldo_atual = obter_creditos_sync(membro.id)
+    extra_creditos = (
+        f"\n💎 Recebeu **{novos_creditos} crédito(s)** por completar um novo bloco de 10 SoloWins. "
+        f"Saldo atual: **{saldo_atual}**."
+        if novos_creditos else ""
+    )
+    await enviar_log_pontos(
+        ctx.guild,
+        f"🔥 Foi adicionada uma SoloWin a {membro.mention}\n"
+        f"Conta agora com: **{total:02} SoloWins**{extra_creditos}"
+    )
+    await ctx.send(f"🔥 {membro.display_name} agora tem **{total} vitórias no Solo Rebirth**{extra_creditos}")
+
+    if novos_creditos:
+        try:
+            await membro.send(
+                f"🎉 Atingiste **{total} SoloWins** e recebeste **{novos_creditos} crédito(s)** "
+                f"de entrada gratuita. Saldo atual: **{saldo_atual}**."
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            pass
 
 
 @bot.command()
@@ -5190,6 +5537,10 @@ def criar_embed_status_jogador(membro: discord.Member):
     r = cursor.fetchone()
     pontos = r[0] if r else 0
     ultima_atividade = r[1] if r else None
+
+    cursor.execute("SELECT saldo FROM creditos_jogadores WHERE user_id = %s", (membro.id,))
+    r_creditos = cursor.fetchone()
+    creditos = int(r_creditos[0]) if r_creditos else 0
 
     cursor.execute("SELECT user_id FROM pontos ORDER BY pontos DESC")
     ranking_dados = [uid for (uid,) in cursor.fetchall()]
