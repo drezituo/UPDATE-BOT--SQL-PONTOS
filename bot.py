@@ -3892,7 +3892,7 @@ def criar_embed_painel_equipas():
         value="Cria uma equipa caso ainda não pertenças a nenhuma.",
         inline=False
     )
-    embed.set_footer(text="Os status do jogador e da equipa são publicados nesta sala")
+    embed.set_footer(text="As respostas são privadas e visíveis apenas para quem usa os botões")
     return embed
 
 
@@ -4288,20 +4288,35 @@ class PainelEquipasView(discord.ui.View):
 
     @discord.ui.button(label="Status", emoji="👤", style=discord.ButtonStyle.primary, custom_id="equipas:status")
     async def status(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Confirma imediatamente a interação para evitar o erro "não respondeu a tempo".
+        await interaction.response.defer()
+
         embed = criar_embed_status_jogador(interaction.user)
         if embed is None:
-            return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
-        await interaction.response.send_message(embed=embed)
+            await interaction.followup.send(DB_ERROR_MSG, ephemeral=True)
+            return
+
+        # Publica o status e volta a colocar o painel por baixo dele.
+        await interaction.followup.send(embed=embed)
+        await garantir_painel_equipas_no_fundo(force_repost=True)
 
     @discord.ui.button(label="Status da Equipa", emoji="👥", style=discord.ButtonStyle.secondary, custom_id="equipas:status_equipa")
     async def status_equipa(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Confirma imediatamente a interação para evitar o erro "não respondeu a tempo".
+        await interaction.response.defer()
+
         equipa_row = obter_equipa_do_utilizador_sync(interaction.user.id)
         if not equipa_row:
-            return await interaction.response.send_message("ℹ️ Não pertences a nenhuma equipa.", ephemeral=True)
+            await interaction.followup.send("ℹ️ Não pertences a nenhuma equipa.", ephemeral=True)
+            return
+
         embed = await criar_embed_equipa(interaction.guild, equipa_row)
         pode_gerir = equipa_row[3] == interaction.user.id or interaction.user.guild_permissions.administrator
         view = GestaoEquipaView(equipa_row) if pode_gerir else None
-        await interaction.response.send_message(embed=embed, view=view)
+
+        # Publica o estado da equipa e volta a colocar o painel por baixo dele.
+        await interaction.followup.send(embed=embed, view=view)
+        await garantir_painel_equipas_no_fundo(force_repost=True)
 
     @discord.ui.button(label="Criar Equipa", emoji="➕", style=discord.ButtonStyle.success, custom_id="equipas:criar")
     async def criar(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -4311,25 +4326,6 @@ class PainelEquipasView(discord.ui.View):
                 f"❌ Já pertences à equipa **{equipa_row[1]}** e não podes criar outra.", ephemeral=True
             )
         await interaction.response.send_modal(CriarEquipaModal())
-
-
-# Comando administrativo para criar ou recriar manualmente o painel permanente.
-@bot.command(name="painel_equipas")
-@commands.has_permissions(administrator=True)
-async def painel_equipas(ctx):
-    await garantir_painel_equipas_no_fundo(force_repost=True)
-
-    canal = await obter_canal_painel_equipas()
-    if canal is None:
-        return await ctx.send(
-            f"❌ Não consegui encontrar a sala configurada para o painel (`{EQUIPAS_PANEL_CHANNEL_ID}`).",
-            delete_after=15
-        )
-
-    await ctx.send(
-        f"✅ Painel de jogadores e equipas criado novamente em {canal.mention}.",
-        delete_after=10
-    )
 
 
 # Mantêm-se comandos de consulta úteis para compatibilidade com o bot antigo.
