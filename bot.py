@@ -23,10 +23,6 @@ TERMOS_EXTENSOES_PERMITIDAS = {"pdf", "jpg", "jpeg", "png"}
 COMPROVATIVOS_CHANNEL_ID = int(os.getenv("COMPROVATIVOS_CHANNEL_ID", "1530687012850499674"))
 COMPROVATIVOS_EXTENSOES_PERMITIDAS = {"pdf", "jpg", "jpeg", "png"}
 
-# ---------- PAINEL PERMANENTE DE EQUIPAS ----------
-EQUIPAS_PANEL_CHANNEL_ID = 1486737352679489598
-equipas_panel_lock = asyncio.Lock()
-
 # ---------- NFC API ----------
 NFC_API_TOKEN = os.getenv("NFC_API_TOKEN", "").strip()
 NFC_API_PORT = int(os.getenv("NFC_API_PORT", os.getenv("PORT", "8080")))
@@ -857,39 +853,6 @@ if conn:
         )
         """)
 
-        cursor.execute("""
-        ALTER TABLE equipas
-        ADD COLUMN IF NOT EXISTS descricao TEXT
-        """)
-
-        cursor.execute("""
-        ALTER TABLE equipas
-        ADD COLUMN IF NOT EXISTS redes_sociais TEXT
-        """)
-
-        cursor.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS equipas_nome_lower_unique
-        ON equipas (LOWER(nome))
-        """)
-
-        cursor.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS equipas_capitao_unique
-        ON equipas (criado_por)
-        """)
-
-        cursor.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS equipas_membro_unico
-        ON equipas_membros (user_id)
-        """)
-
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS painel_equipas_config (
-            id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-            channel_id BIGINT NOT NULL,
-            message_id BIGINT
-        )
-        """)
-
         conn.commit()
         print("✅ Tabelas verificadas/criadas com sucesso.")
 
@@ -918,9 +881,7 @@ async def on_ready():
     # Regista os botões persistentes das inscrições e dos termos pendentes.
     bot.add_view(InscricoesView())
     bot.add_view(ComprovativoPagamentoView())
-    bot.add_view(PainelEquipasView())
     await carregar_views_termos_pendentes()
-    await garantir_painel_equipas_no_fundo()
 
     if not verificar_inscricoes.is_running():
         verificar_inscricoes.start()
@@ -941,33 +902,16 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    # Processa ficheiros enviados por DM no fluxo correto.
-    # A escolha é feita pela ação mais recente do jogador:
-    # pedido de termo ou inscrição pendente de pagamento.
+    # Processa termos e comprovativos enviados por DM.
     if isinstance(message.channel, discord.DMChannel):
-        fluxo_dm = obter_fluxo_upload_dm_sync(message.author.id)
-
-        if fluxo_dm == "termo":
-            await processar_termo_recebido_dm(message)
+        if await processar_termo_recebido_dm(message):
             return
-
-        if fluxo_dm == "comprovativo":
-            await processar_comprovativo_recebido_dm(message)
+        if await processar_comprovativo_recebido_dm(message):
             return
-
-        if message.attachments:
-            await message.channel.send(
-                "⚠️ Não tenho nenhum envio pendente associado à tua conta.\n"
-                "Usa primeiro o botão **📄 Enviar termo** ou faz uma inscrição pendente de pagamento."
-            )
         return
 
     print(f"[MSG] {message.author} em #{message.channel}: {message.content}")
     await bot.process_commands(message)
-
-    # Mantém o painel de equipas sempre como a última mensagem do canal configurado.
-    if message.channel.id == EQUIPAS_PANEL_CHANNEL_ID:
-        await garantir_painel_equipas_no_fundo(force_repost=True)
 
 
 @bot.event
@@ -1267,50 +1211,6 @@ async def enviar_termo_interaction(interaction: discord.Interaction):
     )
 
 
-def obter_fluxo_upload_dm_sync(user_id: int):
-    """Determina se a próxima DM pertence ao fluxo de termo ou comprovativo.
-
-    Quando os dois fluxos estão pendentes, prevalece o que foi iniciado mais
-    recentemente pelo jogador. Assim, um comprovativo não é enviado para a
-    sala dos termos e um termo pedido depois da inscrição continua a ser
-    tratado como termo.
-    """
-    conn = get_connection()
-    if not conn:
-        return None
-
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            "SELECT MAX(pedido_em) FROM termos_pedidos WHERE user_id = %s",
-            (user_id,)
-        )
-        termo_em = cursor.fetchone()[0]
-
-        cursor.execute("""
-            SELECT MAX(criado_em)
-            FROM inscricoes_jogos
-            WHERE user_id = %s
-              AND estado = 'pendente_pagamento'
-              AND comprovativo_message_id IS NULL
-        """, (user_id,))
-        comprovativo_em = cursor.fetchone()[0]
-    except Exception as e:
-        print(f"Erro ao determinar fluxo de upload por DM: {e}")
-        return None
-    finally:
-        cursor.close()
-        conn.close()
-
-    if termo_em and comprovativo_em:
-        return "termo" if termo_em >= comprovativo_em else "comprovativo"
-    if termo_em:
-        return "termo"
-    if comprovativo_em:
-        return "comprovativo"
-    return None
-
-
 async def processar_termo_recebido_dm(message: discord.Message) -> bool:
     """Processa ficheiros de termo enviados por DM, sem timeout.
     Retorna True quando a DM foi tratada como fluxo de termo.
@@ -1426,40 +1326,17 @@ async def processar_termo_recebido_dm(message: discord.Message) -> bool:
     return True
 
 
-async def enviar_instrucoes_pagamento_dm(jogador, thread_name: str, inscrito_por=None):
-    """Envia a notificação ao jogador inscrito e a quem criou a inscrição.
-
-    Se forem a mesma pessoa, envia apenas uma DM para evitar mensagens duplicadas.
-    Retorna um dicionário com o resultado de cada envio.
-    """
-    resultados = {"jogador": False, "inscrito_por": True}
-
+async def enviar_instrucoes_pagamento_dm(user, thread_name: str):
     try:
-        await jogador.send(
+        await user.send(
             "💳 **Inscrição pendente de pagamento**\n\n"
             f"A tua inscrição em **{thread_name}** foi criada e está pendente de pagamento.\n"
             "Envia nesta conversa o comprovativo em **PDF, JPG ou PNG**.\n\n"
             "Depois do envio, a staff irá validar o comprovativo e a inscrição será finalizada."
         )
-        resultados["jogador"] = True
+        return True
     except (discord.Forbidden, discord.HTTPException):
-        resultados["jogador"] = False
-
-    if inscrito_por is not None and inscrito_por.id != jogador.id:
-        try:
-            await inscrito_por.send(
-                "💳 **Inscrição pendente de pagamento**\n\n"
-                f"A inscrição de **{formatar_nome_operador(jogador)}** em **{thread_name}** "
-                "foi criada por ti e está pendente de pagamento.\n"
-                "O jogador inscrito recebeu uma mensagem para enviar o comprovativo em "
-                "**PDF, JPG ou PNG**.\n\n"
-                "Depois da validação da staff, a inscrição será finalizada."
-            )
-            resultados["inscrito_por"] = True
-        except (discord.Forbidden, discord.HTTPException):
-            resultados["inscrito_por"] = False
-
-    return resultados
+        return False
 
 
 async def obter_canal_comprovativos():
@@ -1708,8 +1585,14 @@ async def criar_inscricao_interaction(interaction: discord.Interaction, numero_t
 
     is_admin = interaction.user.guild_permissions.administrator
 
-    # Qualquer jogador pode inscrever outro jogador através do respetivo número.
-    # A validação do termo é feita sobre o jogador que está a ser inscrito.
+    if not is_admin:
+        numero_do_utilizador = obter_numero_jogador_sync(interaction.user.id)
+        if numero_do_utilizador != numero:
+            return await interaction.response.send_message(
+                "⚠️ Só podes fazer a tua própria inscrição.",
+                ephemeral=True
+            )
+
     membro_jogador = await obter_membro_por_numero_jogador(interaction.guild, numero)
     if membro_jogador is None:
         return await interaction.response.send_message(
@@ -1811,17 +1694,11 @@ async def criar_inscricao_interaction(interaction: discord.Interaction, numero_t
     cursor.close()
     conn.close()
 
-    dms_enviadas = await enviar_instrucoes_pagamento_dm(
-        membro_jogador,
-        interaction.channel.name,
-        interaction.user
-    )
+    dm_enviada = await enviar_instrucoes_pagamento_dm(membro_jogador, interaction.channel.name)
 
     resposta = f"✅ Inscrição criada para **{nome}**. Está pendente de pagamento."
-    if not dms_enviadas["jogador"]:
+    if not dm_enviada:
         resposta += " ⚠️ Não consegui enviar DM ao jogador; ele deve ativar as mensagens privadas do servidor."
-    if not dms_enviadas["inscrito_por"]:
-        resposta += " ⚠️ Também não consegui enviar-te a confirmação por DM."
 
     await interaction.response.send_message(resposta, ephemeral=True)
 
@@ -2108,21 +1985,26 @@ async def inscrever(ctx, *, nome: str):
 
     is_admin = ctx.author.guild_permissions.administrator
 
-    # Qualquer utilizador pode inscrever outro jogador. O alvo pode ser indicado
-    # por menção ou por um nome que corresponda a um membro do servidor.
-    if membro_jogador is None:
-        membro_encontrado = await encontrar_membro_por_nome(ctx.guild, nome)
-        if membro_encontrado:
-            membro_jogador = membro_encontrado
+    if not is_admin:
+        if membro_jogador is not None and membro_jogador.id != ctx.author.id:
+            await apagar_mensagem_comando(ctx)
+            return await ctx.send("⚠️ Só podes fazer a tua própria inscrição.", delete_after=10)
 
-    if membro_jogador is not None:
-        nome = formatar_nome_operador(membro_jogador)
+        membro_jogador = ctx.author
+        nome = formatar_nome_operador(ctx.author)
+    else:
+        if membro_jogador is None:
+            membro_encontrado = await encontrar_membro_por_nome(ctx.guild, nome)
+            if membro_encontrado:
+                membro_jogador = membro_encontrado
+                nome = formatar_nome_operador(membro_jogador)
+        else:
+            nome = formatar_nome_operador(membro_jogador)
 
-    if membro_jogador is None:
+    if not is_admin and membro_jogador is None:
         await apagar_mensagem_comando(ctx)
         return await ctx.send(
-            "⚠️ Não consegui identificar o jogador no Discord para validar o termo. "
-            "Usa uma menção ou escreve o nome exato do jogador.",
+            "⚠️ Não consegui identificar o jogador no Discord para validar o termo. Usa uma menção ao jogador.",
             delete_after=10
         )
 
@@ -2169,19 +2051,16 @@ async def inscrever(ctx, *, nome: str):
         SELECT 1
         FROM inscricoes_jogos
         WHERE thread_id = %s
-          AND user_id = %s
+          AND LOWER(nome_jogador) = LOWER(%s)
           AND estado IN ('pendente_pagamento', 'pago')
-    """, (ctx.channel.id, membro_jogador.id))
-    existe_jogador = cursor.fetchone()
+    """, (ctx.channel.id, nome))
+    existe_nome = cursor.fetchone()
 
-    if existe_jogador:
+    if existe_nome:
         cursor.close()
         conn.close()
         await apagar_mensagem_comando(ctx)
-        return await ctx.send(
-            f"⚠️ O jogador **{nome}** já tem uma inscrição ativa neste jogo.",
-            delete_after=10
-        )
+        return await ctx.send("⚠️ Já existe uma inscrição com esse nome neste jogo.", delete_after=10)
 
     criado_em = utc_now()
     expira_em = criado_em + timedelta(hours=HORAS_PAGAMENTO)
@@ -2222,23 +2101,13 @@ async def inscrever(ctx, *, nome: str):
     conn.close()
 
     jogador_dm = membro_jogador or ctx.author
-    dms_enviadas = await enviar_instrucoes_pagamento_dm(
-        jogador_dm,
-        ctx.channel.name,
-        ctx.author
-    )
+    dm_enviada = await enviar_instrucoes_pagamento_dm(jogador_dm, ctx.channel.name)
 
     await apagar_mensagem_comando(ctx)
-    avisos_dm = []
-    if not dms_enviadas["jogador"]:
-        avisos_dm.append("não consegui enviar DM ao jogador inscrito")
-    if not dms_enviadas["inscrito_por"]:
-        avisos_dm.append("não consegui enviar DM a quem realizou a inscrição")
-
-    if avisos_dm:
+    if not dm_enviada:
         await ctx.send(
-            f"⚠️ A inscrição de **{nome}** foi criada, mas " + " e ".join(avisos_dm) + ". "
-            "As mensagens privadas devem estar ativadas.",
+            f"⚠️ A inscrição de **{nome}** foi criada, mas não consegui enviar DM ao jogador. "
+            "Ele deve ativar as mensagens privadas do servidor.",
             delete_after=15
         )
     await atualizar_embed_estado(ctx.channel)
@@ -3826,528 +3695,239 @@ async def comandos(ctx):
 
 
 # =========================
-# 🛡️ SISTEMA DE EQUIPAS — PAINEL POR BOTÕES
+# 🛡️ SISTEMA DE EQUIPAS
 # =========================
-def obter_equipa_do_utilizador_sync(user_id: int):
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def criarequipa(ctx, nome: str, logo_url: str = None):
     conn = get_connection()
     if not conn:
-        return None
+        return await ctx.send(DB_ERROR_MSG)
+
     cursor = conn.cursor()
+
     try:
         cursor.execute("""
-            SELECT e.id, e.nome, e.logo_url, e.criado_por,
-                   COALESCE(e.descricao, ''), COALESCE(e.redes_sociais, '')
-            FROM equipas e
-            LEFT JOIN equipas_membros em ON em.equipa_id = e.id
-            WHERE em.user_id = %s OR e.criado_por = %s
-            ORDER BY CASE WHEN e.criado_por = %s THEN 0 ELSE 1 END
-            LIMIT 1
-        """, (user_id, user_id, user_id))
-        return cursor.fetchone()
-    finally:
-        cursor.close()
-        conn.close()
-
-
-def obter_membros_equipa_sync(equipa_id: int):
-    conn = get_connection()
-    if not conn:
-        return []
-    cursor = conn.cursor()
-    try:
-        cursor.execute("""
-            SELECT user_id
-            FROM equipas_membros
-            WHERE equipa_id = %s
-            ORDER BY user_id
-        """, (equipa_id,))
-        return [uid for (uid,) in cursor.fetchall()]
-    finally:
-        cursor.close()
-        conn.close()
-
-
-def criar_embed_painel_equipas():
-    embed = discord.Embed(
-        title="🏆 Central de Jogadores e Equipas",
-        description=(
-            "Consulta o teu perfil competitivo, vê o estado da tua equipa "
-            "ou cria uma nova equipa através dos botões abaixo."
-        ),
-        color=discord.Color.blurple(),
-        timestamp=discord.utils.utcnow()
-    )
-    embed.add_field(
-        name="👤 Status",
-        value="Mostra o teu status atual, mantendo o sistema existente.",
-        inline=False
-    )
-    embed.add_field(
-        name="👥 Status da Equipa",
-        value="Consulta membros, capitão e pontuação da tua equipa.",
-        inline=False
-    )
-    embed.add_field(
-        name="➕ Criar Equipa",
-        value="Cria uma equipa caso ainda não pertenças a nenhuma.",
-        inline=False
-    )
-    embed.set_footer(text="As respostas são privadas e visíveis apenas para quem usa os botões")
-    return embed
-
-
-async def obter_canal_painel_equipas():
-    canal = bot.get_channel(EQUIPAS_PANEL_CHANNEL_ID)
-    if canal is None:
-        try:
-            canal = await bot.fetch_channel(EQUIPAS_PANEL_CHANNEL_ID)
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-            return None
-    return canal
-
-
-def obter_mensagem_painel_equipas_sync():
-    conn = get_connection()
-    if not conn:
-        return None
-    cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT message_id FROM painel_equipas_config WHERE id = 1")
-        row = cursor.fetchone()
-        return row[0] if row else None
-    finally:
-        cursor.close()
-        conn.close()
-
-
-def guardar_mensagem_painel_equipas_sync(message_id: int):
-    conn = get_connection()
-    if not conn:
-        return
-    cursor = conn.cursor()
-    try:
-        cursor.execute("""
-            INSERT INTO painel_equipas_config (id, channel_id, message_id)
-            VALUES (1, %s, %s)
-            ON CONFLICT (id)
-            DO UPDATE SET channel_id = EXCLUDED.channel_id,
-                          message_id = EXCLUDED.message_id
-        """, (EQUIPAS_PANEL_CHANNEL_ID, message_id))
+            INSERT INTO equipas (nome, logo_url, criado_por)
+            VALUES (%s, %s, %s)
+        """, (nome, logo_url, ctx.author.id))
         conn.commit()
     except Exception as e:
         conn.rollback()
-        print(f"Erro ao guardar painel de equipas: {e}")
-    finally:
         cursor.close()
         conn.close()
+        print(f"Erro ao criar equipa: {e}")
+        return await ctx.send("⚠️ Já existe uma equipa com esse nome ou ocorreu um erro.")
 
-
-async def garantir_painel_equipas_no_fundo(force_repost: bool = False):
-    async with equipas_panel_lock:
-        canal = await obter_canal_painel_equipas()
-        if canal is None:
-            print(f"⚠️ Canal do painel de equipas não encontrado: {EQUIPAS_PANEL_CHANNEL_ID}")
-            return
-
-        message_id = obter_mensagem_painel_equipas_sync()
-        mensagem_antiga = None
-        if message_id:
-            try:
-                mensagem_antiga = await canal.fetch_message(message_id)
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                mensagem_antiga = None
-
-        if mensagem_antiga is not None and not force_repost:
-            try:
-                ultima = [m async for m in canal.history(limit=1)]
-                if ultima and ultima[0].id == mensagem_antiga.id:
-                    await mensagem_antiga.edit(embed=criar_embed_painel_equipas(), view=PainelEquipasView())
-                    return
-            except (discord.Forbidden, discord.HTTPException):
-                pass
-
-        if mensagem_antiga is not None:
-            try:
-                await mensagem_antiga.delete()
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                pass
-
-        try:
-            nova = await canal.send(embed=criar_embed_painel_equipas(), view=PainelEquipasView())
-            guardar_mensagem_painel_equipas_sync(nova.id)
-        except (discord.Forbidden, discord.HTTPException) as e:
-            print(f"Erro ao publicar painel de equipas: {e}")
-
-
-async def criar_embed_equipa(guild: discord.Guild, equipa_row):
-    equipa_id, nome, logo_url, capitao_id, descricao, redes_sociais = equipa_row
-    pontos = calcular_pontos_equipa_sync(equipa_id) or {"solo": 0, "team": 0, "total": 0, "membros": 0}
-    membros_ids = obter_membros_equipa_sync(equipa_id)
-
-    linhas = []
-    for uid in membros_ids:
-        membro = guild.get_member(uid) if guild else None
-        numero = obter_numero_jogador_sync(uid)
-        referencia = membro.mention if membro else f"<@{uid}>"
-        prefixo = f"#{numero:02d} — " if numero else ""
-        dados = calcular_pontos_jogador_sync(uid) or {"total": 0}
-        coroa = " 👑" if uid == capitao_id else ""
-        linhas.append(f"• {prefixo}{referencia}{coroa} — **{dados['total']} pts**")
+    cursor.close()
+    conn.close()
 
     embed = discord.Embed(
-        title=f"🛡️ {nome}",
-        description=descricao or "Sem descrição definida.",
-        color=discord.Color.blurple(),
+        title="🛡️ Nova Equipa Criada",
+        description=f"A equipa **{nome}** foi criada com sucesso!",
+        color=discord.Color.green(),
         timestamp=discord.utils.utcnow()
     )
     if logo_url:
         embed.set_thumbnail(url=logo_url)
-    embed.add_field(name="👑 Capitão", value=f"<@{capitao_id}>", inline=False)
-    embed.add_field(name="👥 Membros", value=("\n".join(linhas) or "Nenhum membro.")[:1024], inline=False)
-    embed.add_field(
-        name="📊 Pontos da Equipa",
-        value=(
-            f"🔥 Solo Wins: **{pontos['solo']}**\n"
-            f"👥 Team Wins: **{pontos['team']}**\n"
-            f"🏆 Total: **{pontos['total']} pontos**"
-        ),
-        inline=False
-    )
-    if redes_sociais:
-        embed.add_field(name="🔗 Redes sociais", value=redes_sociais[:1024], inline=False)
-    embed.set_footer(text=f"{len(membros_ids)} membro(s) na equipa")
-    return embed
+    embed.add_field(name="👑 Criada por", value=ctx.author.mention, inline=True)
+    embed.add_field(name="👥 Membros", value="Nenhum membro ainda", inline=True)
+    embed.set_footer(text="Sistema competitivo de equipas ativo")
+
+    await ctx.send(embed=embed)
 
 
-async def notificar_por_dm(user_id: int, mensagem: str):
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def adicionarmembroequipa(ctx, nome_equipa: str, membro: discord.Member):
+    conn = get_connection()
+    if not conn:
+        return await ctx.send(DB_ERROR_MSG)
+
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, nome
+        FROM equipas
+        WHERE LOWER(nome) = LOWER(%s)
+    """, (nome_equipa,))
+    equipa = cursor.fetchone()
+
+    if not equipa:
+        cursor.close()
+        conn.close()
+        return await ctx.send("⚠️ Essa equipa não existe.")
+
+    equipa_id, nome = equipa
+
     try:
-        user = bot.get_user(user_id) or await bot.fetch_user(user_id)
-        await user.send(mensagem)
-    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-        pass
+        cursor.execute("""
+            INSERT INTO equipas_membros (equipa_id, user_id)
+            VALUES (%s, %s)
+            ON CONFLICT DO NOTHING
+        """, (equipa_id, membro.id))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        cursor.close()
+        conn.close()
+        print(f"Erro ao adicionar membro à equipa: {e}")
+        return await ctx.send("⚠️ Erro ao adicionar membro à equipa.")
+
+    cursor.close()
+    conn.close()
+
+    await ctx.send(f"✅ {membro.mention} foi adicionado à equipa **{nome}**.")
 
 
-class CriarEquipaModal(discord.ui.Modal, title="Criar equipa"):
-    nome = discord.ui.TextInput(label="Nome da equipa", min_length=2, max_length=50)
-    descricao = discord.ui.TextInput(
-        label="Descrição", style=discord.TextStyle.paragraph,
-        required=False, max_length=500
-    )
-    logo_url = discord.ui.TextInput(
-        label="URL do logótipo", required=False,
-        placeholder="https://...", max_length=500
-    )
-    redes_sociais = discord.ui.TextInput(
-        label="Redes sociais", style=discord.TextStyle.paragraph,
-        required=False, max_length=500
-    )
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def removermembroequipa(ctx, nome_equipa: str, membro: discord.Member):
+    conn = get_connection()
+    if not conn:
+        return await ctx.send(DB_ERROR_MSG)
 
-    async def on_submit(self, interaction: discord.Interaction):
-        nome = normalizar_nome(str(self.nome))
-        if len(nome) < 2:
-            return await interaction.response.send_message("⚠️ Nome de equipa inválido.", ephemeral=True)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, nome
+        FROM equipas
+        WHERE LOWER(nome) = LOWER(%s)
+    """, (nome_equipa,))
+    equipa = cursor.fetchone()
 
-        conn = get_connection()
-        if not conn:
-            return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
-        cursor = conn.cursor()
-        try:
-            cursor.execute("""
-                SELECT e.nome
-                FROM equipas e
-                LEFT JOIN equipas_membros em ON em.equipa_id = e.id
-                WHERE e.criado_por = %s OR em.user_id = %s
-                LIMIT 1
-            """, (interaction.user.id, interaction.user.id))
-            existente = cursor.fetchone()
-            if existente:
-                return await interaction.response.send_message(
-                    f"❌ Já pertences à equipa **{existente[0]}** e não podes criar outra.",
-                    ephemeral=True
-                )
+    if not equipa:
+        cursor.close()
+        conn.close()
+        return await ctx.send("⚠️ Essa equipa não existe.")
 
-            cursor.execute("SELECT 1 FROM equipas WHERE LOWER(nome) = LOWER(%s)", (nome,))
-            if cursor.fetchone():
-                return await interaction.response.send_message(
-                    "❌ Já existe uma equipa com esse nome.", ephemeral=True
-                )
+    equipa_id, nome = equipa
 
-            cursor.execute("""
-                INSERT INTO equipas (nome, logo_url, criado_por, descricao, redes_sociais)
-                VALUES (%s, %s, %s, %s, %s)
-                RETURNING id
-            """, (
-                nome,
-                normalizar_nome(str(self.logo_url)) or None,
-                interaction.user.id,
-                str(self.descricao).strip() or None,
-                str(self.redes_sociais).strip() or None,
-            ))
-            equipa_id = cursor.fetchone()[0]
-            cursor.execute("""
-                INSERT INTO equipas_membros (equipa_id, user_id)
-                VALUES (%s, %s)
-            """, (equipa_id, interaction.user.id))
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            print(f"Erro ao criar equipa pelo painel: {e}")
-            return await interaction.response.send_message(
-                "⚠️ Não foi possível criar a equipa. Confirma se o nome já existe ou se já pertences a uma equipa.",
-                ephemeral=True
-            )
-        finally:
-            cursor.close()
-            conn.close()
+    cursor.execute("""
+        DELETE FROM equipas_membros
+        WHERE equipa_id = %s AND user_id = %s
+    """, (equipa_id, membro.id))
+    conn.commit()
+    cursor.close()
+    conn.close()
 
-        await interaction.response.send_message(
-            f"✅ A equipa **{nome}** foi criada. Tu és o capitão.", ephemeral=True
-        )
+    await ctx.send(f"❌ {membro.mention} foi removido da equipa **{nome}**.")
 
 
-class EditarEquipaModal(discord.ui.Modal, title="Editar equipa"):
-    def __init__(self, equipa_row):
-        super().__init__()
-        self.equipa_id = equipa_row[0]
-        self.nome = discord.ui.TextInput(label="Nome da equipa", default=equipa_row[1], min_length=2, max_length=50)
-        self.descricao = discord.ui.TextInput(label="Descrição", style=discord.TextStyle.paragraph, required=False, default=equipa_row[4] or "", max_length=500)
-        self.logo_url = discord.ui.TextInput(label="URL do logótipo", required=False, default=equipa_row[2] or "", max_length=500)
-        self.redes_sociais = discord.ui.TextInput(label="Redes sociais", style=discord.TextStyle.paragraph, required=False, default=equipa_row[5] or "", max_length=500)
-        self.add_item(self.nome)
-        self.add_item(self.descricao)
-        self.add_item(self.logo_url)
-        self.add_item(self.redes_sociais)
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def mudarlogoequipa(ctx, nome_equipa: str, logo_url: str):
+    conn = get_connection()
+    if not conn:
+        return await ctx.send(DB_ERROR_MSG)
 
-    async def on_submit(self, interaction: discord.Interaction):
-        nome = normalizar_nome(str(self.nome))
-        conn = get_connection()
-        if not conn:
-            return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
-        cursor = conn.cursor()
-        try:
-            cursor.execute("SELECT criado_por FROM equipas WHERE id = %s", (self.equipa_id,))
-            row = cursor.fetchone()
-            if not row or (row[0] != interaction.user.id and not interaction.user.guild_permissions.administrator):
-                return await interaction.response.send_message("❌ Apenas o capitão pode editar esta equipa.", ephemeral=True)
-            cursor.execute("SELECT 1 FROM equipas WHERE LOWER(nome) = LOWER(%s) AND id <> %s", (nome, self.equipa_id))
-            if cursor.fetchone():
-                return await interaction.response.send_message("❌ Já existe outra equipa com esse nome.", ephemeral=True)
-            cursor.execute("""
-                UPDATE equipas
-                SET nome = %s, descricao = %s, logo_url = %s, redes_sociais = %s
-                WHERE id = %s
-            """, (nome, str(self.descricao).strip() or None, normalizar_nome(str(self.logo_url)) or None, str(self.redes_sociais).strip() or None, self.equipa_id))
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            print(f"Erro ao editar equipa: {e}")
-            return await interaction.response.send_message("⚠️ Não foi possível editar a equipa.", ephemeral=True)
-        finally:
-            cursor.close()
-            conn.close()
-        await interaction.response.send_message(f"✅ A equipa **{nome}** foi atualizada.", ephemeral=True)
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE equipas
+        SET logo_url = %s
+        WHERE LOWER(nome) = LOWER(%s)
+    """, (logo_url, nome_equipa))
+    alteradas = cursor.rowcount
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    if alteradas == 0:
+        return await ctx.send("⚠️ Essa equipa não existe.")
+
+    await ctx.send(f"✅ Logo da equipa **{nome_equipa}** atualizado.")
 
 
-class JogadorEquipaModal(discord.ui.Modal):
-    numero = discord.ui.TextInput(label="Número do jogador", placeholder="Exemplo: 149 ou #149", min_length=1, max_length=10)
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def apagarequipa(ctx, *, nome_equipa: str):
+    conn = get_connection()
+    if not conn:
+        return await ctx.send(DB_ERROR_MSG)
 
-    def __init__(self, equipa_id: int, acao: str):
-        super().__init__(title="Adicionar jogador" if acao == "adicionar" else "Remover jogador")
-        self.equipa_id = equipa_id
-        self.acao = acao
+    cursor = conn.cursor()
+    cursor.execute("""
+        DELETE FROM equipas
+        WHERE LOWER(nome) = LOWER(%s)
+    """, (nome_equipa,))
+    alteradas = cursor.rowcount
+    conn.commit()
+    cursor.close()
+    conn.close()
 
-    async def on_submit(self, interaction: discord.Interaction):
-        numero = extrair_numero_operador(str(self.numero))
-        if numero is None:
-            return await interaction.response.send_message("⚠️ Número de jogador inválido.", ephemeral=True)
-        membro = await obter_membro_por_numero_jogador(interaction.guild, numero)
-        if membro is None:
-            return await interaction.response.send_message(f"⚠️ Não encontrei o jogador **#{numero:02d}**.", ephemeral=True)
+    if alteradas == 0:
+        return await ctx.send("⚠️ Essa equipa não existe.")
 
-        conn = get_connection()
-        if not conn:
-            return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
-        cursor = conn.cursor()
-        try:
-            cursor.execute("SELECT nome, criado_por FROM equipas WHERE id = %s", (self.equipa_id,))
-            equipa = cursor.fetchone()
-            if not equipa:
-                return await interaction.response.send_message("⚠️ A equipa já não existe.", ephemeral=True)
-            nome_equipa, capitao_id = equipa
-            if capitao_id != interaction.user.id and not interaction.user.guild_permissions.administrator:
-                return await interaction.response.send_message("❌ Apenas o capitão pode gerir os jogadores.", ephemeral=True)
-
-            if self.acao == "adicionar":
-                cursor.execute("""
-                    SELECT e.nome
-                    FROM equipas_membros em
-                    JOIN equipas e ON e.id = em.equipa_id
-                    WHERE em.user_id = %s
-                """, (membro.id,))
-                atual = cursor.fetchone()
-                if atual:
-                    return await interaction.response.send_message(
-                        f"❌ O jogador **#{numero:02d}** já pertence à equipa **{atual[0]}**.", ephemeral=True
-                    )
-                cursor.execute("INSERT INTO equipas_membros (equipa_id, user_id) VALUES (%s, %s)", (self.equipa_id, membro.id))
-                conn.commit()
-                mensagem = f"✅ {membro.mention} foi adicionado à equipa **{nome_equipa}**."
-                dm = f"✅ Foste adicionado à equipa **{nome_equipa}** por {interaction.user}."
-            else:
-                if membro.id == capitao_id:
-                    return await interaction.response.send_message("❌ O capitão não pode ser removido da própria equipa.", ephemeral=True)
-                cursor.execute("DELETE FROM equipas_membros WHERE equipa_id = %s AND user_id = %s", (self.equipa_id, membro.id))
-                if cursor.rowcount == 0:
-                    return await interaction.response.send_message("⚠️ Esse jogador não pertence à tua equipa.", ephemeral=True)
-                conn.commit()
-                mensagem = f"✅ {membro.mention} foi removido da equipa **{nome_equipa}**."
-                dm = f"ℹ️ Foste removido da equipa **{nome_equipa}** por {interaction.user}."
-        except Exception as e:
-            conn.rollback()
-            print(f"Erro ao gerir jogador da equipa: {e}")
-            return await interaction.response.send_message("⚠️ Não foi possível concluir a operação.", ephemeral=True)
-        finally:
-            cursor.close()
-            conn.close()
-
-        await notificar_por_dm(membro.id, dm)
-        await interaction.response.send_message(mensagem, ephemeral=True)
+    await ctx.send(f"🗑️ A equipa **{nome_equipa}** foi apagada.")
 
 
-class ConfirmarEliminarEquipaView(discord.ui.View):
-    def __init__(self, equipa_id: int, nome: str):
-        super().__init__(timeout=60)
-        self.equipa_id = equipa_id
-        self.nome = nome
-
-    @discord.ui.button(label="Sim, eliminar", emoji="🗑️", style=discord.ButtonStyle.danger)
-    async def confirmar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        conn = get_connection()
-        if not conn:
-            return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
-        cursor = conn.cursor()
-        try:
-            cursor.execute("SELECT criado_por FROM equipas WHERE id = %s", (self.equipa_id,))
-            row = cursor.fetchone()
-            if not row:
-                return await interaction.response.send_message("⚠️ A equipa já não existe.", ephemeral=True)
-            if row[0] != interaction.user.id and not interaction.user.guild_permissions.administrator:
-                return await interaction.response.send_message("❌ Apenas o capitão ou a staff pode eliminar a equipa.", ephemeral=True)
-            cursor.execute("DELETE FROM equipas WHERE id = %s", (self.equipa_id,))
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            print(f"Erro ao eliminar equipa: {e}")
-            return await interaction.response.send_message("⚠️ Não foi possível eliminar a equipa.", ephemeral=True)
-        finally:
-            cursor.close()
-            conn.close()
-        for item in self.children:
-            item.disabled = True
-        await interaction.response.edit_message(content=f"🗑️ A equipa **{self.nome}** foi eliminada por {interaction.user.mention}.", embed=None, view=self)
-
-    @discord.ui.button(label="Cancelar", emoji="❌", style=discord.ButtonStyle.secondary)
-    async def cancelar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        for item in self.children:
-            item.disabled = True
-        await interaction.response.edit_message(content="✅ Eliminação cancelada.", embed=None, view=self)
-
-
-class GestaoEquipaView(discord.ui.View):
-    def __init__(self, equipa_row):
-        super().__init__(timeout=300)
-        self.equipa_row = equipa_row
-
-    @discord.ui.button(label="Editar Equipa", emoji="✏️", style=discord.ButtonStyle.primary)
-    async def editar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        atual = obter_equipa_do_utilizador_sync(interaction.user.id)
-        if not atual or atual[0] != self.equipa_row[0]:
-            return await interaction.response.send_message("⚠️ Já não tens acesso à gestão desta equipa.", ephemeral=True)
-        await interaction.response.send_modal(EditarEquipaModal(atual))
-
-    @discord.ui.button(label="Adicionar Jogador", emoji="➕", style=discord.ButtonStyle.success)
-    async def adicionar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(JogadorEquipaModal(self.equipa_row[0], "adicionar"))
-
-    @discord.ui.button(label="Remover Jogador", emoji="➖", style=discord.ButtonStyle.secondary)
-    async def remover(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(JogadorEquipaModal(self.equipa_row[0], "remover"))
-
-    @discord.ui.button(label="Eliminar Equipa", emoji="🗑️", style=discord.ButtonStyle.danger)
-    async def eliminar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(
-            f"⚠️ Tens a certeza de que pretendes eliminar a equipa **{self.equipa_row[1]}**?",
-            view=ConfirmarEliminarEquipaView(self.equipa_row[0], self.equipa_row[1]),
-            ephemeral=True
-        )
-
-
-class PainelEquipasView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="Status", emoji="👤", style=discord.ButtonStyle.primary, custom_id="equipas:status")
-    async def status(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Confirma imediatamente a interação para evitar o erro "não respondeu a tempo".
-        await interaction.response.defer()
-
-        embed = criar_embed_status_jogador(interaction.user)
-        if embed is None:
-            await interaction.followup.send(DB_ERROR_MSG, ephemeral=True)
-            return
-
-        # Publica o status e volta a colocar o painel por baixo dele.
-        await interaction.followup.send(embed=embed)
-        await garantir_painel_equipas_no_fundo(force_repost=True)
-
-    @discord.ui.button(label="Status da Equipa", emoji="👥", style=discord.ButtonStyle.secondary, custom_id="equipas:status_equipa")
-    async def status_equipa(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Confirma imediatamente a interação para evitar o erro "não respondeu a tempo".
-        await interaction.response.defer()
-
-        equipa_row = obter_equipa_do_utilizador_sync(interaction.user.id)
-        if not equipa_row:
-            await interaction.followup.send("ℹ️ Não pertences a nenhuma equipa.", ephemeral=True)
-            return
-
-        embed = await criar_embed_equipa(interaction.guild, equipa_row)
-        pode_gerir = equipa_row[3] == interaction.user.id or interaction.user.guild_permissions.administrator
-        view = GestaoEquipaView(equipa_row) if pode_gerir else None
-
-        # Publica o estado da equipa e volta a colocar o painel por baixo dele.
-        await interaction.followup.send(embed=embed, view=view)
-        await garantir_painel_equipas_no_fundo(force_repost=True)
-
-    @discord.ui.button(label="Criar Equipa", emoji="➕", style=discord.ButtonStyle.success, custom_id="equipas:criar")
-    async def criar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        equipa_row = obter_equipa_do_utilizador_sync(interaction.user.id)
-        if equipa_row:
-            return await interaction.response.send_message(
-                f"❌ Já pertences à equipa **{equipa_row[1]}** e não podes criar outra.", ephemeral=True
-            )
-        await interaction.response.send_modal(CriarEquipaModal())
-
-
-# Mantêm-se comandos de consulta úteis para compatibilidade com o bot antigo.
 @bot.command()
 async def equipa(ctx, *, nome_equipa: str):
     conn = get_connection()
     if not conn:
         return await ctx.send(DB_ERROR_MSG)
+
     cursor = conn.cursor()
-    try:
-        cursor.execute("""
-            SELECT id, nome, logo_url, criado_por,
-                   COALESCE(descricao, ''), COALESCE(redes_sociais, '')
-            FROM equipas WHERE LOWER(nome) = LOWER(%s)
-        """, (nome_equipa,))
-        row = cursor.fetchone()
-    finally:
+    cursor.execute("""
+        SELECT id, nome, logo_url
+        FROM equipas
+        WHERE LOWER(nome) = LOWER(%s)
+    """, (nome_equipa,))
+    equipa_row = cursor.fetchone()
+
+    if not equipa_row:
         cursor.close()
         conn.close()
-    if not row:
         return await ctx.send("⚠️ Essa equipa não existe.")
-    await ctx.send(embed=await criar_embed_equipa(ctx.guild, row))
+
+    equipa_id, nome, logo_url = equipa_row
+
+    cursor.execute("""
+        SELECT user_id
+        FROM equipas_membros
+        WHERE equipa_id = %s
+    """, (equipa_id,))
+    membros = cursor.fetchall()
+
+    cursor.close()
+    conn.close()
+
+    pontos = calcular_pontos_equipa_sync(equipa_id)
+    if pontos is None:
+        return await ctx.send(DB_ERROR_MSG)
+
+    lista_membros = ""
+    for (uid,) in membros:
+        membro = ctx.guild.get_member(uid)
+        nome_membro = membro.mention if membro else f"<@{uid}>"
+        dados = calcular_pontos_jogador_sync(uid)
+        total_membro = dados["total"] if dados else 0
+        lista_membros += f"• {nome_membro} — **{total_membro} pts**\n"
+
+    if not lista_membros:
+        lista_membros = "Nenhum membro nesta equipa."
+
+    embed = discord.Embed(
+        title=f"🛡️ Equipa {nome}",
+        description="Perfil competitivo da equipa",
+        color=discord.Color.blurple(),
+        timestamp=discord.utils.utcnow()
+    )
+
+    if logo_url:
+        embed.set_thumbnail(url=logo_url)
+
+    embed.add_field(name="👥 Membros", value=lista_membros[:1024], inline=False)
+    embed.add_field(
+        name="📊 Pontos da Equipa",
+        value=(
+            f"🔥 Solo Rebirth: **{pontos['solo']}**\n"
+            f"👥 Team Wins: **{pontos['team']}**\n\n"
+            f"🏆 Total: **{pontos['total']} pontos**"
+        ),
+        inline=False
+    )
+    embed.set_footer(text=f"{pontos['membros']} membro(s) na equipa")
+
+    await ctx.send(embed=embed)
 
 
 @bot.command()
@@ -4355,43 +3935,95 @@ async def rankingequipas(ctx):
     conn = get_connection()
     if not conn:
         return await ctx.send(DB_ERROR_MSG)
-    cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT id, nome, logo_url FROM equipas")
-        rows = cursor.fetchall()
-    finally:
-        cursor.close()
-        conn.close()
-    if not rows:
-        return await ctx.send("⚠️ Ainda não existem equipas criadas.")
-    ranking = []
-    for equipa_id, nome, logo_url in rows:
-        pontos = calcular_pontos_equipa_sync(equipa_id) or {"total": 0, "solo": 0, "team": 0}
-        ranking.append((pontos["total"], nome, logo_url, pontos))
-    ranking.sort(reverse=True, key=lambda x: x[0])
-    embed = discord.Embed(title="🏆 Ranking de Equipas", color=discord.Color.gold(), timestamp=discord.utils.utcnow())
-    linhas = []
-    for i, (_, nome, _, pontos) in enumerate(ranking[:10], start=1):
-        linhas.append(f"**{i}. {nome}** — {pontos['total']} pts (🔥 {pontos['solo']} | 👥 {pontos['team']})")
-    embed.description = "\n".join(linhas)
-    await ctx.send(embed=embed)
 
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, nome, logo_url
+        FROM equipas
+    """)
+    equipas = cursor.fetchall()
+    cursor.close()
+    conn.close()
+
+    if not equipas:
+        return await ctx.send("⚠️ Ainda não existem equipas criadas.")
+
+    ranking = []
+
+    for equipa_id, nome, logo_url in equipas:
+        pontos = calcular_pontos_equipa_sync(equipa_id)
+        if pontos:
+            ranking.append({
+                "nome": nome,
+                "logo_url": logo_url,
+                "total": pontos["total"],
+                "solo": pontos["solo"],
+                "team": pontos["team"],
+            })
+
+    ranking.sort(key=lambda x: x["total"], reverse=True)
+
+    if not ranking:
+        return await ctx.send("⚠️ Ainda não existem equipas com pontos.")
+
+    medalhas = [
+        ("🥇 1.º Lugar", discord.Color.gold()),
+        ("🥈 2.º Lugar", discord.Color.light_grey()),
+        ("🥉 3.º Lugar", discord.Color.orange()),
+    ]
+
+    for i, equipa_info in enumerate(ranking[:3]):
+        titulo, cor = medalhas[i]
+
+        embed = discord.Embed(
+            title=titulo,
+            description=f"🛡️ **{equipa_info['nome']}**",
+            color=cor,
+            timestamp=discord.utils.utcnow()
+        )
+
+        if equipa_info["logo_url"]:
+            embed.set_thumbnail(url=equipa_info["logo_url"])
+
+        embed.add_field(
+            name="🏆 Pontos",
+            value=(
+                f"**Total:** {equipa_info['total']} pontos\n"
+                f"🔥 Solo Rebirth: {equipa_info['solo']}\n"
+                f"👥 Team Wins: {equipa_info['team']}"
+            ),
+            inline=False
+        )
+
+        embed.set_footer(text="💡 Para ver mais equipas usa !listarequipas")
+
+        await ctx.send(embed=embed)
 
 @bot.command()
 async def listarequipas(ctx):
     conn = get_connection()
     if not conn:
         return await ctx.send(DB_ERROR_MSG)
+
     cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT nome FROM equipas ORDER BY LOWER(nome)")
-        nomes = [nome for (nome,) in cursor.fetchall()]
-    finally:
-        cursor.close()
-        conn.close()
-    if not nomes:
+    cursor.execute("SELECT id, nome FROM equipas ORDER BY nome ASC")
+    equipas = cursor.fetchall()
+    cursor.close()
+    conn.close()
+
+    if not equipas:
         return await ctx.send("⚠️ Ainda não existem equipas criadas.")
-    await ctx.send("**🛡️ Equipas criadas:**\n" + "\n".join(f"• {nome}" for nome in nomes))
+
+    msg = "**🛡️ Equipas criadas:**\n"
+    for _, nome in equipas:
+        linha = f"• {nome}\n"
+        if len(msg) + len(linha) > 2000:
+            await ctx.send(msg)
+            msg = ""
+        msg += linha
+
+    if msg:
+        await ctx.send(msg)
 
 
 # =========================
@@ -4856,10 +4488,13 @@ async def rankingtempo(ctx):
 # =========================
 # 🆕 STATUS (COM TIERS + INATIVIDADE + TEMPO)
 # =========================
-def criar_embed_status_jogador(membro: discord.Member):
+@bot.command()
+async def status(ctx, membro: discord.Member = None):
+    membro = membro or ctx.author
+
     conn = get_connection()
     if not conn:
-        return None
+        return await ctx.send(DB_ERROR_MSG)
     cursor = conn.cursor()
 
     cursor.execute("SELECT pontos, ultima_atividade FROM pontos WHERE user_id = %s", (membro.id,))
@@ -5022,16 +4657,6 @@ def criar_embed_status_jogador(membro: discord.Member):
     embed.set_footer(text="⚡ Sistema competitivo ativo • 5 Tiers")
     embed.timestamp = discord.utils.utcnow()
 
-
-    return embed
-
-
-@bot.command()
-async def status(ctx, membro: discord.Member = None):
-    membro = membro or ctx.author
-    embed = criar_embed_status_jogador(membro)
-    if embed is None:
-        return await ctx.send(DB_ERROR_MSG)
     await ctx.send(embed=embed)
 
 
