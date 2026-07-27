@@ -3867,6 +3867,61 @@ def obter_membros_equipa_sync(equipa_id: int):
         conn.close()
 
 
+def listar_equipas_sync():
+    conn = get_connection()
+    if not conn:
+        return []
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            SELECT id, nome, logo_url, criado_por,
+                   COALESCE(descricao, ''), COALESCE(redes_sociais, '')
+            FROM equipas
+            ORDER BY LOWER(nome), id
+        """)
+        return cursor.fetchall()
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def obter_equipa_por_id_sync(equipa_id: int):
+    conn = get_connection()
+    if not conn:
+        return None
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            SELECT id, nome, logo_url, criado_por,
+                   COALESCE(descricao, ''), COALESCE(redes_sociais, '')
+            FROM equipas
+            WHERE id = %s
+        """, (equipa_id,))
+        return cursor.fetchone()
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def utilizador_pertence_equipa_sync(user_id: int, equipa_id: int) -> bool:
+    conn = get_connection()
+    if not conn:
+        return False
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            SELECT 1
+            FROM equipas e
+            LEFT JOIN equipas_membros em ON em.equipa_id = e.id
+            WHERE e.id = %s AND (e.criado_por = %s OR em.user_id = %s)
+            LIMIT 1
+        """, (equipa_id, user_id, user_id))
+        return cursor.fetchone() is not None
+    finally:
+        cursor.close()
+        conn.close()
+
+
 def criar_embed_painel_equipas():
     embed = discord.Embed(
         title="🏆 Central de Jogadores e Equipas",
@@ -3885,6 +3940,11 @@ def criar_embed_painel_equipas():
     embed.add_field(
         name="👥 Status da Equipa",
         value="Consulta membros, capitão e pontuação da tua equipa.",
+        inline=False
+    )
+    embed.add_field(
+        name="🏆 Ver Equipas",
+        value="Consulta todas as equipas. Apenas membros da própria equipa a podem partilhar.",
         inline=False
     )
     embed.add_field(
@@ -4378,6 +4438,166 @@ class GestaoEquipaView(discord.ui.View):
         )
 
 
+class PartilharEquipaConsultadaView(discord.ui.View):
+    def __init__(self, equipa_id: int, utilizador_id: int):
+        super().__init__(timeout=300)
+        self.equipa_id = equipa_id
+        self.utilizador_id = utilizador_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.utilizador_id:
+            await interaction.response.send_message(
+                "❌ Estes botões pertencem ao jogador que abriu a consulta.",
+                ephemeral=True
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Partilhar", emoji="📤", style=discord.ButtonStyle.success)
+    async def partilhar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # A permissão é confirmada novamente no momento da partilha.
+        if not utilizador_pertence_equipa_sync(interaction.user.id, self.equipa_id):
+            return await interaction.response.send_message(
+                "❌ Apenas membros desta equipa a podem partilhar.",
+                ephemeral=True
+            )
+
+        equipa_row = obter_equipa_por_id_sync(self.equipa_id)
+        if not equipa_row:
+            return await interaction.response.send_message(
+                "⚠️ Esta equipa já não existe.",
+                ephemeral=True
+            )
+
+        await interaction.response.defer(ephemeral=True)
+        embed = await criar_embed_equipa(interaction.guild, equipa_row)
+        await interaction.channel.send(embed=embed)
+        await garantir_painel_equipas_no_fundo(force_repost=True)
+
+        button.disabled = True
+        try:
+            await interaction.message.edit(view=self)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            pass
+        await interaction.followup.send("✅ A equipa foi partilhada nesta sala.", ephemeral=True)
+
+
+class SelecionarEquipa(discord.ui.Select):
+    def __init__(self, equipas_pagina):
+        options = []
+        for equipa in equipas_pagina:
+            equipa_id, nome, _logo, capitao_id, descricao, _redes = equipa
+            resumo = (descricao or f"Capitão: {capitao_id}").replace("\n", " ")[:100]
+            options.append(discord.SelectOption(
+                label=nome[:100],
+                value=str(equipa_id),
+                description=resumo
+            ))
+        super().__init__(
+            placeholder="Seleciona uma equipa para ver os detalhes",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if interaction.user.id != view.utilizador_id:
+            return await interaction.response.send_message(
+                "❌ Esta consulta pertence a outro jogador.",
+                ephemeral=True
+            )
+
+        equipa_id = int(self.values[0])
+        equipa_row = obter_equipa_por_id_sync(equipa_id)
+        if not equipa_row:
+            return await interaction.response.send_message("⚠️ Esta equipa já não existe.", ephemeral=True)
+
+        embed = await criar_embed_equipa(interaction.guild, equipa_row)
+        detalhe_view = None
+        if utilizador_pertence_equipa_sync(interaction.user.id, equipa_id):
+            detalhe_view = PartilharEquipaConsultadaView(equipa_id, interaction.user.id)
+
+        await interaction.response.send_message(
+            embed=embed,
+            view=detalhe_view,
+            ephemeral=True
+        )
+
+
+class VerEquipasView(discord.ui.View):
+    EQUIPAS_POR_PAGINA = 10
+
+    def __init__(self, utilizador_id: int, pagina: int = 0):
+        super().__init__(timeout=300)
+        self.utilizador_id = utilizador_id
+        self.pagina = pagina
+        self.equipas = listar_equipas_sync()
+        self.total_paginas = max(1, (len(self.equipas) + self.EQUIPAS_POR_PAGINA - 1) // self.EQUIPAS_POR_PAGINA)
+        self.pagina = max(0, min(self.pagina, self.total_paginas - 1))
+        self._montar_componentes()
+
+    def _equipas_da_pagina(self):
+        inicio = self.pagina * self.EQUIPAS_POR_PAGINA
+        return self.equipas[inicio:inicio + self.EQUIPAS_POR_PAGINA]
+
+    def criar_embed(self):
+        equipas_pagina = self._equipas_da_pagina()
+        descricao = []
+        for equipa in equipas_pagina:
+            equipa_id, nome, _logo, capitao_id, _descricao, _redes = equipa
+            membros = len(obter_membros_equipa_sync(equipa_id))
+            descricao.append(f"**{nome}** — <@{capitao_id}> · {membros} membro(s)")
+
+        embed = discord.Embed(
+            title="🏆 Equipas",
+            description="\n".join(descricao) if descricao else "Ainda não existem equipas.",
+            color=discord.Color.blurple(),
+            timestamp=discord.utils.utcnow()
+        )
+        embed.set_footer(text=f"Página {self.pagina + 1}/{self.total_paginas} · Seleciona uma equipa para ver os detalhes")
+        return embed
+
+    def _montar_componentes(self):
+        self.clear_items()
+        equipas_pagina = self._equipas_da_pagina()
+        if equipas_pagina:
+            self.add_item(SelecionarEquipa(equipas_pagina))
+
+        anterior = discord.ui.Button(
+            label="Anterior", emoji="⬅️", style=discord.ButtonStyle.secondary,
+            disabled=self.pagina <= 0, row=1
+        )
+        seguinte = discord.ui.Button(
+            label="Seguinte", emoji="➡️", style=discord.ButtonStyle.secondary,
+            disabled=self.pagina >= self.total_paginas - 1, row=1
+        )
+        anterior.callback = self._pagina_anterior
+        seguinte.callback = self._pagina_seguinte
+        self.add_item(anterior)
+        self.add_item(seguinte)
+
+    async def _validar_dono(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.utilizador_id:
+            await interaction.response.send_message("❌ Esta consulta pertence a outro jogador.", ephemeral=True)
+            return False
+        return True
+
+    async def _pagina_anterior(self, interaction: discord.Interaction):
+        if not await self._validar_dono(interaction):
+            return
+        self.pagina -= 1
+        self._montar_componentes()
+        await interaction.response.edit_message(embed=self.criar_embed(), view=self)
+
+    async def _pagina_seguinte(self, interaction: discord.Interaction):
+        if not await self._validar_dono(interaction):
+            return
+        self.pagina += 1
+        self._montar_componentes()
+        await interaction.response.edit_message(embed=self.criar_embed(), view=self)
+
+
 class PainelEquipasView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -4412,6 +4632,15 @@ class PainelEquipasView(discord.ui.View):
         view = GestaoEquipaView(equipa_row, interaction.user.id)
 
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+    @discord.ui.button(label="Ver Equipas", emoji="🏆", style=discord.ButtonStyle.secondary, custom_id="equipas:ver_equipas")
+    async def ver_equipas(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = VerEquipasView(interaction.user.id)
+        await interaction.response.send_message(
+            embed=view.criar_embed(),
+            view=view,
+            ephemeral=True
+        )
 
     @discord.ui.button(label="Criar Equipa", emoji="➕", style=discord.ButtonStyle.success, custom_id="equipas:criar")
     async def criar(self, interaction: discord.Interaction, button: discord.ui.Button):
