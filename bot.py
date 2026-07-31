@@ -27,6 +27,16 @@ COMPROVATIVOS_EXTENSOES_PERMITIDAS = {"pdf", "jpg", "jpeg", "png"}
 EQUIPAS_PANEL_CHANNEL_ID = 1486737352679489598
 equipas_panel_lock = asyncio.Lock()
 
+# ---------- ECONOMIA / CARTEIRA / LOJA ----------
+CARTEIRA_PANEL_CHANNEL_ID = int(os.getenv("CARTEIRA_PANEL_CHANNEL_ID", "0"))
+CARTEIRA_PANEL_CHANNEL_NAME = os.getenv("CARTEIRA_PANEL_CHANNEL_NAME", "carteira-jogador")
+CARTEIRA_PANEL_LOCK = asyncio.Lock()
+CREDITOS_POR_PRESENCA = int(os.getenv("CREDITOS_POR_PRESENCA", "100"))
+CREDITOS_POR_TEAMWIN = int(os.getenv("CREDITOS_POR_TEAMWIN", "50"))
+PRECO_ENTRADA_GRATUITA = int(os.getenv("PRECO_ENTRADA_GRATUITA", "1000"))
+CREDITOS_CANCELAMENTO_VALIDADO = int(os.getenv("CREDITOS_CANCELAMENTO_VALIDADO", "1000"))
+BONUS_TEAMWINS_DIARIO = {2: 50, 5: 150, 10: 400}
+
 # ---------- NFC API ----------
 NFC_API_TOKEN = os.getenv("NFC_API_TOKEN", "").strip()
 NFC_API_PORT = int(os.getenv("NFC_API_PORT", os.getenv("PORT", "8080")))
@@ -685,8 +695,8 @@ async def criar_embed_inscricao_paga(guild: discord.Guild, thread_name: str, nom
     embed.add_field(name="👤 Jogador", value=jogador_valor, inline=True)
     embed.add_field(name="📝 Autor da inscrição", value=autor_inscricao_mention, inline=True)
     embed.add_field(name="📌 Estado", value="✅ Inscrição finalizada", inline=False)
-    if metodo_pagamento == "credito":
-        embed.add_field(name="💎 Método", value="Crédito de entrada gratuita", inline=False)
+    if metodo_pagamento in ("credito", "economia"):
+        embed.add_field(name="🪙 Método", value="Entrada gratuita por créditos", inline=False)
     embed.set_footer(text="✅ Inscrição concluída com sucesso")
     return embed
 
@@ -1058,6 +1068,113 @@ if conn:
         )
         """)
 
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS economia_carteiras (
+            user_id BIGINT PRIMARY KEY,
+            saldo INTEGER NOT NULL DEFAULT 0 CHECK (saldo >= 0),
+            total_ganho INTEGER NOT NULL DEFAULT 0 CHECK (total_ganho >= 0),
+            total_gasto INTEGER NOT NULL DEFAULT 0 CHECK (total_gasto >= 0),
+            legado_migrado BOOLEAN NOT NULL DEFAULT FALSE,
+            atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS economia_movimentos (
+            id BIGSERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            quantidade INTEGER NOT NULL,
+            tipo TEXT NOT NULL,
+            motivo TEXT NOT NULL,
+            referencia TEXT,
+            criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """)
+
+        cursor.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_economia_movimento_referencia
+        ON economia_movimentos (user_id, referencia)
+        WHERE referencia IS NOT NULL
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS economia_teamwins_eventos (
+            id BIGSERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            quantidade INTEGER NOT NULL DEFAULT 1,
+            dia DATE NOT NULL DEFAULT CURRENT_DATE,
+            referencia TEXT UNIQUE,
+            criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS economia_bonus_diarios (
+            user_id BIGINT NOT NULL,
+            dia DATE NOT NULL,
+            marco INTEGER NOT NULL,
+            valor INTEGER NOT NULL,
+            PRIMARY KEY (user_id, dia, marco)
+        )
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS loja_produtos (
+            id BIGSERIAL PRIMARY KEY,
+            nome TEXT NOT NULL,
+            descricao TEXT NOT NULL DEFAULT '',
+            preco INTEGER NOT NULL CHECK (preco >= 0),
+            categoria TEXT NOT NULL DEFAULT 'Merch',
+            stock INTEGER CHECK (stock IS NULL OR stock >= 0),
+            imagem_url TEXT,
+            ativo BOOLEAN NOT NULL DEFAULT TRUE,
+            criado_por BIGINT NOT NULL,
+            criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """)
+
+        cursor.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS loja_produtos_nome_unique
+        ON loja_produtos (LOWER(nome)) WHERE ativo = TRUE
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS loja_pedidos (
+            id BIGSERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            produto_id BIGINT REFERENCES loja_produtos(id),
+            produto_nome TEXT NOT NULL,
+            quantidade INTEGER NOT NULL DEFAULT 1 CHECK (quantidade > 0),
+            preco_total INTEGER NOT NULL CHECK (preco_total >= 0),
+            estado TEXT NOT NULL DEFAULT 'pendente' CHECK (estado IN ('pendente','entregue','cancelado')),
+            criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            processado_por BIGINT,
+            processado_em TIMESTAMPTZ
+        )
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS painel_carteira_config (
+            id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+            channel_id BIGINT NOT NULL,
+            message_id BIGINT
+        )
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pedidos_reembolso_inscricao (
+            inscricao_id BIGINT PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            tipo TEXT NOT NULL CHECK (tipo IN ('devolucao','creditos')),
+            estado TEXT NOT NULL DEFAULT 'pendente' CHECK (estado IN ('pendente','processado','cancelado')),
+            valor_creditos INTEGER NOT NULL DEFAULT 0,
+            criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            processado_por BIGINT,
+            processado_em TIMESTAMPTZ
+        )
+        """)
+
         conn.commit()
         print("✅ Tabelas verificadas/criadas com sucesso.")
 
@@ -1088,8 +1205,11 @@ async def on_ready():
     bot.add_view(CreditoInscricaoView())
     bot.add_view(ComprovativoPagamentoView())
     bot.add_view(PainelEquipasView())
+    bot.add_view(PainelCarteiraView())
+    bot.add_view(PedidoLojaStaffView())
     await carregar_views_termos_pendentes()
     await garantir_painel_equipas_no_fundo()
+    await garantir_painel_carteira_no_fundo()
 
     if not verificar_inscricoes.is_running():
         verificar_inscricoes.start()
@@ -1138,6 +1258,10 @@ async def on_message(message):
     if message.channel.id == EQUIPAS_PANEL_CHANNEL_ID:
         await garantir_painel_equipas_no_fundo(force_repost=True)
 
+    if (CARTEIRA_PANEL_CHANNEL_ID and message.channel.id == CARTEIRA_PANEL_CHANNEL_ID) or \
+       (not CARTEIRA_PANEL_CHANNEL_ID and getattr(message.channel, "name", "") == CARTEIRA_PANEL_CHANNEL_NAME):
+        await garantir_painel_carteira_no_fundo(force_repost=True)
+
 
 @bot.event
 async def on_command_error(ctx, error):
@@ -1180,7 +1304,7 @@ class CreditoInscricaoView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Usar crédito", emoji="💎", style=discord.ButtonStyle.success, custom_id="inscricoes:usar_credito")
+    @discord.ui.button(label="Usar 1.000 créditos", emoji="🪙", style=discord.ButtonStyle.success, custom_id="inscricoes:usar_credito")
     async def usar_credito(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not interaction.message:
             return await interaction.response.send_message("⚠️ Não encontrei a inscrição associada.", ephemeral=True)
@@ -1209,16 +1333,23 @@ class CreditoInscricaoView(discord.ui.View):
                 conn.rollback()
                 return await interaction.response.send_message("ℹ️ Esta inscrição já foi validada ou já não está ativa.", ephemeral=True)
 
-            cursor.execute("SELECT saldo FROM creditos_jogadores WHERE user_id = %s FOR UPDATE", (user_id,))
+            garantir_carteira_cursor(cursor, user_id)
+            cursor.execute("SELECT saldo FROM economia_carteiras WHERE user_id = %s FOR UPDATE", (user_id,))
             credito = cursor.fetchone()
-            if not credito or int(credito[0]) < 1:
+            if not credito or int(credito[0]) < PRECO_ENTRADA_GRATUITA:
                 conn.rollback()
-                return await interaction.response.send_message("⚠️ Não tens créditos disponíveis. Recebes 1 crédito por cada 10 presenças ou por cada 10 Team Wins.", ephemeral=True)
+                return await interaction.response.send_message(
+                    f"⚠️ Não tens créditos suficientes. São necessários **{PRECO_ENTRADA_GRATUITA}** créditos.",
+                    ephemeral=True
+                )
 
-            cursor.execute("UPDATE creditos_jogadores SET saldo = saldo - 1, atualizado_em = NOW() WHERE user_id = %s AND saldo > 0", (user_id,))
+            movimentar_creditos_cursor(
+                cursor, user_id, -PRECO_ENTRADA_GRATUITA, "entrada_gratuita",
+                "Entrada gratuita usada na inscrição", f"inscricao:{inscricao_id}:entrada"
+            )
             cursor.execute("""
                 UPDATE inscricoes_jogos
-                SET estado = 'pago', metodo_pagamento = 'credito', credito_devolvido = FALSE,
+                SET estado = 'pago', metodo_pagamento = 'economia', credito_devolvido = FALSE,
                     confirmado_por = %s, confirmado_em = NOW()
                 WHERE id = %s AND estado = 'pendente_pagamento'
             """, (user_id, inscricao_id))
@@ -1226,10 +1357,6 @@ class CreditoInscricaoView(discord.ui.View):
                 conn.rollback()
                 return await interaction.response.send_message("⚠️ Não foi possível validar a inscrição.", ephemeral=True)
 
-            cursor.execute("""
-                INSERT INTO creditos_movimentos (user_id, quantidade, tipo, motivo, inscricao_id)
-                VALUES (%s, -1, 'utilizacao', 'Crédito usado para validar inscrição', %s)
-            """, (user_id, inscricao_id))
             conn.commit()
         except Exception as e:
             conn.rollback()
@@ -1240,13 +1367,16 @@ class CreditoInscricaoView(discord.ui.View):
             conn.close()
 
         membro = interaction.guild.get_member(user_id) if interaction.guild else None
-        embed = await criar_embed_inscricao_paga(interaction.guild, interaction.channel.name, nome_jogador, f"<@{inscrito_por}>", membro, "credito")
+        embed = await criar_embed_inscricao_paga(interaction.guild, interaction.channel.name, nome_jogador, f"<@{inscrito_por}>", membro, "economia")
         try:
             await interaction.message.edit(embed=embed, view=None)
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             pass
-        saldo = obter_creditos_sync(user_id)
-        await interaction.response.send_message(f"✅ Inscrição validada com 1 crédito. Créditos restantes: **{saldo}**.", ephemeral=True)
+        saldo = obter_saldo_economia_sync(user_id)
+        await interaction.response.send_message(
+            f"✅ Inscrição validada com **{PRECO_ENTRADA_GRATUITA} créditos**. Saldo restante: **{saldo}**.",
+            ephemeral=True
+        )
         await atualizar_embed_estado(interaction.channel)
 
 
@@ -2104,7 +2234,7 @@ async def cancelar_inscricao_interaction(interaction: discord.Interaction, numer
 
     if is_admin:
         cursor.execute("""
-            SELECT id, message_id, nome_jogador, user_id, COALESCE(inscrito_por, user_id)
+            SELECT id, message_id, nome_jogador, user_id, COALESCE(inscrito_por, user_id), estado, metodo_pagamento
             FROM inscricoes_jogos
             WHERE thread_id = %s
               AND user_id = %s
@@ -2114,7 +2244,7 @@ async def cancelar_inscricao_interaction(interaction: discord.Interaction, numer
         """, (interaction.channel.id, membro_jogador.id))
     else:
         cursor.execute("""
-            SELECT id, message_id, nome_jogador, user_id, COALESCE(inscrito_por, user_id)
+            SELECT id, message_id, nome_jogador, user_id, COALESCE(inscrito_por, user_id), estado, metodo_pagamento
             FROM inscricoes_jogos
             WHERE thread_id = %s
               AND user_id = %s
@@ -2134,14 +2264,59 @@ async def cancelar_inscricao_interaction(interaction: discord.Interaction, numer
             ephemeral=True
         )
 
-    inscricao_id, message_id, nome_jogador, user_id, inscrito_por = row
+    inscricao_id, message_id, nome_jogador, user_id, inscrito_por, estado_atual, metodo_pagamento = row
+
+    # Quando o próprio jogador cancela uma inscrição validada, escolhe a compensação.
+    if not is_admin and interaction.user.id == user_id and estado_atual == 'pago':
+        cursor.close()
+        conn.close()
+        embed_cancelar = discord.Embed(
+            title="⚠️ Cancelar Inscrição",
+            description=(
+                "A tua inscrição encontra-se **validada**.\n\n"
+                "Ao confirmares o cancelamento, a tua vaga será libertada para outro participante.\n\n"
+                "**Escolhe como pretendes ser compensado.**"
+            ),
+            color=discord.Color.orange()
+        )
+        embed_cancelar.add_field(
+            name="💶 Pedir Devolução",
+            value="Recebe o valor da inscrição através do método habitual. A devolução será processada pela administração.",
+            inline=False
+        )
+        embed_cancelar.add_field(
+            name="🪙 Converter em Créditos",
+            value=f"Converte o valor da inscrição em **{CREDITOS_CANCELAMENTO_VALIDADO} Créditos da Comunidade**.",
+            inline=False
+        )
+        embed_cancelar.add_field(
+            name="ℹ️ Importante",
+            value="• Esta escolha é irreversível.\n• Apenas podes selecionar uma opção.\n• A inscrição será cancelada após a confirmação.",
+            inline=False
+        )
+        return await interaction.response.send_message(
+            embed=embed_cancelar,
+            view=EscolhaCancelamentoValidadoView(
+                inscricao_id, message_id, user_id, nome_jogador, inscrito_por, interaction.channel.id
+            ),
+            ephemeral=True
+        )
 
     cursor.execute("""
         UPDATE inscricoes_jogos
         SET estado = 'cancelado'
         WHERE id = %s
     """, (inscricao_id,))
-    credito_devolvido = devolver_credito_cancelamento(cursor, inscricao_id, user_id)
+    credito_devolvido = False
+    if metodo_pagamento == 'economia':
+        garantir_carteira_cursor(cursor, user_id)
+        movimentar_creditos_cursor(
+            cursor, user_id, PRECO_ENTRADA_GRATUITA, 'devolucao_inscricao',
+            'Créditos devolvidos pelo cancelamento da inscrição', f'devolucao-inscricao:{inscricao_id}'
+        )
+        credito_devolvido = True
+    else:
+        credito_devolvido = devolver_credito_cancelamento(cursor, inscricao_id, user_id)
 
     conn.commit()
     cursor.close()
@@ -2165,7 +2340,7 @@ async def cancelar_inscricao_interaction(interaction: discord.Interaction, numer
         pass
 
     await interaction.response.send_message(
-        (f"✅ A inscrição de **{nome_jogador}** foi cancelada." + (" 💎 O crédito utilizado foi devolvido." if credito_devolvido else "")),
+        (f"✅ A inscrição de **{nome_jogador}** foi cancelada." + (" 🪙 Os créditos utilizados foram devolvidos." if credito_devolvido else "")),
         ephemeral=True
     )
 
@@ -2767,6 +2942,10 @@ class PainelJogadorView(discord.ui.View):
                 )
 
             cursor.execute("UPDATE inscricoes_jogos SET presenca_marcada = FALSE WHERE id = %s", (self.inscricao_id,))
+            reverter_movimento_referencia_cursor(
+                cursor, membro.id, f"presenca:inscricao:{self.inscricao_id}",
+                "Presença removida pela staff"
+            )
             conn.commit()
             cursor.close()
             conn.close()
@@ -2797,7 +2976,9 @@ class PainelJogadorView(discord.ui.View):
             )
 
         cursor.execute("UPDATE inscricoes_jogos SET presenca_marcada = TRUE WHERE id = %s", (self.inscricao_id,))
-        novos_creditos = atribuir_creditos_por_presencas(cursor, membro.id, novo_total)
+        novos_creditos = recompensar_presenca_cursor(
+            cursor, membro.id, f"presenca:inscricao:{self.inscricao_id}"
+        )
         conn.commit()
         cursor.close()
         conn.close()
@@ -2816,8 +2997,8 @@ class PainelJogadorView(discord.ui.View):
         if novos_creditos:
             try:
                 await membro.send(
-                    f"🎉 Atingiste **{novo_total} presenças** e recebeste **{novos_creditos} crédito(s)** de entrada gratuita. "
-                    f"Saldo atual: **{obter_creditos_sync(membro.id)}**."
+                    f"🪙 Recebeste **{novos_creditos} créditos** pela presença. "
+                    f"Saldo atual: **{obter_saldo_economia_sync(membro.id)}**."
                 )
             except (discord.Forbidden, discord.HTTPException):
                 pass
@@ -2825,7 +3006,7 @@ class PainelJogadorView(discord.ui.View):
         await self.atualizar_painel(
             interaction,
             f"✅ Presença marcada para **{nome_log}**." +
-            (f" 💎 Recebeu **{novos_creditos} crédito(s)**." if novos_creditos else "")
+            (f" 🪙 Recebeu **{novos_creditos} créditos**." if novos_creditos else "")
         )
 
     @discord.ui.button(label="Chrony feito", emoji="🎯", style=discord.ButtonStyle.primary)
@@ -2984,7 +3165,9 @@ async def adicionar_teamwin_jogador(guild: discord.Guild, user_id: int, motivo: 
         else:
             cursor.execute("INSERT INTO pontos_team (user_id, pontos) VALUES (%s, %s)", (user_id, total))
 
-        novos_creditos = atribuir_creditos_por_teamwins(cursor, user_id, total)
+        novos_creditos = recompensar_teamwins_cursor(
+            cursor, user_id, 1, motivo
+        )
         conn.commit()
     except Exception:
         conn.rollback()
@@ -3001,9 +3184,9 @@ async def adicionar_teamwin_jogador(guild: discord.Guild, user_id: int, motivo: 
             membro = None
 
     nome = formatar_nome_operador(membro, f"ID:{user_id}")
-    saldo_atual = obter_creditos_sync(user_id)
+    saldo_atual = obter_saldo_economia_sync(user_id)
     extra_creditos = (
-        f"\n💎 Recebeu **{novos_creditos} crédito(s)** por completar um novo bloco de 10 Team Wins. "
+        f"\n🪙 Recebeu **{novos_creditos} créditos** pela Team Win e eventuais bónus diários. "
         f"Saldo atual: **{saldo_atual}**."
         if novos_creditos else ""
     )
@@ -3017,8 +3200,8 @@ async def adicionar_teamwin_jogador(guild: discord.Guild, user_id: int, motivo: 
     if novos_creditos and membro is not None:
         try:
             await membro.send(
-                f"🎉 Atingiste **{total} Team Wins** e recebeste **{novos_creditos} crédito(s)** "
-                f"de entrada gratuita. Saldo atual: **{saldo_atual}**."
+                f"🏆 Recebeste **{novos_creditos} créditos** pela Team Win e bónus diário. "
+                f"Saldo atual: **{saldo_atual}**."
             )
         except (discord.Forbidden, discord.HTTPException):
             pass
@@ -5650,14 +5833,16 @@ async def addteam(ctx, membro: discord.Member, quantidade: int):
     else:
         cursor.execute("INSERT INTO pontos_team VALUES (%s, %s)", (membro.id, total))
 
-    novos_creditos = atribuir_creditos_por_teamwins(cursor, membro.id, total)
+    novos_creditos = recompensar_teamwins_cursor(
+        cursor, membro.id, quantidade, f"Comando !addteam por {ctx.author.id}"
+    )
     conn.commit()
     cursor.close()
     conn.close()
 
-    saldo_atual = obter_creditos_sync(membro.id)
+    saldo_atual = obter_saldo_economia_sync(membro.id)
     extra_creditos = (
-        f"\n💎 Recebeu **{novos_creditos} crédito(s)** por completar um novo bloco de 10 Team Wins. "
+        f"\n🪙 Recebeu **{novos_creditos} créditos** por Team Wins e bónus diários. "
         f"Saldo atual: **{saldo_atual}**."
         if novos_creditos else ""
     )
@@ -5667,8 +5852,8 @@ async def addteam(ctx, membro: discord.Member, quantidade: int):
     if novos_creditos:
         try:
             await membro.send(
-                f"🎉 Atingiste **{total} Team Wins** e recebeste **{novos_creditos} crédito(s)** "
-                f"de entrada gratuita. Saldo atual: **{saldo_atual}**."
+                f"🏆 Recebeste **{novos_creditos} créditos** por Team Wins e bónus diários. "
+                f"Saldo atual: **{saldo_atual}**."
             )
         except (discord.Forbidden, discord.HTTPException):
             pass
@@ -5693,6 +5878,7 @@ async def removeteam(ctx, membro: discord.Member, quantidade: int):
     total = max(r[0] - quantidade, 0)
 
     cursor.execute("UPDATE pontos_team SET pontos = %s WHERE user_id = %s", (total, membro.id))
+    remover_teamwins_economia_cursor(cursor, membro.id, quantidade, f"Comando !removeteam por {ctx.author.id}")
 
     conn.commit()
     cursor.close()
@@ -12245,6 +12431,511 @@ async def start_nfc_api_server():
 
     print(f"📡 NFC API ativa na porta {NFC_API_PORT}")
 
+
+
+# =========================
+# 💰 ECONOMIA / CARTEIRA / LOJA
+# =========================
+def garantir_carteira_cursor(cursor, user_id: int):
+    cursor.execute("SELECT legado_migrado FROM economia_carteiras WHERE user_id = %s FOR UPDATE", (user_id,))
+    row = cursor.fetchone()
+    if row:
+        return
+
+    # Migração única do saldo antigo: cada crédito de entrada passa a valer 1.000 créditos da economia.
+    cursor.execute("SELECT saldo FROM creditos_jogadores WHERE user_id = %s", (user_id,))
+    antigo = cursor.fetchone()
+    saldo_inicial = (int(antigo[0]) * PRECO_ENTRADA_GRATUITA) if antigo else 0
+    cursor.execute(
+        "INSERT INTO economia_carteiras (user_id, saldo, total_ganho, legado_migrado) VALUES (%s, %s, %s, TRUE)",
+        (user_id, saldo_inicial, saldo_inicial)
+    )
+    if saldo_inicial:
+        cursor.execute(
+            "INSERT INTO economia_movimentos (user_id, quantidade, tipo, motivo, referencia) "
+            "VALUES (%s, %s, 'migracao', 'Conversão do saldo antigo de entradas gratuitas', %s)",
+            (user_id, saldo_inicial, f"migracao-legado:{user_id}")
+        )
+        cursor.execute("UPDATE creditos_jogadores SET saldo = 0, atualizado_em = NOW() WHERE user_id = %s", (user_id,))
+
+
+def movimentar_creditos_cursor(cursor, user_id: int, quantidade: int, tipo: str, motivo: str, referencia: str = None):
+    garantir_carteira_cursor(cursor, user_id)
+    cursor.execute("SELECT saldo FROM economia_carteiras WHERE user_id = %s FOR UPDATE", (user_id,))
+    saldo = int(cursor.fetchone()[0])
+    novo = saldo + int(quantidade)
+    if novo < 0:
+        raise ValueError("Saldo insuficiente")
+
+    ganho = max(int(quantidade), 0)
+    gasto = max(-int(quantidade), 0)
+    cursor.execute(
+        "UPDATE economia_carteiras SET saldo=%s, total_ganho=total_ganho+%s, "
+        "total_gasto=total_gasto+%s, atualizado_em=NOW() WHERE user_id=%s",
+        (novo, ganho, gasto, user_id)
+    )
+    cursor.execute(
+        "INSERT INTO economia_movimentos (user_id, quantidade, tipo, motivo, referencia) "
+        "VALUES (%s,%s,%s,%s,%s)",
+        (user_id, quantidade, tipo, motivo, referencia)
+    )
+    return novo
+
+
+def reverter_movimento_referencia_cursor(cursor, user_id: int, referencia_original: str, motivo: str):
+    cursor.execute(
+        "SELECT quantidade FROM economia_movimentos WHERE user_id=%s AND referencia=%s",
+        (user_id, referencia_original)
+    )
+    row = cursor.fetchone()
+    if not row:
+        return 0
+    ref_reversao = f"reversao:{referencia_original}"
+    cursor.execute("SELECT 1 FROM economia_movimentos WHERE user_id=%s AND referencia=%s", (user_id, ref_reversao))
+    if cursor.fetchone():
+        return 0
+    valor = -int(row[0])
+    movimentar_creditos_cursor(cursor, user_id, valor, "reversao", motivo, ref_reversao)
+    return valor
+
+
+def obter_saldo_economia_sync(user_id: int) -> int:
+    conn = get_connection()
+    if not conn:
+        return 0
+    cur = conn.cursor()
+    try:
+        garantir_carteira_cursor(cur, user_id)
+        cur.execute("SELECT saldo FROM economia_carteiras WHERE user_id=%s", (user_id,))
+        saldo = int(cur.fetchone()[0])
+        conn.commit()
+        return saldo
+    except Exception:
+        conn.rollback()
+        return 0
+    finally:
+        cur.close(); conn.close()
+
+
+def recompensar_presenca_cursor(cursor, user_id: int, referencia: str) -> int:
+    cursor.execute("SELECT 1 FROM economia_movimentos WHERE user_id=%s AND referencia=%s", (user_id, referencia))
+    if cursor.fetchone():
+        return 0
+    movimentar_creditos_cursor(cursor, user_id, CREDITOS_POR_PRESENCA, "presenca", "Recompensa por presença", referencia)
+    return CREDITOS_POR_PRESENCA
+
+
+def recompensar_teamwins_cursor(cursor, user_id: int, quantidade: int, motivo: str) -> int:
+    quantidade = max(int(quantidade), 0)
+    if quantidade == 0:
+        return 0
+    hoje = datetime.now(timezone.utc).date()
+    total_creditado = 0
+    for i in range(quantidade):
+        ref = f"teamwin:{user_id}:{datetime.now(timezone.utc).timestamp()}:{i}:{random.randint(1000,9999)}"
+        cursor.execute(
+            "INSERT INTO economia_teamwins_eventos (user_id, quantidade, dia, referencia) VALUES (%s,1,%s,%s)",
+            (user_id, hoje, ref)
+        )
+        movimentar_creditos_cursor(cursor, user_id, CREDITOS_POR_TEAMWIN, "teamwin", motivo, ref)
+        total_creditado += CREDITOS_POR_TEAMWIN
+
+        cursor.execute("SELECT COALESCE(SUM(quantidade),0) FROM economia_teamwins_eventos WHERE user_id=%s AND dia=%s", (user_id, hoje))
+        total_dia = int(cursor.fetchone()[0])
+        for marco, bonus in BONUS_TEAMWINS_DIARIO.items():
+            if total_dia >= marco:
+                cursor.execute(
+                    "INSERT INTO economia_bonus_diarios (user_id,dia,marco,valor) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING valor",
+                    (user_id, hoje, marco, bonus)
+                )
+                ganhou = cursor.fetchone()
+                if ganhou:
+                    movimentar_creditos_cursor(
+                        cursor, user_id, bonus, "bonus_teamwins_diario",
+                        f"Bónus diário por atingir {marco} Team Wins", f"bonus-team:{user_id}:{hoje}:{marco}"
+                    )
+                    total_creditado += bonus
+    return total_creditado
+
+
+def remover_teamwins_economia_cursor(cursor, user_id: int, quantidade: int, motivo: str):
+    quantidade = max(int(quantidade), 0)
+    for _ in range(quantidade):
+        cursor.execute(
+            "SELECT id, referencia, dia FROM economia_teamwins_eventos WHERE user_id=%s ORDER BY criado_em DESC LIMIT 1 FOR UPDATE",
+            (user_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            break
+        event_id, referencia, dia = row
+        reverter_movimento_referencia_cursor(cursor, user_id, referencia, motivo)
+        cursor.execute("DELETE FROM economia_teamwins_eventos WHERE id=%s", (event_id,))
+        cursor.execute("SELECT COALESCE(SUM(quantidade),0) FROM economia_teamwins_eventos WHERE user_id=%s AND dia=%s", (user_id, dia))
+        restante = int(cursor.fetchone()[0])
+        for marco, _bonus in BONUS_TEAMWINS_DIARIO.items():
+            if restante < marco:
+                ref_bonus = f"bonus-team:{user_id}:{dia}:{marco}"
+                cursor.execute("SELECT 1 FROM economia_bonus_diarios WHERE user_id=%s AND dia=%s AND marco=%s", (user_id, dia, marco))
+                if cursor.fetchone():
+                    reverter_movimento_referencia_cursor(cursor, user_id, ref_bonus, f"Bónus removido após correção de Team Wins ({marco})")
+                    cursor.execute("DELETE FROM economia_bonus_diarios WHERE user_id=%s AND dia=%s AND marco=%s", (user_id, dia, marco))
+
+
+def criar_embed_carteira_publico():
+    embed = discord.Embed(
+        title="💰 Carteira do Jogador",
+        description=(
+            "Consulta o teu saldo, explora a loja física e acompanha os teus pedidos.\n\n"
+            f"✅ Presença: **+{CREDITOS_POR_PRESENCA} créditos**\n"
+            f"🏆 Team Win: **+{CREDITOS_POR_TEAMWIN} créditos**\n"
+            f"🎁 Entrada gratuita: **{PRECO_ENTRADA_GRATUITA} créditos**"
+        ),
+        color=discord.Color.gold(),
+        timestamp=discord.utils.utcnow()
+    )
+    embed.set_footer(text="As consultas e compras são privadas para cada jogador.")
+    return embed
+
+
+def criar_embed_saldo_jogador(user_id: int):
+    conn = get_connection()
+    if not conn:
+        return None
+    cur = conn.cursor()
+    try:
+        garantir_carteira_cursor(cur, user_id)
+        cur.execute("SELECT saldo,total_ganho,total_gasto FROM economia_carteiras WHERE user_id=%s", (user_id,))
+        saldo, ganho, gasto = map(int, cur.fetchone())
+        cur.execute("SELECT pontos FROM pontos WHERE user_id=%s", (user_id,))
+        r=cur.fetchone(); presencas=int(r[0]) if r else 0
+        cur.execute("SELECT pontos FROM pontos_team WHERE user_id=%s", (user_id,))
+        r=cur.fetchone(); teamwins=int(r[0]) if r else 0
+        conn.commit()
+    finally:
+        cur.close(); conn.close()
+    embed=discord.Embed(title="💰 A Minha Carteira", color=discord.Color.gold(), timestamp=discord.utils.utcnow())
+    embed.add_field(name="🪙 Saldo", value=f"**{saldo:,} créditos**".replace(',', '.'), inline=False)
+    embed.add_field(name="📈 Total ganho", value=f"{ganho:,}".replace(',', '.'), inline=True)
+    embed.add_field(name="📉 Total gasto", value=f"{gasto:,}".replace(',', '.'), inline=True)
+    embed.add_field(name="✅ Presenças", value=str(presencas), inline=True)
+    embed.add_field(name="🏆 Team Wins", value=str(teamwins), inline=True)
+    return embed
+
+
+def listar_produtos_loja_sync():
+    conn=get_connection()
+    if not conn: return []
+    cur=conn.cursor()
+    try:
+        cur.execute("SELECT id,nome,descricao,preco,categoria,stock,imagem_url FROM loja_produtos WHERE ativo=TRUE AND (stock IS NULL OR stock>0) ORDER BY categoria,nome")
+        return cur.fetchall()
+    finally:
+        cur.close(); conn.close()
+
+
+def criar_embed_produto(row):
+    produto_id,nome,descricao,preco,categoria,stock,imagem=row
+    embed=discord.Embed(title=f"🛒 {nome}", description=descricao or "Sem descrição.", color=discord.Color.blurple())
+    embed.add_field(name="Preço", value=f"🪙 **{preco:,} créditos**".replace(',', '.'), inline=True)
+    embed.add_field(name="Categoria", value=categoria, inline=True)
+    embed.add_field(name="Stock", value="Ilimitado" if stock is None else str(stock), inline=True)
+    if imagem: embed.set_image(url=imagem)
+    embed.set_footer(text=f"Produto #{produto_id}")
+    return embed
+
+
+class ComprarProdutoView(discord.ui.View):
+    def __init__(self, produto_id:int, user_id:int):
+        super().__init__(timeout=180); self.produto_id=produto_id; self.user_id=user_id
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Esta compra pertence a outro jogador.", ephemeral=True); return False
+        return True
+
+    @discord.ui.button(label="Confirmar compra", emoji="✅", style=discord.ButtonStyle.success)
+    async def comprar(self, interaction, button):
+        conn=get_connection()
+        if not conn: return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
+        cur=conn.cursor()
+        try:
+            cur.execute("SELECT nome,preco,stock,ativo FROM loja_produtos WHERE id=%s FOR UPDATE", (self.produto_id,))
+            row=cur.fetchone()
+            if not row or not row[3]:
+                conn.rollback(); return await interaction.response.send_message("⚠️ Produto indisponível.", ephemeral=True)
+            nome,preco,stock,_=row
+            if stock is not None and stock < 1:
+                conn.rollback(); return await interaction.response.send_message("⚠️ Produto sem stock.", ephemeral=True)
+            garantir_carteira_cursor(cur, self.user_id)
+            cur.execute("SELECT saldo FROM economia_carteiras WHERE user_id=%s FOR UPDATE", (self.user_id,))
+            saldo=int(cur.fetchone()[0])
+            if saldo < preco:
+                conn.rollback(); return await interaction.response.send_message(f"⚠️ Saldo insuficiente. Precisas de **{preco}** créditos.", ephemeral=True)
+            movimentar_creditos_cursor(cur,self.user_id,-preco,"compra",f"Compra de {nome}",f"compra:{self.user_id}:{self.produto_id}:{datetime.now(timezone.utc).timestamp()}")
+            if stock is not None:
+                cur.execute("UPDATE loja_produtos SET stock=stock-1, atualizado_em=NOW() WHERE id=%s", (self.produto_id,))
+            cur.execute("INSERT INTO loja_pedidos (user_id,produto_id,produto_nome,preco_total) VALUES (%s,%s,%s,%s) RETURNING id", (self.user_id,self.produto_id,nome,preco))
+            pedido_id=cur.fetchone()[0]
+            conn.commit()
+        except Exception as e:
+            conn.rollback(); print(f"Erro compra loja: {e}"); return await interaction.response.send_message("⚠️ Não foi possível concluir a compra.", ephemeral=True)
+        finally:
+            cur.close(); conn.close()
+        button.disabled=True
+        await interaction.response.edit_message(view=self)
+        try: await interaction.user.send(f"✅ Compra concluída: **{nome}**. Pedido **#{pedido_id}** aguarda entrega pela staff.")
+        except Exception: pass
+        await interaction.followup.send(f"✅ Compra concluída. Pedido **#{pedido_id}** criado.", ephemeral=True)
+
+
+class SelecionarProduto(discord.ui.Select):
+    def __init__(self, produtos):
+        opts=[discord.SelectOption(label=p[1][:100], value=str(p[0]), description=f"{p[4]} · {p[3]} créditos"[:100]) for p in produtos[:25]]
+        super().__init__(placeholder="Seleciona um produto", options=opts)
+    async def callback(self, interaction):
+        view=self.view
+        if interaction.user.id != view.user_id: return await interaction.response.send_message("❌ Esta loja pertence a outro jogador.", ephemeral=True)
+        pid=int(self.values[0]); row=next((p for p in view.produtos if p[0]==pid),None)
+        if not row: return await interaction.response.send_message("⚠️ Produto indisponível.", ephemeral=True)
+        await interaction.response.send_message(embed=criar_embed_produto(row), view=ComprarProdutoView(pid,interaction.user.id), ephemeral=True)
+
+
+class LojaJogadorView(discord.ui.View):
+    def __init__(self,user_id:int):
+        super().__init__(timeout=300); self.user_id=user_id; self.produtos=listar_produtos_loja_sync()
+        if self.produtos: self.add_item(SelecionarProduto(self.produtos))
+
+
+
+class EscolhaCancelamentoValidadoView(discord.ui.View):
+    def __init__(self, inscricao_id, message_id, user_id, nome_jogador, inscrito_por, thread_id):
+        super().__init__(timeout=180)
+        self.inscricao_id=inscricao_id; self.message_id=message_id; self.user_id=user_id
+        self.nome_jogador=nome_jogador; self.inscrito_por=inscrito_por; self.thread_id=thread_id
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Esta decisão pertence ao jogador inscrito.", ephemeral=True)
+            return False
+        return True
+
+    async def _cancelar(self, interaction, tipo):
+        conn=get_connection()
+        if not conn: return await interaction.response.send_message(DB_ERROR_MSG,ephemeral=True)
+        cur=conn.cursor()
+        try:
+            cur.execute("SELECT estado,metodo_pagamento FROM inscricoes_jogos WHERE id=%s FOR UPDATE",(self.inscricao_id,))
+            row=cur.fetchone()
+            if not row or row[0] != 'pago':
+                conn.rollback(); return await interaction.response.send_message("⚠️ A inscrição já não está validada ou já foi cancelada.",ephemeral=True)
+            cur.execute("UPDATE inscricoes_jogos SET estado='cancelado' WHERE id=%s",(self.inscricao_id,))
+            if row[1] == 'economia':
+                movimentar_creditos_cursor(cur,self.user_id,PRECO_ENTRADA_GRATUITA,'devolucao_inscricao','Créditos devolvidos pelo cancelamento',f'devolucao-inscricao:{self.inscricao_id}')
+                tipo='creditos'
+            elif tipo == 'creditos':
+                movimentar_creditos_cursor(cur,self.user_id,CREDITOS_CANCELAMENTO_VALIDADO,'conversao_cancelamento','Inscrição validada convertida em créditos',f'conversao-inscricao:{self.inscricao_id}')
+            cur.execute("INSERT INTO pedidos_reembolso_inscricao (inscricao_id,user_id,tipo,estado,valor_creditos) VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",(
+                self.inscricao_id,self.user_id,tipo,'processado' if tipo=='creditos' else 'pendente',CREDITOS_CANCELAMENTO_VALIDADO if tipo=='creditos' else 0
+            ))
+            conn.commit()
+        except Exception as e:
+            conn.rollback(); print(f"Erro cancelamento validado: {e}"); return await interaction.response.send_message("⚠️ Não foi possível cancelar a inscrição.",ephemeral=True)
+        finally: cur.close(); conn.close()
+        thread=bot.get_channel(self.thread_id)
+        if thread:
+            try:
+                msg=await thread.fetch_message(self.message_id)
+                membro=thread.guild.get_member(self.user_id)
+                embed=await criar_embed_inscricao_cancelada(thread.guild,thread.name,self.nome_jogador,f'<@{self.inscrito_por}>',interaction.user.mention,membro)
+                await msg.edit(embed=embed,view=None)
+                await atualizar_embed_estado(thread)
+            except Exception: pass
+        for item in self.children: item.disabled=True
+        await interaction.response.edit_message(view=self)
+        texto=(f"✅ Inscrição cancelada e **{CREDITOS_CANCELAMENTO_VALIDADO} créditos** adicionados à carteira." if tipo=='creditos'
+               else "✅ Inscrição cancelada. O pedido de devolução ficou pendente para a staff.")
+        await interaction.followup.send(texto,ephemeral=True)
+
+    @discord.ui.button(label="Pedir Devolução",emoji="💶",style=discord.ButtonStyle.primary)
+    async def devolucao(self,interaction,button): await self._cancelar(interaction,'devolucao')
+
+    @discord.ui.button(label="Converter em Créditos",emoji="🪙",style=discord.ButtonStyle.success)
+    async def creditos(self,interaction,button): await self._cancelar(interaction,'creditos')
+
+    @discord.ui.button(label="Voltar",emoji="❌",style=discord.ButtonStyle.secondary)
+    async def voltar(self,interaction,button):
+        for item in self.children: item.disabled=True
+        await interaction.response.edit_message(content="Cancelamento interrompido.",embed=None,view=self)
+
+
+class PainelCarteiraView(discord.ui.View):
+    def __init__(self): super().__init__(timeout=None)
+
+    @discord.ui.button(label="Carteira", emoji="💰", style=discord.ButtonStyle.primary, custom_id="carteira:saldo")
+    async def carteira(self, interaction, button):
+        embed=criar_embed_saldo_jogador(interaction.user.id)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Loja", emoji="🛒", style=discord.ButtonStyle.success, custom_id="carteira:loja")
+    async def loja(self, interaction, button):
+        view=LojaJogadorView(interaction.user.id)
+        embed=discord.Embed(title="🛒 Loja", description="Seleciona um produto físico para ver os detalhes e comprar.", color=discord.Color.blurple())
+        if not view.produtos: embed.description="A loja ainda não tem produtos disponíveis."
+        await interaction.response.send_message(embed=embed, view=view if view.produtos else None, ephemeral=True)
+
+    @discord.ui.button(label="Os Meus Pedidos", emoji="📦", style=discord.ButtonStyle.secondary, custom_id="carteira:pedidos")
+    async def pedidos(self, interaction, button):
+        conn=get_connection(); cur=conn.cursor()
+        try:
+            cur.execute("SELECT id,produto_nome,preco_total,estado,criado_em FROM loja_pedidos WHERE user_id=%s ORDER BY id DESC LIMIT 15", (interaction.user.id,))
+            rows=cur.fetchall()
+        finally: cur.close(); conn.close()
+        desc="\n".join(f"**#{r[0]}** · {r[1]} · {r[2]} créditos · **{r[3]}**" for r in rows) or "Ainda não tens pedidos."
+        await interaction.response.send_message(embed=discord.Embed(title="📦 Os Meus Pedidos",description=desc,color=discord.Color.blurple()),ephemeral=True)
+
+    @discord.ui.button(label="Histórico", emoji="📜", style=discord.ButtonStyle.secondary, custom_id="carteira:historico")
+    async def historico(self, interaction, button):
+        conn=get_connection(); cur=conn.cursor()
+        try:
+            garantir_carteira_cursor(cur,interaction.user.id)
+            cur.execute("SELECT quantidade,motivo,criado_em FROM economia_movimentos WHERE user_id=%s ORDER BY id DESC LIMIT 15",(interaction.user.id,))
+            rows=cur.fetchall(); conn.commit()
+        finally: cur.close(); conn.close()
+        desc="\n".join(f"{'+' if q>0 else ''}{q} · {m}" for q,m,_ in rows) or "Sem movimentos."
+        await interaction.response.send_message(embed=discord.Embed(title="📜 Histórico",description=desc,color=discord.Color.blurple()),ephemeral=True)
+
+
+class AdicionarProdutoModal(discord.ui.Modal,title="Adicionar item à loja"):
+    nome=discord.ui.TextInput(label="Nome",max_length=100)
+    descricao=discord.ui.TextInput(label="Descrição",style=discord.TextStyle.paragraph,max_length=1000,required=False)
+    preco=discord.ui.TextInput(label="Preço em créditos",placeholder="Ex.: 1500")
+    categoria=discord.ui.TextInput(label="Categoria",placeholder="Merch",required=False,max_length=50)
+    stock=discord.ui.TextInput(label="Stock",placeholder="Vazio = ilimitado",required=False,max_length=10)
+    async def on_submit(self,interaction):
+        try: preco=int(str(self.preco)); stock=int(str(self.stock)) if str(self.stock).strip() else None
+        except ValueError: return await interaction.response.send_message("⚠️ Preço e stock têm de ser números.",ephemeral=True)
+        if preco<0 or (stock is not None and stock<0): return await interaction.response.send_message("⚠️ Valores inválidos.",ephemeral=True)
+        conn=get_connection(); cur=conn.cursor()
+        try:
+            cur.execute("INSERT INTO loja_produtos (nome,descricao,preco,categoria,stock,criado_por) VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",(str(self.nome).strip(),str(self.descricao).strip(),preco,str(self.categoria).strip() or 'Merch',stock,interaction.user.id))
+            pid=cur.fetchone()[0]; conn.commit()
+        except Exception as e:
+            conn.rollback(); print(e); return await interaction.response.send_message("⚠️ Não foi possível criar o item. Confirma se o nome já existe.",ephemeral=True)
+        finally: cur.close(); conn.close()
+        await interaction.response.send_message(f"✅ Item criado com ID **#{pid}**.",ephemeral=True)
+
+
+class PedidoLojaStaffView(discord.ui.View):
+    def __init__(self): super().__init__(timeout=None)
+
+
+async def obter_canal_carteira():
+    if CARTEIRA_PANEL_CHANNEL_ID:
+        canal=bot.get_channel(CARTEIRA_PANEL_CHANNEL_ID)
+        if canal is None:
+            try: canal=await bot.fetch_channel(CARTEIRA_PANEL_CHANNEL_ID)
+            except Exception: canal=None
+        return canal
+    for guild in bot.guilds:
+        canal=discord.utils.get(guild.text_channels,name=CARTEIRA_PANEL_CHANNEL_NAME)
+        if canal: return canal
+    return None
+
+
+async def garantir_painel_carteira_no_fundo(force_repost=False):
+    async with CARTEIRA_PANEL_LOCK:
+        canal=await obter_canal_carteira()
+        if canal is None: return None
+        conn=get_connection(); cur=conn.cursor(); old_id=None
+        try:
+            cur.execute("SELECT message_id FROM painel_carteira_config WHERE id=1")
+            row=cur.fetchone(); old_id=row[0] if row else None
+        finally: cur.close(); conn.close()
+        if old_id and force_repost:
+            try: await (await canal.fetch_message(old_id)).delete()
+            except Exception: pass
+            old_id=None
+        if old_id:
+            try:
+                msg=await canal.fetch_message(old_id)
+                await msg.edit(embed=criar_embed_carteira_publico(),view=PainelCarteiraView())
+                return msg
+            except Exception: pass
+        msg=await canal.send(embed=criar_embed_carteira_publico(),view=PainelCarteiraView())
+        conn=get_connection(); cur=conn.cursor()
+        try:
+            cur.execute("INSERT INTO painel_carteira_config (id,channel_id,message_id) VALUES (1,%s,%s) ON CONFLICT(id) DO UPDATE SET channel_id=EXCLUDED.channel_id,message_id=EXCLUDED.message_id",(canal.id,msg.id)); conn.commit()
+        finally: cur.close(); conn.close()
+        return msg
+
+
+@bot.group(name="painel_carteira", aliases=["painelcarteira"], invoke_without_command=True)
+@commands.has_permissions(administrator=True)
+async def painel_carteira_cmd(ctx):
+    msg=await garantir_painel_carteira_no_fundo(force_repost=True)
+    if msg: await ctx.send(f"✅ Painel da carteira criado em {msg.channel.mention}.",delete_after=10)
+    else: await ctx.send(f"⚠️ Não encontrei a sala **#{CARTEIRA_PANEL_CHANNEL_NAME}**. Define CARTEIRA_PANEL_CHANNEL_ID ou confirma o nome.")
+
+
+@bot.command(name="adicionaritem")
+@commands.has_permissions(administrator=True)
+async def adicionar_item_loja(ctx):
+    # Comandos de prefixo não conseguem abrir modal; publica um botão temporário para a staff.
+    class AbrirModal(discord.ui.View):
+        def __init__(self): super().__init__(timeout=120)
+        @discord.ui.button(label="Adicionar Item",emoji="➕",style=discord.ButtonStyle.success)
+        async def abrir(self,interaction,button):
+            if not interaction.user.guild_permissions.administrator:
+                return await interaction.response.send_message("❌ Apenas staff.",ephemeral=True)
+            await interaction.response.send_modal(AdicionarProdutoModal())
+    await ctx.send("🛠️ Gestão da Loja",view=AbrirModal(),delete_after=120)
+
+
+@bot.command(name="pedidosloja")
+@commands.has_permissions(administrator=True)
+async def pedidos_loja_admin(ctx):
+    conn=get_connection(); cur=conn.cursor()
+    try:
+        cur.execute("SELECT id,user_id,produto_nome,preco_total,estado FROM loja_pedidos ORDER BY id DESC LIMIT 25")
+        rows=cur.fetchall()
+    finally: cur.close(); conn.close()
+    desc="\n".join(f"**#{i}** · <@{u}> · {n} · {p} · **{e}**" for i,u,n,p,e in rows) or "Sem pedidos."
+    await ctx.send(embed=discord.Embed(title="📦 Pedidos da Loja",description=desc,color=discord.Color.blurple()))
+
+
+@bot.command(name="entregarpedido")
+@commands.has_permissions(administrator=True)
+async def entregar_pedido(ctx,pedido_id:int):
+    conn=get_connection(); cur=conn.cursor()
+    try:
+        cur.execute("UPDATE loja_pedidos SET estado='entregue',processado_por=%s,processado_em=NOW() WHERE id=%s AND estado='pendente' RETURNING user_id,produto_nome",(ctx.author.id,pedido_id))
+        row=cur.fetchone()
+        if not row: conn.rollback(); return await ctx.send("⚠️ Pedido não encontrado ou já processado.")
+        conn.commit()
+    finally: cur.close(); conn.close()
+    user_id,nome=row
+    try: await (await bot.fetch_user(user_id)).send(f"✅ O pedido **#{pedido_id} — {nome}** foi marcado como entregue.")
+    except Exception: pass
+    await ctx.send(f"✅ Pedido **#{pedido_id}** marcado como entregue.")
+
+
+@bot.command(name="cancelarpedido")
+@commands.has_permissions(administrator=True)
+async def cancelar_pedido(ctx,pedido_id:int,*,motivo:str="Cancelado pela staff"):
+    conn=get_connection(); cur=conn.cursor()
+    try:
+        cur.execute("SELECT user_id,produto_id,produto_nome,preco_total FROM loja_pedidos WHERE id=%s AND estado='pendente' FOR UPDATE",(pedido_id,))
+        row=cur.fetchone()
+        if not row: conn.rollback(); return await ctx.send("⚠️ Pedido não encontrado ou já processado.")
+        user_id,produto_id,nome,preco=row
+        movimentar_creditos_cursor(cur,user_id,preco,"reembolso_loja",f"Reembolso do pedido #{pedido_id}: {motivo}",f"reembolso-pedido:{pedido_id}")
+        if produto_id: cur.execute("UPDATE loja_produtos SET stock=CASE WHEN stock IS NULL THEN NULL ELSE stock+1 END WHERE id=%s",(produto_id,))
+        cur.execute("UPDATE loja_pedidos SET estado='cancelado',processado_por=%s,processado_em=NOW() WHERE id=%s",(ctx.author.id,pedido_id)); conn.commit()
+    finally: cur.close(); conn.close()
+    try: await (await bot.fetch_user(user_id)).send(f"↩️ O pedido **#{pedido_id} — {nome}** foi cancelado e **{preco} créditos** foram devolvidos.")
+    except Exception: pass
+    await ctx.send(f"✅ Pedido cancelado e créditos devolvidos.")
 
 
 bot.run(TOKEN)
