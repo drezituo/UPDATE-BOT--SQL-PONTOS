@@ -8,6 +8,7 @@ import random
 import re
 from html import escape
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from aiohttp import web
 
 # ---------- CONFIG ----------
@@ -47,6 +48,8 @@ LIMITE_PADRAO_INSCRICOES = 25
 EMOJI_CONFIRMACAO = "✅"
 HORAS_PAGAMENTO = 12
 MINUTOS_AVISO = 30
+HORAS_LIMITE_CANCELAMENTO = 24
+FUSO_JOGO = ZoneInfo("Europe/Lisbon")
 
 # ---------- ROLE IDS (TIERS POR PONTOS NORMAIS) ----------
 TIER_1_ROLE_ID = 1458650693316509718
@@ -743,7 +746,7 @@ async def atualizar_embed_estado(channel: discord.Thread):
 
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT inscricoes_abertas, limite, estado_msg_id
+        SELECT inscricoes_abertas, limite, estado_msg_id, inicio_jogo
         FROM jogos_threads
         WHERE thread_id = %s
     """, (channel.id,))
@@ -754,7 +757,7 @@ async def atualizar_embed_estado(channel: discord.Thread):
         conn.close()
         return
 
-    abertas, limite, estado_msg_id = row
+    abertas, limite, estado_msg_id, inicio_jogo = row
 
     cursor.execute("""
         SELECT COUNT(*)
@@ -772,6 +775,19 @@ async def atualizar_embed_estado(channel: discord.Thread):
     embed.add_field(name="🔓 Estado", value="Abertas" if abertas else "Fechadas", inline=True)
     embed.add_field(name="✅ Inscrições ativas", value=str(total), inline=True)
     embed.add_field(name="📉 Vagas restantes", value=str(max(limite - total, 0)), inline=True)
+
+    if inicio_jogo:
+        if inicio_jogo.tzinfo is None:
+            inicio_jogo = inicio_jogo.replace(tzinfo=timezone.utc)
+        limite_cancelamento = inicio_jogo - timedelta(hours=HORAS_LIMITE_CANCELAMENTO)
+        embed.add_field(name="📅 Início do jogo", value=f"<t:{int(inicio_jogo.timestamp())}:F>", inline=False)
+        embed.add_field(
+            name="🚫 Cancelamentos",
+            value=f"Permitidos até <t:{int(limite_cancelamento.timestamp())}:F> (<t:{int(limite_cancelamento.timestamp())}:R>)",
+            inline=False
+        )
+    else:
+        embed.add_field(name="📅 Início do jogo", value="Ainda não definido pela staff.", inline=False)
 
     if estado_msg_id:
         try:
@@ -876,6 +892,16 @@ if conn:
         cursor.execute("""
         ALTER TABLE jogos_threads
         ADD COLUMN IF NOT EXISTS estado_msg_id BIGINT
+        """)
+
+        cursor.execute("""
+        ALTER TABLE jogos_threads
+        ADD COLUMN IF NOT EXISTS inicio_jogo TIMESTAMPTZ
+        """)
+
+        cursor.execute("""
+        ALTER TABLE jogos_threads
+        ADD COLUMN IF NOT EXISTS painel_gestao_msg_id BIGINT
         """)
 
         cursor.execute("""
@@ -2266,8 +2292,29 @@ async def cancelar_inscricao_interaction(interaction: discord.Interaction, numer
 
     inscricao_id, message_id, nome_jogador, user_id, inscrito_por, estado_atual, metodo_pagamento = row
 
-    # Quando o próprio jogador cancela uma inscrição validada, escolhe a compensação.
-    if not is_admin and interaction.user.id == user_id and estado_atual == 'pago':
+    # Jogadores deixam de poder cancelar nas 24 horas anteriores ao jogo.
+    # A staff mantém permissão para cancelar a qualquer momento.
+    if not is_admin:
+        cursor.execute("SELECT inicio_jogo FROM jogos_threads WHERE thread_id = %s", (interaction.channel.id,))
+        inicio_row = cursor.fetchone()
+        inicio_jogo = inicio_row[0] if inicio_row else None
+        if inicio_jogo:
+            if inicio_jogo.tzinfo is None:
+                inicio_jogo = inicio_jogo.replace(tzinfo=timezone.utc)
+            limite_cancelamento = inicio_jogo - timedelta(hours=HORAS_LIMITE_CANCELAMENTO)
+            if utc_now() >= limite_cancelamento:
+                cursor.close()
+                conn.close()
+                return await interaction.response.send_message(
+                    "❌ **O prazo de cancelamento terminou.**\n"
+                    f"Os cancelamentos encerram **{HORAS_LIMITE_CANCELAMENTO} horas antes do jogo**.\n"
+                    f"📅 Início: <t:{int(inicio_jogo.timestamp())}:F>",
+                    ephemeral=True
+                )
+
+    # Quando o próprio jogador cancela a sua inscrição validada, escolhe a compensação.
+    # Isto aplica-se mesmo que o jogador também seja staff/admin.
+    if interaction.user.id == user_id and estado_atual == 'pago':
         cursor.close()
         conn.close()
         embed_cancelar = discord.Embed(
@@ -3817,6 +3864,149 @@ def criar_embed_escolher_modo():
 PAINEL_JOGADORES_MSGS = {}
 
 
+def obter_config_jogo_sync(thread_id: int):
+    conn = get_connection()
+    if not conn:
+        return None
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            SELECT inscricoes_abertas, limite, inicio_jogo
+            FROM jogos_threads
+            WHERE thread_id = %s
+        """, (thread_id,))
+        return cursor.fetchone()
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def criar_embed_painel_gestao_jogo(thread_id: int, total_pagos: int = 0, equipa_a: int = 0, equipa_b: int = 0):
+    config = obter_config_jogo_sync(thread_id)
+    abertas, limite, inicio_jogo = config if config else (False, LIMITE_PADRAO_INSCRICOES, None)
+    embed = discord.Embed(
+        title="🎮 Painel de Gestão do Jogo",
+        description="Utiliza os botões abaixo para configurar e gerir este jogo.",
+        color=discord.Color.dark_teal(),
+        timestamp=discord.utils.utcnow()
+    )
+    embed.add_field(name="🔓 Inscrições", value="Abertas" if abertas else "Fechadas", inline=True)
+    embed.add_field(name="👥 Limite", value=str(limite), inline=True)
+    embed.add_field(name="✅ Pagos", value=str(total_pagos), inline=True)
+    embed.add_field(name="🔵 Equipa A", value=str(equipa_a), inline=True)
+    embed.add_field(name="🔴 Equipa B", value=str(equipa_b), inline=True)
+    if inicio_jogo:
+        if inicio_jogo.tzinfo is None:
+            inicio_jogo = inicio_jogo.replace(tzinfo=timezone.utc)
+        limite_cancelamento = inicio_jogo - timedelta(hours=HORAS_LIMITE_CANCELAMENTO)
+        embed.add_field(name="📅 Início", value=f"<t:{int(inicio_jogo.timestamp())}:F>", inline=False)
+        embed.add_field(name="🚫 Cancelamentos até", value=f"<t:{int(limite_cancelamento.timestamp())}:F>", inline=False)
+    else:
+        embed.add_field(name="📅 Início", value="Não definido", inline=False)
+    embed.set_footer(text="Apenas a staff pode utilizar este painel")
+    return embed
+
+
+async def atualizar_mensagem_painel_jogo(interaction: discord.Interaction, thread_id: int, message_id: int = None):
+    conn = get_connection()
+    if not conn:
+        return
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT COUNT(*) FROM inscricoes_jogos WHERE thread_id = %s AND estado = 'pago'", (thread_id,))
+        total = cursor.fetchone()[0]
+        cursor.execute("""
+            SELECT equipa_jogo, COUNT(*) FROM inscricoes_jogos
+            WHERE thread_id = %s AND estado = 'pago'
+            GROUP BY equipa_jogo
+        """, (thread_id,))
+        counts = {r[0]: r[1] for r in cursor.fetchall()}
+    finally:
+        cursor.close(); conn.close()
+    embed = criar_embed_painel_gestao_jogo(thread_id, total, counts.get('A', 0), counts.get('B', 0))
+    try:
+        mensagem = interaction.message
+        if mensagem is None and message_id is not None:
+            mensagem = await interaction.channel.fetch_message(message_id)
+        if mensagem is not None:
+            await mensagem.edit(embed=embed, view=PainelJogoView(thread_id))
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        pass
+
+
+class DefinirDataHoraJogoModal(discord.ui.Modal, title="Definir data e hora do jogo"):
+    data = discord.ui.TextInput(label="Data", placeholder="Exemplo: 15/08/2026", max_length=10)
+    hora = discord.ui.TextInput(label="Hora", placeholder="Exemplo: 20:30", max_length=5)
+
+    def __init__(self, thread_id: int, panel_message_id: int = None):
+        super().__init__()
+        self.thread_id = thread_id
+        self.panel_message_id = panel_message_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            local_dt = datetime.strptime(f"{self.data.value} {self.hora.value}", "%d/%m/%Y %H:%M").replace(tzinfo=FUSO_JOGO)
+            inicio_utc = local_dt.astimezone(timezone.utc)
+        except ValueError:
+            return await interaction.response.send_message("⚠️ Data ou hora inválida. Usa `DD/MM/AAAA` e `HH:MM`.", ephemeral=True)
+        if inicio_utc <= utc_now():
+            return await interaction.response.send_message("⚠️ A data do jogo tem de ser futura.", ephemeral=True)
+        conn = get_connection()
+        if not conn:
+            return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                INSERT INTO jogos_threads (thread_id, thread_name, inscricoes_abertas, limite, criado_por, inicio_jogo)
+                VALUES (%s, %s, FALSE, %s, %s, %s)
+                ON CONFLICT (thread_id) DO UPDATE SET inicio_jogo = EXCLUDED.inicio_jogo, thread_name = EXCLUDED.thread_name
+            """, (self.thread_id, interaction.channel.name, LIMITE_PADRAO_INSCRICOES, interaction.user.id, inicio_utc))
+            conn.commit()
+        except Exception as e:
+            conn.rollback(); print(f"Erro ao definir horário: {e}")
+            return await interaction.response.send_message("⚠️ Não foi possível guardar o horário.", ephemeral=True)
+        finally:
+            cursor.close(); conn.close()
+        await interaction.response.send_message(
+            f"✅ Jogo marcado para <t:{int(inicio_utc.timestamp())}:F>. Cancelamentos encerram 24 horas antes.", ephemeral=True
+        )
+        await atualizar_embed_estado(interaction.channel)
+        await atualizar_mensagem_painel_jogo(interaction, self.thread_id, self.panel_message_id)
+
+
+class AlterarLimiteJogoModal(discord.ui.Modal, title="Alterar limite de inscrições"):
+    limite = discord.ui.TextInput(label="Número máximo de jogadores", placeholder="Exemplo: 25", max_length=4)
+
+    def __init__(self, thread_id: int, panel_message_id: int = None):
+        super().__init__()
+        self.thread_id = thread_id
+        self.panel_message_id = panel_message_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            limite = int(self.limite.value)
+            if limite <= 0 or limite > 9999:
+                raise ValueError
+        except ValueError:
+            return await interaction.response.send_message("⚠️ Indica um limite válido superior a zero.", ephemeral=True)
+        conn = get_connection()
+        if not conn:
+            return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                INSERT INTO jogos_threads (thread_id, thread_name, inscricoes_abertas, limite, criado_por)
+                VALUES (%s, %s, FALSE, %s, %s)
+                ON CONFLICT (thread_id) DO UPDATE SET limite = EXCLUDED.limite, thread_name = EXCLUDED.thread_name
+            """, (self.thread_id, interaction.channel.name, limite, interaction.user.id))
+            conn.commit()
+        finally:
+            cursor.close(); conn.close()
+        await interaction.response.send_message(f"✅ Limite alterado para **{limite} jogadores**.", ephemeral=True)
+        await atualizar_embed_estado(interaction.channel)
+        await atualizar_mensagem_painel_jogo(interaction, self.thread_id, self.panel_message_id)
+
+
 class PainelJogoView(discord.ui.View):
     def __init__(self, thread_id: int):
         super().__init__(timeout=None)
@@ -3827,6 +4017,65 @@ class PainelJogoView(discord.ui.View):
             await interaction.response.send_message("❌ Apenas staff/admin pode usar este painel.", ephemeral=True)
             return False
         return True
+
+    @discord.ui.button(label="Definir data/hora", emoji="📅", style=discord.ButtonStyle.primary, row=2)
+    async def definir_data_hora(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction):
+            return
+        await interaction.response.send_modal(DefinirDataHoraJogoModal(self.thread_id, interaction.message.id if interaction.message else None))
+
+    @discord.ui.button(label="Abrir inscrições", emoji="🔓", style=discord.ButtonStyle.success, row=2)
+    async def abrir_inscricoes_botao(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction):
+            return
+        conn = get_connection()
+        if not conn:
+            return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT inicio_jogo FROM jogos_threads WHERE thread_id = %s", (self.thread_id,))
+            row = cursor.fetchone()
+            if not row or not row[0]:
+                return await interaction.response.send_message("⚠️ Define primeiro a data e hora do jogo.", ephemeral=True)
+            cursor.execute("UPDATE jogos_threads SET inscricoes_abertas = TRUE WHERE thread_id = %s", (self.thread_id,))
+            conn.commit()
+        finally:
+            cursor.close(); conn.close()
+        await interaction.response.send_message("✅ Inscrições abertas.", ephemeral=True)
+        await atualizar_embed_estado(interaction.channel)
+        await atualizar_mensagem_painel_jogo(interaction, self.thread_id)
+
+    @discord.ui.button(label="Fechar inscrições", emoji="🔒", style=discord.ButtonStyle.danger, row=2)
+    async def fechar_inscricoes_botao(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction):
+            return
+        conn = get_connection()
+        if not conn:
+            return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
+        cursor = conn.cursor()
+        try:
+            cursor.execute("UPDATE jogos_threads SET inscricoes_abertas = FALSE WHERE thread_id = %s", (self.thread_id,))
+            conn.commit()
+        finally:
+            cursor.close(); conn.close()
+        await interaction.response.send_message("🔒 Inscrições fechadas.", ephemeral=True)
+        await atualizar_embed_estado(interaction.channel)
+        await atualizar_mensagem_painel_jogo(interaction, self.thread_id)
+
+    @discord.ui.button(label="Alterar limite", emoji="👥", style=discord.ButtonStyle.secondary, row=3)
+    async def alterar_limite(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction):
+            return
+        await interaction.response.send_modal(AlterarLimiteJogoModal(self.thread_id, interaction.message.id if interaction.message else None))
+
+    @discord.ui.button(label="Atualizar painel", emoji="🔄", style=discord.ButtonStyle.secondary, row=3)
+    async def atualizar_painel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+        await atualizar_embed_estado(interaction.channel)
+        await atualizar_mensagem_painel_jogo(interaction, self.thread_id)
+        await interaction.followup.send("✅ Painéis atualizados.", ephemeral=True)
 
     def _obter_inscricoes_pagas(self):
         conn = get_connection()
@@ -3963,9 +4212,6 @@ async def painel_jogo(ctx):
     cursor.close()
     conn.close()
 
-    if not inscricoes:
-        return await ctx.send("⚠️ Ainda não há jogadores pagos para gerir nesta thread.", delete_after=10)
-
     equipa_a = 0
     equipa_b = 0
 
@@ -3987,14 +4233,18 @@ async def painel_jogo(ctx):
         cursor.close()
         conn.close()
 
-    resumo = discord.Embed(
-        title="🎮 Painel de Gestão do Jogo",
-        description=f"👥 **{len(inscricoes)}** jogadores inscritos",
-        color=discord.Color.dark_teal(),
-        timestamp=discord.utils.utcnow()
-    )
-    resumo.add_field(name="🔵 Equipa A", value=str(equipa_a), inline=True)
-    resumo.add_field(name="🔴 Equipa B", value=str(equipa_b), inline=True)
+    # Garante que existe configuração para a thread, mesmo antes de abrir inscrições.
+    conn = get_connection()
+    if conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO jogos_threads (thread_id, thread_name, inscricoes_abertas, limite, criado_por)
+            VALUES (%s, %s, FALSE, %s, %s)
+            ON CONFLICT (thread_id) DO UPDATE SET thread_name = EXCLUDED.thread_name
+        """, (ctx.channel.id, ctx.channel.name, LIMITE_PADRAO_INSCRICOES, ctx.author.id))
+        conn.commit(); cursor.close(); conn.close()
+
+    resumo = criar_embed_painel_gestao_jogo(ctx.channel.id, len(inscricoes), equipa_a, equipa_b)
     PAINEL_JOGADORES_MSGS.pop(ctx.channel.id, None)
     await ctx.send(embed=resumo, view=PainelJogoView(ctx.channel.id))
 
