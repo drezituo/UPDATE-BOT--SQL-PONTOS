@@ -37,6 +37,8 @@ CREDITOS_POR_TEAMWIN = int(os.getenv("CREDITOS_POR_TEAMWIN", "50"))
 PRECO_ENTRADA_GRATUITA = int(os.getenv("PRECO_ENTRADA_GRATUITA", "1000"))
 CREDITOS_CANCELAMENTO_VALIDADO = int(os.getenv("CREDITOS_CANCELAMENTO_VALIDADO", "1000"))
 BONUS_TEAMWINS_DIARIO = {2: 50, 5: 150, 10: 400}
+PONTOS_POR_OBJETIVO_EQUIPA = int(os.getenv("PONTOS_POR_OBJETIVO_EQUIPA", "10"))
+CREDITOS_POR_OBJETIVO_EQUIPA = int(os.getenv("CREDITOS_POR_OBJETIVO_EQUIPA", "20"))
 
 # ---------- NFC API ----------
 NFC_API_TOKEN = os.getenv("NFC_API_TOKEN", "").strip()
@@ -557,6 +559,160 @@ def calcular_pontos_equipa_sync(equipa_id: int):
     cursor.close()
     conn.close()
     return totais
+
+# ---------- OBJETIVOS DE EQUIPA ----------
+def obter_contexto_objetivo_equipa_cursor(cursor, user_id: int):
+    """Devolve a equipa do jogador e a soma atual de Solo Wins + Team Wins."""
+    cursor.execute("""
+        SELECT e.id, e.nome
+        FROM equipas e
+        LEFT JOIN equipas_membros em ON em.equipa_id = e.id
+        WHERE e.criado_por = %s OR em.user_id = %s
+        ORDER BY CASE WHEN e.criado_por = %s THEN 0 ELSE 1 END
+        LIMIT 1
+    """, (user_id, user_id, user_id))
+    equipa = cursor.fetchone()
+    if not equipa:
+        return None
+
+    equipa_id, equipa_nome = equipa
+    cursor.execute("""
+        SELECT COALESCE(SUM(COALESCE(ps.pontos, 0) + COALESCE(pt.pontos, 0)), 0)
+        FROM (
+            SELECT criado_por AS user_id FROM equipas WHERE id = %s
+            UNION
+            SELECT user_id FROM equipas_membros WHERE equipa_id = %s
+        ) membros
+        LEFT JOIN pontos_solo ps ON ps.user_id = membros.user_id
+        LEFT JOIN pontos_team pt ON pt.user_id = membros.user_id
+    """, (equipa_id, equipa_id))
+    return {
+        "equipa_id": int(equipa_id),
+        "nome": equipa_nome,
+        "total": int(cursor.fetchone()[0] or 0),
+    }
+
+
+def processar_objetivos_equipa_cursor(cursor, equipa_id: int, equipa_nome: str, pontos_antes: int, pontos_depois: int):
+    """Paga todos os múltiplos de 10 ultrapassados, sem duplicações."""
+    pontos_antes = max(int(pontos_antes), 0)
+    pontos_depois = max(int(pontos_depois), 0)
+    if pontos_depois <= pontos_antes:
+        return None
+
+    primeiro = ((pontos_antes // PONTOS_POR_OBJETIVO_EQUIPA) + 1) * PONTOS_POR_OBJETIVO_EQUIPA
+    ultimo = (pontos_depois // PONTOS_POR_OBJETIVO_EQUIPA) * PONTOS_POR_OBJETIVO_EQUIPA
+    if primeiro > ultimo:
+        return None
+
+    cursor.execute("""
+        SELECT user_id FROM (
+            SELECT criado_por AS user_id FROM equipas WHERE id = %s
+            UNION
+            SELECT user_id FROM equipas_membros WHERE equipa_id = %s
+        ) membros
+        ORDER BY user_id
+    """, (equipa_id, equipa_id))
+    membros = [int(row[0]) for row in cursor.fetchall()]
+    if not membros:
+        return None
+
+    marcos = []
+    recompensas = []
+    for marco in range(primeiro, ultimo + 1, PONTOS_POR_OBJETIVO_EQUIPA):
+        cursor.execute("""
+            INSERT INTO objetivos_equipa_marcos (equipa_id, marco, creditos_por_membro)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (equipa_id, marco) DO NOTHING
+            RETURNING marco
+        """, (equipa_id, marco, CREDITOS_POR_OBJETIVO_EQUIPA))
+        if not cursor.fetchone():
+            continue
+
+        pagos = 0
+        for membro_id in membros:
+            referencia = f"objetivo-equipa:{equipa_id}:{marco}:{membro_id}"
+            cursor.execute(
+                "SELECT 1 FROM economia_movimentos WHERE user_id=%s AND referencia=%s",
+                (membro_id, referencia)
+            )
+            if cursor.fetchone():
+                continue
+            saldo = movimentar_creditos_cursor(
+                cursor, membro_id, CREDITOS_POR_OBJETIVO_EQUIPA,
+                "objetivo_equipa",
+                f"Objetivo da equipa {equipa_nome} ({marco} pontos)",
+                referencia
+            )
+            recompensas.append({
+                "user_id": membro_id, "marco": marco,
+                "creditos": CREDITOS_POR_OBJETIVO_EQUIPA, "saldo": saldo
+            })
+            pagos += 1
+
+        cursor.execute("""
+            UPDATE objetivos_equipa_marcos
+            SET membros_recompensados=%s, atribuido_em=NOW()
+            WHERE equipa_id=%s AND marco=%s
+        """, (pagos, equipa_id, marco))
+        marcos.append(marco)
+
+    if not marcos:
+        return None
+    return {
+        "equipa_id": equipa_id, "equipa_nome": equipa_nome,
+        "pontos_antes": pontos_antes, "pontos_depois": pontos_depois,
+        "marcos": marcos, "recompensas": recompensas
+    }
+
+
+async def notificar_objetivos_equipa(guild: discord.Guild, resultado):
+    if not resultado:
+        return
+
+    por_jogador = {}
+    for item in resultado["recompensas"]:
+        dados = por_jogador.setdefault(item["user_id"], {"total": 0, "marcos": [], "saldo": item["saldo"]})
+        dados["total"] += item["creditos"]
+        dados["marcos"].append(item["marco"])
+        dados["saldo"] = item["saldo"]
+
+    enviadas = 0
+    falhas = 0
+    for user_id, dados in por_jogador.items():
+        membro = guild.get_member(user_id) if guild else None
+        if membro is None and guild is not None:
+            try:
+                membro = await guild.fetch_member(user_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                membro = None
+        if membro is None:
+            falhas += 1
+            continue
+        try:
+            marcos_txt = ", ".join(str(m) for m in dados["marcos"])
+            await membro.send(
+                "🏆 **Objetivo de Equipa concluído!**\n\n"
+                f"A equipa **{resultado['equipa_nome']}** atingiu o(s) marco(s) "
+                f"de **{marcos_txt} pontos**.\n\n"
+                f"Recebeste **+{dados['total']} créditos**.\n"
+                f"Saldo atual: **{dados['saldo']} créditos**."
+            )
+            enviadas += 1
+        except (discord.Forbidden, discord.HTTPException):
+            falhas += 1
+
+    await enviar_log_pontos(
+        guild,
+        "🏆 **Objetivo(s) de Equipa concluído(s)**\n"
+        f"Equipa: **{resultado['equipa_nome']}**\n"
+        f"Pontuação: **{resultado['pontos_antes']} → {resultado['pontos_depois']}**\n"
+        f"Marcos: **{', '.join(str(m) for m in resultado['marcos'])} pontos**\n"
+        f"Recompensa: **+{CREDITOS_POR_OBJETIVO_EQUIPA} créditos por membro e por marco**\n"
+        f"Membros recompensados: **{len(por_jogador)}**\n"
+        f"DM enviadas: **{enviadas}** | Falhas: **{falhas}**"
+    )
+
 
 # ---------- CRÉDITOS ----------
 def obter_creditos_sync(user_id: int) -> int:
@@ -1179,6 +1335,48 @@ if conn:
             processado_em TIMESTAMPTZ
         )
         """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS objetivos_equipa_marcos (
+            equipa_id BIGINT NOT NULL REFERENCES equipas(id) ON DELETE CASCADE,
+            marco INTEGER NOT NULL CHECK (marco > 0),
+            creditos_por_membro INTEGER NOT NULL DEFAULT 20 CHECK (creditos_por_membro >= 0),
+            membros_recompensados INTEGER NOT NULL DEFAULT 0 CHECK (membros_recompensados >= 0),
+            atribuido_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (equipa_id, marco)
+        )
+        """)
+
+        # Os marcos que já existiam antes desta atualização ficam marcados como históricos,
+        # sem pagar créditos retroativamente. Só os novos marcos serão recompensados.
+        cursor.execute("""
+        WITH totais AS (
+            SELECT e.id AS equipa_id,
+                   COALESCE(SUM(COALESCE(ps.pontos, 0) + COALESCE(pt.pontos, 0)), 0)::INTEGER AS total
+            FROM equipas e
+            LEFT JOIN LATERAL (
+                SELECT e.criado_por AS user_id
+                UNION
+                SELECT em.user_id FROM equipas_membros em WHERE em.equipa_id = e.id
+            ) membros ON TRUE
+            LEFT JOIN pontos_solo ps ON ps.user_id = membros.user_id
+            LEFT JOIN pontos_team pt ON pt.user_id = membros.user_id
+            GROUP BY e.id
+        )
+        INSERT INTO objetivos_equipa_marcos (equipa_id, marco, creditos_por_membro, membros_recompensados)
+        SELECT t.equipa_id, gs.marco, %s, 0
+        FROM totais t
+        CROSS JOIN LATERAL generate_series(
+            %s, (t.total / %s) * %s, %s
+        ) AS gs(marco)
+        ON CONFLICT (equipa_id, marco) DO NOTHING
+        """, (
+            CREDITOS_POR_OBJETIVO_EQUIPA,
+            PONTOS_POR_OBJETIVO_EQUIPA,
+            PONTOS_POR_OBJETIVO_EQUIPA,
+            PONTOS_POR_OBJETIVO_EQUIPA,
+            PONTOS_POR_OBJETIVO_EQUIPA
+        ))
 
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS painel_carteira_config (
@@ -3202,7 +3400,9 @@ async def adicionar_teamwin_jogador(guild: discord.Guild, user_id: int, motivo: 
         return None
 
     cursor = conn.cursor()
+    resultado_objetivo = None
     try:
+        contexto_equipa = obter_contexto_objetivo_equipa_cursor(cursor, user_id)
         cursor.execute("SELECT pontos FROM pontos_team WHERE user_id = %s", (user_id,))
         row = cursor.fetchone()
         total = (row[0] if row else 0) + 1
@@ -3215,6 +3415,12 @@ async def adicionar_teamwin_jogador(guild: discord.Guild, user_id: int, motivo: 
         novos_creditos = recompensar_teamwins_cursor(
             cursor, user_id, 1, motivo
         )
+        if contexto_equipa:
+            depois = obter_contexto_objetivo_equipa_cursor(cursor, user_id)
+            resultado_objetivo = processar_objetivos_equipa_cursor(
+                cursor, contexto_equipa["equipa_id"], contexto_equipa["nome"],
+                contexto_equipa["total"], depois["total"]
+            )
         conn.commit()
     except Exception:
         conn.rollback()
@@ -3253,6 +3459,7 @@ async def adicionar_teamwin_jogador(guild: discord.Guild, user_id: int, motivo: 
         except (discord.Forbidden, discord.HTTPException):
             pass
 
+    await notificar_objetivos_equipa(guild, resultado_objetivo)
     return total
 
 
@@ -4821,6 +5028,20 @@ async def criar_embed_equipa(guild: discord.Guild, equipa_row):
         ),
         inline=False
     )
+    proximo_objetivo = ((pontos["total"] // PONTOS_POR_OBJETIVO_EQUIPA) + 1) * PONTOS_POR_OBJETIVO_EQUIPA
+    progresso = pontos["total"] % PONTOS_POR_OBJETIVO_EQUIPA
+    preenchidos = int((progresso / PONTOS_POR_OBJETIVO_EQUIPA) * 10)
+    barra = "█" * preenchidos + "░" * (10 - preenchidos)
+    embed.add_field(
+        name="🏆 Próximo Objetivo da Equipa",
+        value=(
+            f"`{barra}` **{progresso}/{PONTOS_POR_OBJETIVO_EQUIPA}**\n"
+            f"🎯 Próximo marco: **{proximo_objetivo} pontos**\n"
+            f"📈 Faltam: **{proximo_objetivo - pontos['total']} pontos**\n"
+            f"🪙 Recompensa: **+{CREDITOS_POR_OBJETIVO_EQUIPA} créditos por membro**"
+        ),
+        inline=False
+    )
     if redes_sociais:
         embed.add_field(name="🔗 Redes sociais", value=redes_sociais[:1024], inline=False)
     embed.set_footer(text=f"{len(membros_ids)} membro(s) na equipa")
@@ -5958,6 +6179,8 @@ async def addsolo(ctx, membro: discord.Member, quantidade: int):
     if not conn:
         return await ctx.send(DB_ERROR_MSG)
     cursor = conn.cursor()
+    resultado_objetivo = None
+    contexto_equipa = obter_contexto_objetivo_equipa_cursor(cursor, membro.id)
 
     cursor.execute("SELECT pontos FROM pontos_solo WHERE user_id = %s", (membro.id,))
     r = cursor.fetchone()
@@ -5969,10 +6192,17 @@ async def addsolo(ctx, membro: discord.Member, quantidade: int):
     else:
         cursor.execute("INSERT INTO pontos_solo VALUES (%s, %s)", (membro.id, total))
 
+    if contexto_equipa:
+        depois = obter_contexto_objetivo_equipa_cursor(cursor, membro.id)
+        resultado_objetivo = processar_objetivos_equipa_cursor(
+            cursor, contexto_equipa["equipa_id"], contexto_equipa["nome"],
+            contexto_equipa["total"], depois["total"]
+        )
     conn.commit()
     cursor.close()
     conn.close()
 
+    await notificar_objetivos_equipa(ctx.guild, resultado_objetivo)
     extra_creditos = ""
     await enviar_log_pontos(
         ctx.guild,
@@ -6072,6 +6302,8 @@ async def addteam(ctx, membro: discord.Member, quantidade: int):
     if not conn:
         return await ctx.send(DB_ERROR_MSG)
     cursor = conn.cursor()
+    resultado_objetivo = None
+    contexto_equipa = obter_contexto_objetivo_equipa_cursor(cursor, membro.id)
 
     cursor.execute("SELECT pontos FROM pontos_team WHERE user_id = %s", (membro.id,))
     r = cursor.fetchone()
@@ -6086,6 +6318,12 @@ async def addteam(ctx, membro: discord.Member, quantidade: int):
     novos_creditos = recompensar_teamwins_cursor(
         cursor, membro.id, quantidade, f"Comando !addteam por {ctx.author.id}"
     )
+    if contexto_equipa:
+        depois = obter_contexto_objetivo_equipa_cursor(cursor, membro.id)
+        resultado_objetivo = processar_objetivos_equipa_cursor(
+            cursor, contexto_equipa["equipa_id"], contexto_equipa["nome"],
+            contexto_equipa["total"], depois["total"]
+        )
     conn.commit()
     cursor.close()
     conn.close()
@@ -6107,6 +6345,8 @@ async def addteam(ctx, membro: discord.Member, quantidade: int):
             )
         except (discord.Forbidden, discord.HTTPException):
             pass
+
+    await notificar_objetivos_equipa(ctx.guild, resultado_objetivo)
 
 
 @bot.command()
