@@ -23,6 +23,7 @@ LINK_TERMO = os.getenv("LINK_TERMO", "https://drive.google.com/file/d/1cgApoLpDJ
 TERMOS_EXTENSOES_PERMITIDAS = {"pdf", "jpg", "jpeg", "png"}
 COMPROVATIVOS_CHANNEL_ID = int(os.getenv("COMPROVATIVOS_CHANNEL_ID", "1530687012850499674"))
 COMPROVATIVOS_EXTENSOES_PERMITIDAS = {"pdf", "jpg", "jpeg", "png"}
+BOT_LOG_CHANNEL_ID = int(os.getenv("BOT_LOG_CHANNEL_ID", "1458654762885972131"))
 
 # ---------- PAINEL PERMANENTE DE EQUIPAS ----------
 EQUIPAS_PANEL_CHANNEL_ID = 1486737352679489598
@@ -97,6 +98,37 @@ async def enviar_log_pontos(guild: discord.Guild, mensagem: str):
         await canal.send(mensagem)
     except (discord.Forbidden, discord.HTTPException):
         pass
+
+
+async def enviar_log_bot(guild: discord.Guild, titulo: str, descricao: str, *, cor=None, campos=None):
+    """Envia um embed para o canal central de logs do bot sem interromper a ação principal."""
+    canal = bot.get_channel(BOT_LOG_CHANNEL_ID)
+    if canal is None and guild is not None:
+        canal = guild.get_channel(BOT_LOG_CHANNEL_ID)
+    if canal is None:
+        try:
+            canal = await bot.fetch_channel(BOT_LOG_CHANNEL_ID)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            canal = None
+    if canal is None:
+        print(f"[LOG BOT] Canal {BOT_LOG_CHANNEL_ID} não encontrado: {titulo}")
+        return False
+
+    embed = discord.Embed(
+        title=titulo,
+        description=descricao,
+        color=cor or discord.Color.blurple(),
+        timestamp=discord.utils.utcnow()
+    )
+    for nome, valor, inline in (campos or []):
+        embed.add_field(name=nome, value=valor, inline=inline)
+    embed.set_footer(text="Log automático do bot")
+    try:
+        await canal.send(embed=embed)
+        return True
+    except (discord.Forbidden, discord.HTTPException) as e:
+        print(f"[LOG BOT] Falha ao enviar log: {e}")
+        return False
 
 
 # ---------- DATABASE ----------
@@ -2587,6 +2619,19 @@ async def cancelar_inscricao_interaction(interaction: discord.Interaction, numer
     await interaction.response.send_message(
         (f"✅ A inscrição de **{nome_jogador}** foi cancelada." + (" 🪙 Os créditos utilizados foram devolvidos." if credito_devolvido else "")),
         ephemeral=True
+    )
+    await enviar_log_bot(
+        interaction.guild,
+        "❌ Inscrição cancelada",
+        "Uma inscrição ativa foi cancelada.",
+        cor=discord.Color.red(),
+        campos=[
+            ("👤 Jogador", f"<@{user_id}>", True),
+            ("🎮 Jogo", interaction.channel.name, True),
+            ("🆔 Inscrição", f"#{inscricao_id}", True),
+            ("🛑 Cancelado por", interaction.user.mention, True),
+            ("🪙 Créditos devolvidos", "Sim" if credito_devolvido else "Não", True),
+        ]
     )
 
     await atualizar_embed_estado(interaction.channel)
@@ -13176,6 +13221,18 @@ class ComprarProdutoView(discord.ui.View):
         await interaction.response.edit_message(view=self)
         try: await interaction.user.send(f"✅ Compra concluída: **{nome}**. Pedido **#{pedido_id}** aguarda entrega pela staff.")
         except Exception: pass
+        await enviar_log_bot(
+            interaction.guild,
+            "🛒 Nova compra na loja",
+            f"Foi criado o pedido **#{pedido_id}**.",
+            cor=discord.Color.green(),
+            campos=[
+                ("👤 Jogador", interaction.user.mention, True),
+                ("📦 Produto", str(nome), True),
+                ("🪙 Valor", f"{preco} créditos", True),
+                ("📌 Estado", "Pendente de entrega", False),
+            ]
+        )
         await interaction.followup.send(f"✅ Compra concluída. Pedido **#{pedido_id}** criado.", ephemeral=True)
 
 
@@ -13243,6 +13300,33 @@ class EscolhaCancelamentoValidadoView(discord.ui.View):
             except Exception: pass
         for item in self.children: item.disabled=True
         await interaction.response.edit_message(view=self)
+        if tipo == 'creditos':
+            await enviar_log_bot(
+                interaction.guild,
+                "🪙 Inscrição cancelada — convertida em créditos",
+                "O jogador cancelou uma inscrição validada e escolheu converter o valor em créditos.",
+                cor=discord.Color.gold(),
+                campos=[
+                    ("👤 Jogador", interaction.user.mention, True),
+                    ("🎮 Jogo", getattr(thread, "name", f"Thread {self.thread_id}"), True),
+                    ("🆔 Inscrição", f"#{self.inscricao_id}", True),
+                    ("💰 Créditos atribuídos", str(CREDITOS_CANCELAMENTO_VALIDADO), True),
+                    ("📌 Estado", "Processado automaticamente", False),
+                ]
+            )
+        else:
+            await enviar_log_bot(
+                interaction.guild,
+                "💶 Novo pedido de devolução",
+                "O jogador cancelou uma inscrição validada e pediu devolução. **A staff deve processar este pedido.**",
+                cor=discord.Color.orange(),
+                campos=[
+                    ("👤 Jogador", interaction.user.mention, True),
+                    ("🎮 Jogo", getattr(thread, "name", f"Thread {self.thread_id}"), True),
+                    ("🆔 Inscrição", f"#{self.inscricao_id}", True),
+                    ("📌 Estado", "⏳ Pendente de processamento", False),
+                ]
+            )
         texto=(f"✅ Inscrição cancelada e **{CREDITOS_CANCELAMENTO_VALIDADO} créditos** adicionados à carteira." if tipo=='creditos'
                else "✅ Inscrição cancelada. O pedido de devolução ficou pendente para a staff.")
         await interaction.followup.send(texto,ephemeral=True)
@@ -13407,6 +13491,17 @@ async def entregar_pedido(ctx,pedido_id:int):
     user_id,nome=row
     try: await (await bot.fetch_user(user_id)).send(f"✅ O pedido **#{pedido_id} — {nome}** foi marcado como entregue.")
     except Exception: pass
+    await enviar_log_bot(
+        ctx.guild,
+        "✅ Pedido da loja entregue",
+        f"O pedido **#{pedido_id}** foi marcado como entregue.",
+        cor=discord.Color.green(),
+        campos=[
+            ("👤 Jogador", f"<@{user_id}>", True),
+            ("📦 Produto", str(nome), True),
+            ("👑 Processado por", ctx.author.mention, True),
+        ]
+    )
     await ctx.send(f"✅ Pedido **#{pedido_id}** marcado como entregue.")
 
 
@@ -13425,6 +13520,19 @@ async def cancelar_pedido(ctx,pedido_id:int,*,motivo:str="Cancelado pela staff")
     finally: cur.close(); conn.close()
     try: await (await bot.fetch_user(user_id)).send(f"↩️ O pedido **#{pedido_id} — {nome}** foi cancelado e **{preco} créditos** foram devolvidos.")
     except Exception: pass
+    await enviar_log_bot(
+        ctx.guild,
+        "↩️ Pedido da loja cancelado",
+        f"O pedido **#{pedido_id}** foi cancelado e os créditos foram devolvidos.",
+        cor=discord.Color.orange(),
+        campos=[
+            ("👤 Jogador", f"<@{user_id}>", True),
+            ("📦 Produto", str(nome), True),
+            ("🪙 Créditos devolvidos", str(preco), True),
+            ("📝 Motivo", motivo, False),
+            ("👑 Processado por", ctx.author.mention, True),
+        ]
+    )
     await ctx.send(f"✅ Pedido cancelado e créditos devolvidos.")
 
 
