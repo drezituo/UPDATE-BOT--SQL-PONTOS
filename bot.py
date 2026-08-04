@@ -23,6 +23,7 @@ LINK_TERMO = os.getenv("LINK_TERMO", "https://drive.google.com/file/d/1cgApoLpDJ
 TERMOS_EXTENSOES_PERMITIDAS = {"pdf", "jpg", "jpeg", "png"}
 COMPROVATIVOS_CHANNEL_ID = int(os.getenv("COMPROVATIVOS_CHANNEL_ID", "1530687012850499674"))
 COMPROVATIVOS_EXTENSOES_PERMITIDAS = {"pdf", "jpg", "jpeg", "png"}
+LOJA_COMPROVATIVOS_EXTENSOES = {"pdf", "jpg", "jpeg", "png"}
 BOT_LOG_CHANNEL_ID = int(os.getenv("BOT_LOG_CHANNEL_ID", "1458654762885972131"))
 
 # ---------- PAINEL PERMANENTE DE EQUIPAS ----------
@@ -1354,6 +1355,11 @@ if conn:
         """)
 
         cursor.execute("""
+        ALTER TABLE loja_produtos
+        ADD COLUMN IF NOT EXISTS preco_dinheiro_centimos INTEGER NOT NULL DEFAULT 0
+        """)
+
+        cursor.execute("""
         CREATE TABLE IF NOT EXISTS loja_pedidos (
             id BIGSERIAL PRIMARY KEY,
             user_id BIGINT NOT NULL,
@@ -1361,11 +1367,43 @@ if conn:
             produto_nome TEXT NOT NULL,
             quantidade INTEGER NOT NULL DEFAULT 1 CHECK (quantidade > 0),
             preco_total INTEGER NOT NULL CHECK (preco_total >= 0),
-            estado TEXT NOT NULL DEFAULT 'pendente' CHECK (estado IN ('pendente','entregue','cancelado')),
+            estado TEXT NOT NULL DEFAULT 'pendente' CHECK (estado IN ('pendente','aguarda_comprovativo','comprovativo_recebido','pago','entregue','cancelado')),
             criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             processado_por BIGINT,
             processado_em TIMESTAMPTZ
         )
+        """)
+
+        cursor.execute("""
+        ALTER TABLE loja_pedidos DROP CONSTRAINT IF EXISTS loja_pedidos_estado_check
+        """)
+        cursor.execute("""
+        ALTER TABLE loja_pedidos ADD CONSTRAINT loja_pedidos_estado_check
+        CHECK (estado IN ('pendente','aguarda_comprovativo','comprovativo_recebido','pago','entregue','cancelado'))
+        """)
+        cursor.execute("""
+        ALTER TABLE loja_pedidos ADD COLUMN IF NOT EXISTS preco_dinheiro_centimos INTEGER NOT NULL DEFAULT 0
+        """)
+        cursor.execute("""
+        ALTER TABLE loja_pedidos ADD COLUMN IF NOT EXISTS comprovativo_url TEXT
+        """)
+        cursor.execute("""
+        ALTER TABLE loja_pedidos ADD COLUMN IF NOT EXISTS comprovativo_nome TEXT
+        """)
+        cursor.execute("""
+        ALTER TABLE loja_pedidos ADD COLUMN IF NOT EXISTS comprovativo_enviado_em TIMESTAMPTZ
+        """)
+        cursor.execute("""
+        ALTER TABLE loja_pedidos ADD COLUMN IF NOT EXISTS pagamento_confirmado_por BIGINT
+        """)
+        cursor.execute("""
+        ALTER TABLE loja_pedidos ADD COLUMN IF NOT EXISTS pagamento_confirmado_em TIMESTAMPTZ
+        """)
+        cursor.execute("""
+        ALTER TABLE loja_pedidos ADD COLUMN IF NOT EXISTS log_channel_id BIGINT
+        """)
+        cursor.execute("""
+        ALTER TABLE loja_pedidos ADD COLUMN IF NOT EXISTS log_message_id BIGINT
         """)
 
         cursor.execute("""
@@ -1463,6 +1501,7 @@ async def on_ready():
     bot.add_view(PainelEquipasView())
     bot.add_view(PainelCarteiraView())
     bot.add_view(PedidoLojaStaffView())
+    await carregar_views_pedidos_loja()
     await carregar_views_termos_pendentes()
     await garantir_painel_equipas_no_fundo()
     await garantir_painel_carteira_no_fundo()
@@ -1496,6 +1535,10 @@ async def on_message(message):
             await processar_termo_recebido_dm(message)
             return
 
+        if fluxo_dm == "comprovativo_loja":
+            await processar_comprovativo_loja_dm(message)
+            return
+
         if fluxo_dm == "comprovativo":
             await processar_comprovativo_recebido_dm(message)
             return
@@ -1503,7 +1546,7 @@ async def on_message(message):
         if message.attachments:
             await message.channel.send(
                 "⚠️ Não tenho nenhum envio pendente associado à tua conta.\n"
-                "Usa primeiro o botão **📄 Enviar termo** ou faz uma inscrição pendente de pagamento."
+                "Usa primeiro o botão **📄 Enviar termo**, faz uma inscrição pendente ou conclui uma compra que exija pagamento."
             )
         return
 
@@ -1897,47 +1940,38 @@ async def enviar_termo_interaction(interaction: discord.Interaction):
 
 
 def obter_fluxo_upload_dm_sync(user_id: int):
-    """Determina se a próxima DM pertence ao fluxo de termo ou comprovativo.
-
-    Quando os dois fluxos estão pendentes, prevalece o que foi iniciado mais
-    recentemente pelo jogador. Assim, um comprovativo não é enviado para a
-    sala dos termos e um termo pedido depois da inscrição continua a ser
-    tratado como termo.
-    """
+    """Escolhe o fluxo de upload mais recente: termo, inscrição ou compra da loja."""
     conn = get_connection()
     if not conn:
         return None
-
     cursor = conn.cursor()
     try:
-        cursor.execute(
-            "SELECT MAX(pedido_em) FROM termos_pedidos WHERE user_id = %s",
-            (user_id,)
-        )
+        cursor.execute("SELECT MAX(pedido_em) FROM termos_pedidos WHERE user_id = %s", (user_id,))
         termo_em = cursor.fetchone()[0]
 
         cursor.execute("""
-            SELECT MAX(criado_em)
-            FROM inscricoes_jogos
-            WHERE user_id = %s
-              AND estado = 'pendente_pagamento'
+            SELECT MAX(criado_em) FROM inscricoes_jogos
+            WHERE user_id = %s AND estado = 'pendente_pagamento'
               AND comprovativo_message_id IS NULL
         """, (user_id,))
-        comprovativo_em = cursor.fetchone()[0]
+        inscricao_em = cursor.fetchone()[0]
+
+        cursor.execute("""
+            SELECT MAX(criado_em) FROM loja_pedidos
+            WHERE user_id = %s
+              AND estado IN ('aguarda_comprovativo','comprovativo_recebido')
+              AND preco_dinheiro_centimos > 0
+        """, (user_id,))
+        loja_em = cursor.fetchone()[0]
     except Exception as e:
         print(f"Erro ao determinar fluxo de upload por DM: {e}")
         return None
     finally:
-        cursor.close()
-        conn.close()
+        cursor.close(); conn.close()
 
-    if termo_em and comprovativo_em:
-        return "termo" if termo_em >= comprovativo_em else "comprovativo"
-    if termo_em:
-        return "termo"
-    if comprovativo_em:
-        return "comprovativo"
-    return None
+    candidatos = [(termo_em, 'termo'), (inscricao_em, 'comprovativo'), (loja_em, 'comprovativo_loja')]
+    candidatos = [(dt, nome) for dt, nome in candidatos if dt is not None]
+    return max(candidatos, key=lambda x: x[0])[1] if candidatos else None
 
 
 async def processar_termo_recebido_dm(message: discord.Message) -> bool:
@@ -2228,6 +2262,50 @@ class ComprovativoPagamentoView(discord.ui.View):
                 pass
 
         await interaction.followup.send("✅ Pagamento confirmado com sucesso.", ephemeral=True)
+
+
+async def processar_comprovativo_loja_dm(message: discord.Message) -> bool:
+    """Associa um comprovativo enviado por DM ao pedido misto mais recente."""
+    if not message.attachments:
+        await message.channel.send("📎 Envia o comprovativo como anexo em **PDF, JPG ou PNG**.")
+        return True
+    anexo = message.attachments[0]
+    ext = anexo.filename.rsplit('.', 1)[-1].lower() if '.' in anexo.filename else ''
+    if ext not in LOJA_COMPROVATIVOS_EXTENSOES:
+        await message.channel.send("⚠️ Formato inválido. Envia o comprovativo em **PDF, JPG ou PNG**.")
+        return True
+
+    conn=get_connection()
+    if not conn:
+        await message.channel.send(DB_ERROR_MSG); return True
+    cur=conn.cursor()
+    try:
+        cur.execute("""
+            SELECT id FROM loja_pedidos
+            WHERE user_id=%s AND estado IN ('aguarda_comprovativo','comprovativo_recebido')
+              AND preco_dinheiro_centimos > 0
+            ORDER BY criado_em DESC LIMIT 1 FOR UPDATE
+        """, (message.author.id,))
+        row=cur.fetchone()
+        if not row:
+            conn.rollback(); await message.channel.send("⚠️ Não encontrei nenhuma compra a aguardar comprovativo."); return True
+        pedido_id=int(row[0])
+        cur.execute("""
+            UPDATE loja_pedidos
+            SET comprovativo_url=%s, comprovativo_nome=%s, comprovativo_enviado_em=NOW(),
+                estado='comprovativo_recebido'
+            WHERE id=%s
+        """, (anexo.url, anexo.filename, pedido_id))
+        conn.commit()
+    except Exception as e:
+        conn.rollback(); print(f"Erro ao guardar comprovativo da loja: {e}")
+        await message.channel.send("⚠️ Não foi possível guardar o comprovativo."); return True
+    finally:
+        cur.close(); conn.close()
+
+    await atualizar_log_pedido_loja(pedido_id)
+    await message.channel.send(f"✅ Comprovativo associado ao pedido **#{pedido_id}**. Aguarda validação da staff.")
+    return True
 
 
 async def processar_comprovativo_recebido_dm(message: discord.Message) -> bool:
@@ -13158,26 +13236,106 @@ def criar_embed_saldo_jogador(user_id: int):
     return embed
 
 
+def formatar_euros(centimos: int) -> str:
+    return f"{int(centimos or 0) / 100:.2f} €".replace('.', ',')
+
+
 def listar_produtos_loja_sync():
     conn=get_connection()
     if not conn: return []
     cur=conn.cursor()
     try:
-        cur.execute("SELECT id,nome,descricao,preco,categoria,stock,imagem_url FROM loja_produtos WHERE ativo=TRUE AND (stock IS NULL OR stock>0) ORDER BY categoria,nome")
+        cur.execute("SELECT id,nome,descricao,preco,categoria,stock,imagem_url,preco_dinheiro_centimos FROM loja_produtos WHERE ativo=TRUE AND (stock IS NULL OR stock>0) ORDER BY categoria,nome")
         return cur.fetchall()
     finally:
         cur.close(); conn.close()
 
 
 def criar_embed_produto(row):
-    produto_id,nome,descricao,preco,categoria,stock,imagem=row
+    produto_id,nome,descricao,preco,categoria,stock,imagem,euros=row
     embed=discord.Embed(title=f"🛒 {nome}", description=descricao or "Sem descrição.", color=discord.Color.blurple())
-    embed.add_field(name="Preço", value=f"🪙 **{preco:,} créditos**".replace(',', '.'), inline=True)
+    preco_txt=f"🪙 **{preco:,} créditos**".replace(',', '.')
+    if euros:
+        preco_txt += f" + 💶 **{formatar_euros(euros)}**"
+    embed.add_field(name="Preço", value=preco_txt, inline=False)
     embed.add_field(name="Categoria", value=categoria, inline=True)
     embed.add_field(name="Stock", value="Ilimitado" if stock is None else str(stock), inline=True)
+    if euros:
+        embed.add_field(name="Pagamento", value="Após compra, envia o comprovativo por DM ao bot.", inline=False)
     if imagem: embed.set_image(url=imagem)
     embed.set_footer(text=f"Produto #{produto_id}")
     return embed
+
+
+def criar_embed_pedido_loja(dados):
+    (pedido_id,user_id,produto_nome,preco_creditos,estado,criado_em,preco_euros,comp_url,comp_nome,
+     processado_por,processado_em,pag_por,pag_em)=dados
+    estados={
+        'aguarda_comprovativo': ('🟠 Aguarda comprovativo', discord.Color.orange()),
+        'comprovativo_recebido': ('🟣 Comprovativo recebido — aguarda validação', discord.Color.purple()),
+        'pendente': ('🟡 Pendente de entrega', discord.Color.gold()),
+        'pago': ('🟡 Pagamento confirmado — pendente de entrega', discord.Color.gold()),
+        'entregue': ('🟢 Entregue', discord.Color.green()),
+        'cancelado': ('🔴 Cancelado', discord.Color.red()),
+    }
+    estado_txt,cor=estados.get(estado,(estado,discord.Color.blurple()))
+    embed=discord.Embed(title=f"🛒 Pedido #{pedido_id}", color=cor, timestamp=criado_em or discord.utils.utcnow())
+    embed.add_field(name="👤 Jogador", value=f"<@{user_id}>", inline=True)
+    embed.add_field(name="📦 Produto", value=produto_nome, inline=True)
+    valor=f"🪙 {preco_creditos} créditos"
+    if preco_euros: valor += f" + 💶 {formatar_euros(preco_euros)}"
+    embed.add_field(name="💳 Valor", value=valor, inline=False)
+    embed.add_field(name="📌 Estado", value=estado_txt, inline=False)
+    if comp_url:
+        embed.add_field(name="🧾 Comprovativo", value=f"[{comp_nome or 'Abrir comprovativo'}]({comp_url})", inline=False)
+    if pag_por:
+        embed.add_field(name="✅ Pagamento confirmado por", value=f"<@{pag_por}>", inline=True)
+    if processado_por:
+        embed.add_field(name="👑 Processado por", value=f"<@{processado_por}>", inline=True)
+    if processado_em:
+        embed.add_field(name="🕒 Processado", value=f"<t:{int(processado_em.timestamp())}:F>", inline=False)
+    embed.set_footer(text="Gestão automática da loja")
+    return embed
+
+
+def obter_pedido_loja_sync(pedido_id:int):
+    conn=get_connection()
+    if not conn: return None
+    cur=conn.cursor()
+    try:
+        cur.execute("""SELECT id,user_id,produto_nome,preco_total,estado,criado_em,preco_dinheiro_centimos,
+                              comprovativo_url,comprovativo_nome,processado_por,processado_em,
+                              pagamento_confirmado_por,pagamento_confirmado_em
+                       FROM loja_pedidos WHERE id=%s""",(pedido_id,))
+        return cur.fetchone()
+    finally: cur.close(); conn.close()
+
+
+async def atualizar_log_pedido_loja(pedido_id:int):
+    dados=obter_pedido_loja_sync(pedido_id)
+    if not dados: return None
+    conn=get_connection(); cur=conn.cursor()
+    try:
+        cur.execute("SELECT log_channel_id,log_message_id,estado FROM loja_pedidos WHERE id=%s",(pedido_id,))
+        log_channel_id,log_message_id,estado=cur.fetchone()
+    finally: cur.close(); conn.close()
+    canal=bot.get_channel(log_channel_id or BOT_LOG_CHANNEL_ID)
+    if canal is None:
+        try: canal=await bot.fetch_channel(log_channel_id or BOT_LOG_CHANNEL_ID)
+        except Exception: return None
+    view=PedidoLojaAcaoView(pedido_id, estado)
+    embed=criar_embed_pedido_loja(dados)
+    if log_message_id:
+        try:
+            msg=await canal.fetch_message(log_message_id)
+            await msg.edit(embed=embed,view=view); return msg
+        except Exception: pass
+    msg=await canal.send(embed=embed,view=view)
+    conn=get_connection(); cur=conn.cursor()
+    try:
+        cur.execute("UPDATE loja_pedidos SET log_channel_id=%s,log_message_id=%s WHERE id=%s",(canal.id,msg.id,pedido_id)); conn.commit()
+    finally: cur.close(); conn.close()
+    return msg
 
 
 class ComprarProdutoView(discord.ui.View):
@@ -13195,11 +13353,11 @@ class ComprarProdutoView(discord.ui.View):
         if not conn: return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
         cur=conn.cursor()
         try:
-            cur.execute("SELECT nome,preco,stock,ativo FROM loja_produtos WHERE id=%s FOR UPDATE", (self.produto_id,))
+            cur.execute("SELECT nome,preco,stock,ativo,preco_dinheiro_centimos FROM loja_produtos WHERE id=%s FOR UPDATE", (self.produto_id,))
             row=cur.fetchone()
             if not row or not row[3]:
                 conn.rollback(); return await interaction.response.send_message("⚠️ Produto indisponível.", ephemeral=True)
-            nome,preco,stock,_=row
+            nome,preco,stock,_,euros=row
             if stock is not None and stock < 1:
                 conn.rollback(); return await interaction.response.send_message("⚠️ Produto sem stock.", ephemeral=True)
             garantir_carteira_cursor(cur, self.user_id)
@@ -13210,35 +13368,36 @@ class ComprarProdutoView(discord.ui.View):
             movimentar_creditos_cursor(cur,self.user_id,-preco,"compra",f"Compra de {nome}",f"compra:{self.user_id}:{self.produto_id}:{datetime.now(timezone.utc).timestamp()}")
             if stock is not None:
                 cur.execute("UPDATE loja_produtos SET stock=stock-1, atualizado_em=NOW() WHERE id=%s", (self.produto_id,))
-            cur.execute("INSERT INTO loja_pedidos (user_id,produto_id,produto_nome,preco_total) VALUES (%s,%s,%s,%s) RETURNING id", (self.user_id,self.produto_id,nome,preco))
-            pedido_id=cur.fetchone()[0]
-            conn.commit()
+            estado='aguarda_comprovativo' if int(euros or 0)>0 else 'pendente'
+            cur.execute("""INSERT INTO loja_pedidos (user_id,produto_id,produto_nome,preco_total,preco_dinheiro_centimos,estado)
+                           VALUES (%s,%s,%s,%s,%s,%s) RETURNING id""",
+                        (self.user_id,self.produto_id,nome,preco,int(euros or 0),estado))
+            pedido_id=cur.fetchone()[0]; conn.commit()
         except Exception as e:
             conn.rollback(); print(f"Erro compra loja: {e}"); return await interaction.response.send_message("⚠️ Não foi possível concluir a compra.", ephemeral=True)
         finally:
             cur.close(); conn.close()
         button.disabled=True
         await interaction.response.edit_message(view=self)
-        try: await interaction.user.send(f"✅ Compra concluída: **{nome}**. Pedido **#{pedido_id}** aguarda entrega pela staff.")
+        await atualizar_log_pedido_loja(pedido_id)
+        try:
+            if euros:
+                await interaction.user.send(
+                    f"💳 **Pagamento pendente — Pedido #{pedido_id}**\n\n"
+                    f"Produto: **{nome}**\nValor: **{preco} créditos + {formatar_euros(euros)}**\n\n"
+                    "Faz a transferência e responde nesta conversa com o comprovativo em **PDF, JPG ou PNG**."
+                )
+            else:
+                await interaction.user.send(f"✅ Compra concluída: **{nome}**. Pedido **#{pedido_id}** aguarda entrega pela staff.")
         except Exception: pass
-        await enviar_log_bot(
-            interaction.guild,
-            "🛒 Nova compra na loja",
-            f"Foi criado o pedido **#{pedido_id}**.",
-            cor=discord.Color.green(),
-            campos=[
-                ("👤 Jogador", interaction.user.mention, True),
-                ("📦 Produto", str(nome), True),
-                ("🪙 Valor", f"{preco} créditos", True),
-                ("📌 Estado", "Pendente de entrega", False),
-            ]
-        )
-        await interaction.followup.send(f"✅ Compra concluída. Pedido **#{pedido_id}** criado.", ephemeral=True)
+        texto=f"✅ Pedido **#{pedido_id}** criado."
+        if euros: texto += " Enviei-te uma DM para enviares o comprovativo."
+        await interaction.followup.send(texto, ephemeral=True)
 
 
 class SelecionarProduto(discord.ui.Select):
     def __init__(self, produtos):
-        opts=[discord.SelectOption(label=p[1][:100], value=str(p[0]), description=f"{p[4]} · {p[3]} créditos"[:100]) for p in produtos[:25]]
+        opts=[discord.SelectOption(label=p[1][:100], value=str(p[0]), description=(f"{p[4]} · {p[3]} créditos" + (f" + {formatar_euros(p[7])}" if p[7] else ""))[:100]) for p in produtos[:25]]
         super().__init__(placeholder="Seleciona um produto", options=opts)
     async def callback(self, interaction):
         view=self.view
@@ -13362,10 +13521,11 @@ class PainelCarteiraView(discord.ui.View):
     async def pedidos(self, interaction, button):
         conn=get_connection(); cur=conn.cursor()
         try:
-            cur.execute("SELECT id,produto_nome,preco_total,estado,criado_em FROM loja_pedidos WHERE user_id=%s ORDER BY id DESC LIMIT 15", (interaction.user.id,))
+            cur.execute("SELECT id,produto_nome,preco_total,estado,criado_em,preco_dinheiro_centimos FROM loja_pedidos WHERE user_id=%s ORDER BY id DESC LIMIT 15", (interaction.user.id,))
             rows=cur.fetchall()
         finally: cur.close(); conn.close()
-        desc="\n".join(f"**#{r[0]}** · {r[1]} · {r[2]} créditos · **{r[3]}**" for r in rows) or "Ainda não tens pedidos."
+        estados={'aguarda_comprovativo':'Aguarda comprovativo','comprovativo_recebido':'Comprovativo em validação','pago':'Pago — aguarda entrega','pendente':'Aguarda entrega','entregue':'Entregue','cancelado':'Cancelado'}
+        desc="\n".join(f"**#{r[0]}** · {r[1]} · {r[2]} créditos" + (f" + {formatar_euros(r[5])}" if r[5] else "") + f" · **{estados.get(r[3],r[3])}**" for r in rows) or "Ainda não tens pedidos."
         await interaction.response.send_message(embed=discord.Embed(title="📦 Os Meus Pedidos",description=desc,color=discord.Color.blurple()),ephemeral=True)
 
     @discord.ui.button(label="Histórico", emoji="📜", style=discord.ButtonStyle.secondary, custom_id="carteira:historico")
@@ -13383,25 +13543,144 @@ class PainelCarteiraView(discord.ui.View):
 class AdicionarProdutoModal(discord.ui.Modal,title="Adicionar item à loja"):
     nome=discord.ui.TextInput(label="Nome",max_length=100)
     descricao=discord.ui.TextInput(label="Descrição",style=discord.TextStyle.paragraph,max_length=1000,required=False)
-    preco=discord.ui.TextInput(label="Preço em créditos",placeholder="Ex.: 1500")
+    preco=discord.ui.TextInput(label="Preço: créditos | euros",placeholder="Ex.: 200 | 2,00 (ou apenas 1500)")
     categoria=discord.ui.TextInput(label="Categoria",placeholder="Merch",required=False,max_length=50)
     stock=discord.ui.TextInput(label="Stock",placeholder="Vazio = ilimitado",required=False,max_length=10)
     async def on_submit(self,interaction):
-        try: preco=int(str(self.preco)); stock=int(str(self.stock)) if str(self.stock).strip() else None
-        except ValueError: return await interaction.response.send_message("⚠️ Preço e stock têm de ser números.",ephemeral=True)
-        if preco<0 or (stock is not None and stock<0): return await interaction.response.send_message("⚠️ Valores inválidos.",ephemeral=True)
+        try:
+            partes=[p.strip() for p in str(self.preco).replace('€','').split('|')]
+            preco=int(partes[0])
+            euros_cent=0
+            if len(partes)>1 and partes[1]:
+                euros_cent=int(round(float(partes[1].replace(',','.'))*100))
+            stock=int(str(self.stock)) if str(self.stock).strip() else None
+        except ValueError:
+            return await interaction.response.send_message("⚠️ Usa o formato **créditos | euros**, por exemplo `200 | 2,00`.",ephemeral=True)
+        if preco<0 or euros_cent<0 or (stock is not None and stock<0):
+            return await interaction.response.send_message("⚠️ Valores inválidos.",ephemeral=True)
         conn=get_connection(); cur=conn.cursor()
         try:
-            cur.execute("INSERT INTO loja_produtos (nome,descricao,preco,categoria,stock,criado_por) VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",(str(self.nome).strip(),str(self.descricao).strip(),preco,str(self.categoria).strip() or 'Merch',stock,interaction.user.id))
+            cur.execute("""INSERT INTO loja_produtos (nome,descricao,preco,preco_dinheiro_centimos,categoria,stock,criado_por)
+                           VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                        (str(self.nome).strip(),str(self.descricao).strip(),preco,euros_cent,str(self.categoria).strip() or 'Merch',stock,interaction.user.id))
             pid=cur.fetchone()[0]; conn.commit()
         except Exception as e:
             conn.rollback(); print(e); return await interaction.response.send_message("⚠️ Não foi possível criar o item. Confirma se o nome já existe.",ephemeral=True)
         finally: cur.close(); conn.close()
-        await interaction.response.send_message(f"✅ Item criado com ID **#{pid}**.",ephemeral=True)
+        valor=f"{preco} créditos" + (f" + {formatar_euros(euros_cent)}" if euros_cent else "")
+        await interaction.response.send_message(f"✅ Item **#{pid}** criado por **{valor}**.",ephemeral=True)
+
+
+class CancelarPedidoLojaModal(discord.ui.Modal,title="Cancelar pedido"):
+    motivo=discord.ui.TextInput(label="Motivo",style=discord.TextStyle.paragraph,max_length=500,default="Cancelado pela staff")
+    def __init__(self,pedido_id:int):
+        super().__init__(); self.pedido_id=pedido_id
+    async def on_submit(self,interaction):
+        await cancelar_pedido_loja_interaction(interaction,self.pedido_id,str(self.motivo))
+
+
+class PedidoLojaAcaoView(discord.ui.View):
+    def __init__(self,pedido_id:int,estado:str):
+        super().__init__(timeout=None); self.pedido_id=int(pedido_id); self.estado=estado
+        self.confirmar.custom_id=f"loja:confirmar_pagamento:{pedido_id}"
+        self.rejeitar.custom_id=f"loja:rejeitar_comprovativo:{pedido_id}"
+        self.entregar.custom_id=f"loja:entregar:{pedido_id}"
+        self.cancelar.custom_id=f"loja:cancelar:{pedido_id}"
+        self.confirmar.disabled=estado!='comprovativo_recebido'
+        self.rejeitar.disabled=estado!='comprovativo_recebido'
+        self.entregar.disabled=estado not in ('pendente','pago')
+        self.cancelar.disabled=estado in ('entregue','cancelado')
+
+    async def interaction_check(self,interaction):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Apenas a staff pode gerir pedidos.",ephemeral=True); return False
+        return True
+
+    @discord.ui.button(label="Confirmar pagamento",emoji="✅",style=discord.ButtonStyle.success,custom_id="loja:confirmar_pagamento:base")
+    async def confirmar(self,interaction,button):
+        conn=get_connection(); cur=conn.cursor()
+        try:
+            cur.execute("""UPDATE loja_pedidos SET estado='pago',pagamento_confirmado_por=%s,pagamento_confirmado_em=NOW()
+                           WHERE id=%s AND estado='comprovativo_recebido' RETURNING user_id,produto_nome""",
+                        (interaction.user.id,self.pedido_id))
+            row=cur.fetchone()
+            if not row: conn.rollback(); return await interaction.response.send_message("⚠️ O pedido já não aguarda confirmação.",ephemeral=True)
+            conn.commit()
+        finally: cur.close(); conn.close()
+        await interaction.response.defer(ephemeral=True)
+        await atualizar_log_pedido_loja(self.pedido_id)
+        try: await (await bot.fetch_user(row[0])).send(f"✅ O pagamento do pedido **#{self.pedido_id} — {row[1]}** foi confirmado. Agora aguarda entrega.")
+        except Exception: pass
+        await interaction.followup.send("✅ Pagamento confirmado.",ephemeral=True)
+
+    @discord.ui.button(label="Rejeitar comprovativo",emoji="⚠️",style=discord.ButtonStyle.secondary,custom_id="loja:rejeitar_comprovativo:base")
+    async def rejeitar(self,interaction,button):
+        conn=get_connection(); cur=conn.cursor()
+        try:
+            cur.execute("""UPDATE loja_pedidos SET estado='aguarda_comprovativo',comprovativo_url=NULL,comprovativo_nome=NULL,comprovativo_enviado_em=NULL
+                           WHERE id=%s AND estado='comprovativo_recebido' RETURNING user_id,produto_nome""",(self.pedido_id,))
+            row=cur.fetchone()
+            if not row: conn.rollback(); return await interaction.response.send_message("⚠️ O pedido já não aguarda validação.",ephemeral=True)
+            conn.commit()
+        finally: cur.close(); conn.close()
+        await interaction.response.defer(ephemeral=True); await atualizar_log_pedido_loja(self.pedido_id)
+        try: await (await bot.fetch_user(row[0])).send(f"❌ O comprovativo do pedido **#{self.pedido_id} — {row[1]}** foi rejeitado. Envia um novo comprovativo nesta conversa.")
+        except Exception: pass
+        await interaction.followup.send("✅ Comprovativo rejeitado; foi pedido um novo ao jogador.",ephemeral=True)
+
+    @discord.ui.button(label="Marcar como entregue",emoji="📦",style=discord.ButtonStyle.primary,custom_id="loja:entregar:base")
+    async def entregar(self,interaction,button):
+        conn=get_connection(); cur=conn.cursor()
+        try:
+            cur.execute("""UPDATE loja_pedidos SET estado='entregue',processado_por=%s,processado_em=NOW()
+                           WHERE id=%s AND estado IN ('pendente','pago') RETURNING user_id,produto_nome""",
+                        (interaction.user.id,self.pedido_id))
+            row=cur.fetchone()
+            if not row: conn.rollback(); return await interaction.response.send_message("⚠️ Este pedido ainda não pode ser entregue ou já foi processado.",ephemeral=True)
+            conn.commit()
+        finally: cur.close(); conn.close()
+        await interaction.response.defer(ephemeral=True); await atualizar_log_pedido_loja(self.pedido_id)
+        try: await (await bot.fetch_user(row[0])).send(f"📦 O pedido **#{self.pedido_id} — {row[1]}** foi marcado como entregue.")
+        except Exception: pass
+        await interaction.followup.send("✅ Pedido marcado como entregue.",ephemeral=True)
+
+    @discord.ui.button(label="Cancelar pedido",emoji="❌",style=discord.ButtonStyle.danger,custom_id="loja:cancelar:base")
+    async def cancelar(self,interaction,button):
+        await interaction.response.send_modal(CancelarPedidoLojaModal(self.pedido_id))
+
+
+async def cancelar_pedido_loja_interaction(interaction,pedido_id:int,motivo:str):
+    conn=get_connection(); cur=conn.cursor()
+    try:
+        cur.execute("""SELECT user_id,produto_id,produto_nome,preco_total FROM loja_pedidos
+                       WHERE id=%s AND estado NOT IN ('entregue','cancelado') FOR UPDATE""",(pedido_id,))
+        row=cur.fetchone()
+        if not row: conn.rollback(); return await interaction.response.send_message("⚠️ Pedido não encontrado ou já processado.",ephemeral=True)
+        user_id,produto_id,nome,preco=row
+        movimentar_creditos_cursor(cur,user_id,preco,'reembolso_loja',f'Reembolso do pedido #{pedido_id}: {motivo}',f'reembolso-pedido:{pedido_id}')
+        if produto_id: cur.execute("UPDATE loja_produtos SET stock=CASE WHEN stock IS NULL THEN NULL ELSE stock+1 END WHERE id=%s",(produto_id,))
+        cur.execute("UPDATE loja_pedidos SET estado='cancelado',processado_por=%s,processado_em=NOW() WHERE id=%s",(interaction.user.id,pedido_id)); conn.commit()
+    finally: cur.close(); conn.close()
+    await interaction.response.defer(ephemeral=True); await atualizar_log_pedido_loja(pedido_id)
+    try: await (await bot.fetch_user(user_id)).send(f"↩️ O pedido **#{pedido_id} — {nome}** foi cancelado. **{preco} créditos** foram devolvidos. Motivo: {motivo}")
+    except Exception: pass
+    await interaction.followup.send("✅ Pedido cancelado, stock reposto e créditos devolvidos.",ephemeral=True)
 
 
 class PedidoLojaStaffView(discord.ui.View):
     def __init__(self): super().__init__(timeout=None)
+
+
+async def carregar_views_pedidos_loja():
+    conn=get_connection()
+    if not conn: return
+    cur=conn.cursor()
+    try:
+        cur.execute("SELECT id,estado,log_message_id FROM loja_pedidos WHERE estado NOT IN ('entregue','cancelado') AND log_message_id IS NOT NULL")
+        for pedido_id,estado,message_id in cur.fetchall():
+            bot.add_view(PedidoLojaAcaoView(pedido_id,estado),message_id=message_id)
+    except Exception as e: print(f"Erro ao carregar botões de pedidos: {e}")
+    finally: cur.close(); conn.close()
 
 
 async def obter_canal_carteira():
@@ -13483,12 +13762,13 @@ async def pedidos_loja_admin(ctx):
 async def entregar_pedido(ctx,pedido_id:int):
     conn=get_connection(); cur=conn.cursor()
     try:
-        cur.execute("UPDATE loja_pedidos SET estado='entregue',processado_por=%s,processado_em=NOW() WHERE id=%s AND estado='pendente' RETURNING user_id,produto_nome",(ctx.author.id,pedido_id))
+        cur.execute("UPDATE loja_pedidos SET estado='entregue',processado_por=%s,processado_em=NOW() WHERE id=%s AND estado IN ('pendente','pago') RETURNING user_id,produto_nome",(ctx.author.id,pedido_id))
         row=cur.fetchone()
         if not row: conn.rollback(); return await ctx.send("⚠️ Pedido não encontrado ou já processado.")
         conn.commit()
     finally: cur.close(); conn.close()
     user_id,nome=row
+    await atualizar_log_pedido_loja(pedido_id)
     try: await (await bot.fetch_user(user_id)).send(f"✅ O pedido **#{pedido_id} — {nome}** foi marcado como entregue.")
     except Exception: pass
     await enviar_log_bot(
@@ -13510,7 +13790,7 @@ async def entregar_pedido(ctx,pedido_id:int):
 async def cancelar_pedido(ctx,pedido_id:int,*,motivo:str="Cancelado pela staff"):
     conn=get_connection(); cur=conn.cursor()
     try:
-        cur.execute("SELECT user_id,produto_id,produto_nome,preco_total FROM loja_pedidos WHERE id=%s AND estado='pendente' FOR UPDATE",(pedido_id,))
+        cur.execute("SELECT user_id,produto_id,produto_nome,preco_total FROM loja_pedidos WHERE id=%s AND estado NOT IN ('entregue','cancelado') FOR UPDATE",(pedido_id,))
         row=cur.fetchone()
         if not row: conn.rollback(); return await ctx.send("⚠️ Pedido não encontrado ou já processado.")
         user_id,produto_id,nome,preco=row
@@ -13518,6 +13798,7 @@ async def cancelar_pedido(ctx,pedido_id:int,*,motivo:str="Cancelado pela staff")
         if produto_id: cur.execute("UPDATE loja_produtos SET stock=CASE WHEN stock IS NULL THEN NULL ELSE stock+1 END WHERE id=%s",(produto_id,))
         cur.execute("UPDATE loja_pedidos SET estado='cancelado',processado_por=%s,processado_em=NOW() WHERE id=%s",(ctx.author.id,pedido_id)); conn.commit()
     finally: cur.close(); conn.close()
+    await atualizar_log_pedido_loja(pedido_id)
     try: await (await bot.fetch_user(user_id)).send(f"↩️ O pedido **#{pedido_id} — {nome}** foi cancelado e **{preco} créditos** foram devolvidos.")
     except Exception: pass
     await enviar_log_bot(
