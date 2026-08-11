@@ -35,6 +35,7 @@ CARTEIRA_PANEL_CHANNEL_NAME = os.getenv("CARTEIRA_PANEL_CHANNEL_NAME", "carteira
 CARTEIRA_PANEL_LOCK = asyncio.Lock()
 CREDITOS_POR_PRESENCA = int(os.getenv("CREDITOS_POR_PRESENCA", "100"))
 CREDITOS_POR_TEAMWIN = int(os.getenv("CREDITOS_POR_TEAMWIN", "50"))
+CREDITOS_POR_SHL_WIN = int(os.getenv("CREDITOS_POR_SHL_WIN", "10"))
 PRECO_ENTRADA_GRATUITA = int(os.getenv("PRECO_ENTRADA_GRATUITA", "1000"))
 CREDITOS_CANCELAMENTO_VALIDADO = int(os.getenv("CREDITOS_CANCELAMENTO_VALIDADO", "1000"))
 BONUS_TEAMWINS_DIARIO = {2: 50, 5: 150, 10: 400}
@@ -1031,6 +1032,13 @@ if conn:
         CREATE TABLE IF NOT EXISTS pontos_team (
             user_id BIGINT PRIMARY KEY,
             pontos INTEGER DEFAULT 0
+        )
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pontos_shl (
+            user_id BIGINT PRIMARY KEY,
+            pontos INTEGER NOT NULL DEFAULT 0 CHECK (pontos >= 0)
         )
         """)
 
@@ -3519,6 +3527,86 @@ async def adicionar_teamwin_jogador(guild: discord.Guild, user_id: int, motivo: 
     return total
 
 
+async def adicionar_shl_win_jogador(guild: discord.Guild, user_id: int, motivo: str):
+    """Regista 1 SHL Mode Win e atribui apenas a recompensa reduzida do SHL.
+
+    Não altera Team Wins, não entra nos bónus diários de Team Wins e não
+    processa objetivos de equipa.
+    """
+    conn = get_connection()
+    if not conn:
+        return None
+
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT pontos FROM pontos_shl WHERE user_id = %s FOR UPDATE", (user_id,))
+        row = cursor.fetchone()
+        total = (int(row[0]) if row else 0) + 1
+        if row:
+            cursor.execute("UPDATE pontos_shl SET pontos = %s WHERE user_id = %s", (total, user_id))
+        else:
+            cursor.execute("INSERT INTO pontos_shl (user_id, pontos) VALUES (%s, %s)", (user_id, total))
+
+        referencia = f"shl-win:{user_id}:{datetime.now(timezone.utc).timestamp()}:{random.randint(1000,9999)}"
+        saldo = movimentar_creditos_cursor(
+            cursor, user_id, CREDITOS_POR_SHL_WIN, "shl_mode_win",
+            motivo, referencia
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
+    membro = guild.get_member(user_id) if guild else None
+    if membro is None and guild is not None:
+        try:
+            membro = await guild.fetch_member(user_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            membro = None
+
+    nome = formatar_nome_operador(membro, f"ID:{user_id}")
+    await enviar_log_pontos(
+        guild,
+        f"⚡ Foi adicionada uma SHL Mode Win a **{nome}**\n"
+        f"Conta agora com: **{total:02} SHL Mode Wins**\n"
+        f"🪙 Recompensa: **+{CREDITOS_POR_SHL_WIN} créditos** | Saldo: **{saldo}**\n"
+        f"📌 {motivo}"
+    )
+
+    if membro is not None:
+        try:
+            await membro.send(
+                f"⚡ Recebeste **+{CREDITOS_POR_SHL_WIN} créditos** por uma **SHL Mode Win**. "
+                f"Saldo atual: **{saldo} créditos**."
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+    return total
+
+
+async def atribuir_shl_wins_modo(interaction: discord.Interaction, thread_id: int, vencedor: str):
+    if vencedor not in ("A", "B"):
+        return "⚠️ Sem equipa válida. Nenhuma SHL Mode Win foi atribuída."
+
+    user_ids = obter_user_ids_equipa_thread_sync(thread_id, vencedor)
+    if not user_ids:
+        return "⚠️ Não encontrei jogadores elegíveis para atribuir SHL Mode Win."
+
+    motivo = f"Vitória da Equipa {vencedor} no SHL Mode"
+    for user_id in user_ids:
+        await adicionar_shl_win_jogador(interaction.guild, user_id, motivo)
+
+    return (
+        f"⚡ SHL Mode Win atribuída à Equipa {vencedor}.\n"
+        f"🪙 +{CREDITOS_POR_SHL_WIN} créditos por jogador.\n"
+        f"👥 Jogadores atualizados: **{len(user_ids)}**"
+    )
+
+
 async def atribuir_teamwins_modo(interaction: discord.Interaction, thread_id: int, vencedor: str, modo_nome: str):
     if vencedor in ("A", "B"):
         user_ids = obter_user_ids_equipa_thread_sync(thread_id, vencedor)
@@ -3744,12 +3832,12 @@ def criar_embed_shl(pontos_a: int, pontos_b: int, finalizado: bool = False):
         cor = discord.Color.gold() if finalizado else discord.Color.dark_teal()
 
     embed = discord.Embed(
-        title="⚡ SHL",
+        title="⚡ SHL Mode",
         description=(
             "```fix\n"
-            "SHL - MORTE SÚBITA\n\n"
+            "SHL MODE - MORTE SÚBITA\n\n"
             "Jogos de 5 minutos\n"
-            "Cada ponto = 1 TeamWin\n\n"
+            f"Cada ponto = 1 SHL Mode Win (+{CREDITOS_POR_SHL_WIN} créditos)\n\n"
             f"Equipa A: {pontos_a} pontos\n"
             f"Equipa B: {pontos_b} pontos\n\n"
             f"{estado}\n"
@@ -3758,7 +3846,7 @@ def criar_embed_shl(pontos_a: int, pontos_b: int, finalizado: bool = False):
         color=cor,
         timestamp=discord.utils.utcnow()
     )
-    embed.set_footer(text="Modo de jogo • cada ponto atribui 1 TeamWin à equipa")
+    embed.set_footer(text="Modo de jogo • SHL Mode separado das Team Wins")
     return embed
 
 
@@ -4019,11 +4107,11 @@ class SHLView(discord.ui.View):
             return False
         return True
 
-    async def add_teamwin(self, interaction: discord.Interaction, equipa: str):
+    async def add_shl_win(self, interaction: discord.Interaction, equipa: str):
         if not await self._staff_only(interaction):
             return
         if self.finalizado:
-            return await interaction.response.send_message("⚠️ Este painel SHL já foi fechado.", ephemeral=True)
+            return await interaction.response.send_message("⚠️ Este painel SHL Mode já foi fechado.", ephemeral=True)
 
         if equipa == "A":
             self.pontos_a += 1
@@ -4037,23 +4125,23 @@ class SHLView(discord.ui.View):
             view=self
         )
 
-        texto = await atribuir_teamwins_modo(interaction, self.thread_id, equipa, "SHL")
-        await interaction.followup.send(f"✅ TeamWin atribuída à **{equipa_nome}**.\\n{texto}", ephemeral=True)
+        texto = await atribuir_shl_wins_modo(interaction, self.thread_id, equipa)
+        await interaction.followup.send(f"✅ SHL Mode Win atribuída à **{equipa_nome}**.\n{texto}", ephemeral=True)
 
-    @discord.ui.button(label="Equipa A +1 TeamWin", emoji="🔵", style=discord.ButtonStyle.primary, row=0)
+    @discord.ui.button(label="Equipa A +1 SHL Win", emoji="🔵", style=discord.ButtonStyle.primary, row=0)
     async def equipa_a_ponto(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.add_teamwin(interaction, "A")
+        await self.add_shl_win(interaction, "A")
 
-    @discord.ui.button(label="Equipa B +1 TeamWin", emoji="🔴", style=discord.ButtonStyle.danger, row=0)
+    @discord.ui.button(label="Equipa B +1 SHL Win", emoji="🔴", style=discord.ButtonStyle.danger, row=0)
     async def equipa_b_ponto(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.add_teamwin(interaction, "B")
+        await self.add_shl_win(interaction, "B")
 
-    @discord.ui.button(label="Fechar SHL", emoji="🏁", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="Fechar SHL Mode", emoji="🏁", style=discord.ButtonStyle.secondary, row=1)
     async def finalizar(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._staff_only(interaction):
             return
         if self.finalizado:
-            return await interaction.response.send_message("⚠️ Este painel SHL já foi fechado.", ephemeral=True)
+            return await interaction.response.send_message("⚠️ Este painel SHL Mode já foi fechado.", ephemeral=True)
 
         self.finalizado = True
         for item in self.children:
@@ -4091,7 +4179,7 @@ class EscolherModoJogoView(discord.ui.View):
         view = ExtracaoVIPView(self.thread_id)
         await interaction.response.send_message(embed=criar_embed_extracao(False, False), view=view)
 
-    @discord.ui.button(label="SHL", emoji="⚡", style=discord.ButtonStyle.primary, row=1)
+    @discord.ui.button(label="SHL Mode", emoji="⚡", style=discord.ButtonStyle.primary, row=1)
     async def shl(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._staff_only(interaction): return
         view = SHLView(self.thread_id)
@@ -4114,7 +4202,7 @@ def criar_embed_escolher_modo():
             "Dominação\n"
             "Extração VIP\n"
             "Captura Bandeiras\n"
-            "SHL\n"
+            "SHL Mode\n"
             "```"
         ),
         color=discord.Color.dark_teal(),
@@ -4718,8 +4806,7 @@ async def comandos(ctx):
         value=(
             "`!addsolo @user quantidade`\n"
             "`!removesolo @user quantidade`\n"
-            "`!pontossolo [@user]`\n"
-            "`!rankingsolo`"
+            "`!pontossolo [@user]`"
         ),
         inline=False
     )
@@ -6317,8 +6404,7 @@ async def pontossolo(ctx, membro: discord.Member = None):
     await ctx.send(f"🎯 {membro.display_name} tem **{total} vitórias no Solo Rebirth!**")
 
 
-@bot.command()
-async def rankingsolo(ctx):
+async def rankingsolo_legacy(ctx):
     conn = get_connection()
     if not conn:
         return await ctx.send(DB_ERROR_MSG)
@@ -6625,10 +6711,6 @@ def criar_embed_status_jogador(membro: discord.Member):
     r = cursor.fetchone()
     pontos_solo = r[0] if r else 0
 
-    cursor.execute("SELECT user_id FROM pontos_solo ORDER BY pontos DESC")
-    ranking_dados_solo = [uid for (uid,) in cursor.fetchall()]
-    rank_solo = ranking_dados_solo.index(membro.id) + 1 if membro.id in ranking_dados_solo else "N/A"
-
     cursor.execute("SELECT pontos FROM pontos_team WHERE user_id = %s", (membro.id,))
     r = cursor.fetchone()
     pontos_team = r[0] if r else 0
@@ -6636,6 +6718,10 @@ def criar_embed_status_jogador(membro: discord.Member):
     cursor.execute("SELECT user_id FROM pontos_team ORDER BY pontos DESC")
     ranking_dados_team = [uid for (uid,) in cursor.fetchall()]
     rank_team = ranking_dados_team.index(membro.id) + 1 if membro.id in ranking_dados_team else "N/A"
+
+    cursor.execute("SELECT pontos FROM pontos_shl WHERE user_id = %s", (membro.id,))
+    r = cursor.fetchone()
+    pontos_shl = r[0] if r else 0
 
     cursor.execute("SELECT pontos FROM pontos_tempo WHERE user_id = %s", (membro.id,))
     r = cursor.fetchone()
@@ -6734,7 +6820,7 @@ def criar_embed_status_jogador(membro: discord.Member):
         value=(
             f"**Tier {tier_solo} • {nome_tier_solo}**\n"
             f"{barra_solo}\n"
-            f"`{prog_solo}/10` no tier atual • 🏅 `#{rank_solo}`\n"
+            f"`{prog_solo}/10` no tier atual\n"
             f"Total: **{pontos_solo:02} vitórias**"
         ),
         inline=False
@@ -6753,6 +6839,16 @@ def criar_embed_status_jogador(membro: discord.Member):
 
 
     embed.add_field(
+        name="⚡ SHL MODE WINS",
+        value=(
+            f"Total: **{pontos_shl:02} vitórias**\n"
+            f"🪙 Recompensa: **+{CREDITOS_POR_SHL_WIN} créditos por vitória**\n"
+            "Separado de Team Wins, bónus diários e objetivos de equipa."
+        ),
+        inline=False
+    )
+
+    embed.add_field(
         name="🕒 ATIVIDADE",
         value=(
             f"Inativo há: **{formatar_inatividade(ultima_atividade)}**"
@@ -6763,7 +6859,7 @@ def criar_embed_status_jogador(membro: discord.Member):
     embed.add_field(
         name="🏆 RESUMO",
         value=(
-            f"🎯 Total vitórias: **{pontos_solo + pontos_team}**\n"
+            f"🎯 Total vitórias registadas: **{pontos_solo + pontos_team + pontos_shl}**\n"
             f"📊 Participações: **{pontos}**"
         ),
         inline=False
@@ -13135,6 +13231,7 @@ def criar_embed_carteira_publico():
             "Consulta o teu saldo, explora a loja física e acompanha os teus pedidos.\n\n"
             f"✅ Presença: **+{CREDITOS_POR_PRESENCA} créditos**\n"
             f"🏆 Team Win: **+{CREDITOS_POR_TEAMWIN} créditos**\n"
+            f"⚡ SHL Mode Win: **+{CREDITOS_POR_SHL_WIN} créditos**\n"
             f"🎁 Entrada gratuita: **{PRECO_ENTRADA_GRATUITA} créditos**"
         ),
         color=discord.Color.gold(),
