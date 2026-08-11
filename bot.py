@@ -1449,6 +1449,11 @@ if conn:
         ADD COLUMN IF NOT EXISTS log_message_id BIGINT
         """)
 
+        cursor.execute("""
+        ALTER TABLE pedidos_reembolso_inscricao
+        ADD COLUMN IF NOT EXISTS numero_devolucao TEXT
+        """)
+
         conn.commit()
         print("✅ Tabelas verificadas/criadas com sucesso.")
 
@@ -13566,6 +13571,33 @@ class DevolucaoStaffView(discord.ui.View):
         await interaction.followup.send("❌ Pedido de devolução rejeitado.", ephemeral=True)
 
 
+class NumeroDevolucaoModal(discord.ui.Modal, title="💶 Dados para devolução"):
+    numero = discord.ui.TextInput(
+        label="Número para a devolução",
+        placeholder="Ex.: 912345678",
+        required=True,
+        min_length=9,
+        max_length=20
+    )
+
+    def __init__(self, cancelamento_view):
+        super().__init__(timeout=180)
+        self.cancelamento_view = cancelamento_view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        valor = str(self.numero.value or "").strip()
+        # Aceita indicativo internacional e separadores comuns, mas exige um número plausível.
+        digitos = re.sub(r"\D", "", valor)
+        if len(digitos) < 9 or len(digitos) > 15:
+            return await interaction.response.send_message(
+                "❌ Indica um número válido para a devolução.", ephemeral=True
+            )
+        numero_normalizado = ("+" if valor.startswith("+") else "") + digitos
+        await self.cancelamento_view._cancelar(
+            interaction, 'devolucao', numero_devolucao=numero_normalizado
+        )
+
+
 class EscolhaCancelamentoValidadoView(discord.ui.View):
     def __init__(self, inscricao_id, message_id, user_id, nome_jogador, inscrito_por, thread_id):
         super().__init__(timeout=180)
@@ -13622,11 +13654,12 @@ class EscolhaCancelamentoValidadoView(discord.ui.View):
                 cur = conn.cursor()
                 try:
                     cur.execute(
-                        "SELECT log_message_id FROM pedidos_reembolso_inscricao WHERE inscricao_id=%s",
+                        "SELECT log_message_id, numero_devolucao FROM pedidos_reembolso_inscricao WHERE inscricao_id=%s",
                         (self.inscricao_id,)
                     )
                     row = cur.fetchone()
                     log_message_id = row[0] if row else None
+                    numero_devolucao = row[1] if row else None
                 finally:
                     cur.close(); conn.close()
 
@@ -13639,6 +13672,7 @@ class EscolhaCancelamentoValidadoView(discord.ui.View):
             embed.add_field(name="👤 Jogador", value=interaction.user.mention, inline=True)
             embed.add_field(name="🎮 Jogo", value=jogo, inline=True)
             embed.add_field(name="🆔 Inscrição", value=f"#{self.inscricao_id}", inline=True)
+            embed.add_field(name="📱 Número para devolução", value=numero_devolucao or "⚠️ Não indicado", inline=False)
             embed.add_field(name="📌 Estado", value="⏳ Pendente de processamento", inline=False)
             embed.set_footer(text="Log automático do bot")
 
@@ -13671,7 +13705,7 @@ class EscolhaCancelamentoValidadoView(discord.ui.View):
                 finally:
                     cur.close(); conn.close()
 
-    async def _cancelar(self, interaction, tipo):
+    async def _cancelar(self, interaction, tipo, numero_devolucao=None):
         # Responde imediatamente ao Discord para evitar o erro “didn't respond in time”.
         await interaction.response.defer(ephemeral=True)
 
@@ -13698,11 +13732,19 @@ class EscolhaCancelamentoValidadoView(discord.ui.View):
             # não volta a cancelar nem a pagar. Reutiliza o pedido já existente e volta a notificar.
             if estado_atual == 'cancelado':
                 cur.execute(
-                    "SELECT tipo, estado, valor_creditos FROM pedidos_reembolso_inscricao WHERE inscricao_id=%s",
+                    "SELECT tipo, estado, valor_creditos, numero_devolucao FROM pedidos_reembolso_inscricao WHERE inscricao_id=%s",
                     (self.inscricao_id,)
                 )
                 pedido_existente = cur.fetchone()
-                conn.rollback()
+                if pedido_existente and pedido_existente[0] == 'devolucao' and numero_devolucao:
+                    cur.execute(
+                        "UPDATE pedidos_reembolso_inscricao SET numero_devolucao=%s WHERE inscricao_id=%s",
+                        (numero_devolucao, self.inscricao_id)
+                    )
+                    conn.commit()
+                    pedido_existente = (pedido_existente[0], pedido_existente[1], pedido_existente[2], numero_devolucao)
+                else:
+                    conn.rollback()
             elif estado_atual != 'pago':
                 conn.rollback()
                 return await interaction.followup.send(
@@ -13744,16 +13786,22 @@ class EscolhaCancelamentoValidadoView(discord.ui.View):
                 cur.execute(
                     """
                     INSERT INTO pedidos_reembolso_inscricao
-                        (inscricao_id, user_id, tipo, estado, valor_creditos)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (inscricao_id) DO NOTHING
+                        (inscricao_id, user_id, tipo, estado, valor_creditos, numero_devolucao)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (inscricao_id) DO UPDATE SET
+                        numero_devolucao = CASE
+                            WHEN EXCLUDED.tipo = 'devolucao' AND EXCLUDED.numero_devolucao IS NOT NULL
+                            THEN EXCLUDED.numero_devolucao
+                            ELSE pedidos_reembolso_inscricao.numero_devolucao
+                        END
                     """,
                     (
                         self.inscricao_id,
                         self.user_id,
                         tipo_final,
                         'processado' if tipo_final == 'creditos' else 'pendente',
-                        CREDITOS_CANCELAMENTO_VALIDADO if tipo_final == 'creditos' else 0
+                        CREDITOS_CANCELAMENTO_VALIDADO if tipo_final == 'creditos' else 0,
+                        numero_devolucao if tipo_final == 'devolucao' else None
                     )
                 )
                 conn.commit()
@@ -13824,7 +13872,7 @@ class EscolhaCancelamentoValidadoView(discord.ui.View):
 
     @discord.ui.button(label="Pedir Devolução", emoji="💶", style=discord.ButtonStyle.primary)
     async def devolucao(self, interaction, button):
-        await self._cancelar(interaction, 'devolucao')
+        await interaction.response.send_modal(NumeroDevolucaoModal(self))
 
     @discord.ui.button(label="Converter em Créditos", emoji="🪙", style=discord.ButtonStyle.success)
     async def creditos(self, interaction, button):
