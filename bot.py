@@ -6493,6 +6493,68 @@ async def addteam(ctx, membro: discord.Member, quantidade: int):
 
 @bot.command()
 @commands.has_permissions(administrator=True)
+async def migrarshl(ctx, membro: discord.Member, quantidade: int):
+    """Migra Team Wins antigas do SHL para o contador SHL Mode, sem alterar créditos."""
+    if quantidade <= 0:
+        return await ctx.send("⚠️ A quantidade deve ser superior a 0.")
+
+    conn = get_connection()
+    if not conn:
+        return await ctx.send(DB_ERROR_MSG)
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("SELECT pontos FROM pontos_team WHERE user_id = %s FOR UPDATE", (membro.id,))
+        row_team = cursor.fetchone()
+        team_atual = int(row_team[0]) if row_team else 0
+
+        if team_atual < quantidade:
+            conn.rollback()
+            return await ctx.send(
+                f"⚠️ {membro.display_name} tem apenas **{team_atual} Team Wins**. "
+                f"Não é possível migrar **{quantidade}**."
+            )
+
+        cursor.execute("SELECT pontos FROM pontos_shl WHERE user_id = %s FOR UPDATE", (membro.id,))
+        row_shl = cursor.fetchone()
+        shl_atual = int(row_shl[0]) if row_shl else 0
+
+        novo_team = team_atual - quantidade
+        novo_shl = shl_atual + quantidade
+
+        cursor.execute("UPDATE pontos_team SET pontos = %s WHERE user_id = %s", (novo_team, membro.id))
+        if row_shl:
+            cursor.execute("UPDATE pontos_shl SET pontos = %s WHERE user_id = %s", (novo_shl, membro.id))
+        else:
+            cursor.execute("INSERT INTO pontos_shl (user_id, pontos) VALUES (%s, %s)", (membro.id, novo_shl))
+
+        # Migração histórica: não mexe na economia, bónus ou objetivos de equipa.
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
+    await enviar_log_pontos(
+        ctx.guild,
+        f"🔄 Migração SHL Mode — {membro.mention}\n"
+        f"👥 Team Wins: **{team_atual} → {novo_team}**\n"
+        f"⚡ SHL Mode Wins: **{shl_atual} → {novo_shl}**\n"
+        f"🪙 Créditos: **sem alteração**\n"
+        f"🛡️ Staff: {ctx.author.mention}"
+    )
+    await ctx.send(
+        f"✅ Migração concluída para **{membro.display_name}**.\n"
+        f"👥 Team Wins: **{team_atual} → {novo_team}**\n"
+        f"⚡ SHL Mode Wins: **{shl_atual} → {novo_shl}**\n"
+        f"🪙 Créditos: **sem alteração**"
+    )
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
 async def removeteam(ctx, membro: discord.Member, quantidade: int):
     conn = get_connection()
     if not conn:
@@ -6723,6 +6785,10 @@ def criar_embed_status_jogador(membro: discord.Member):
     r = cursor.fetchone()
     pontos_shl = r[0] if r else 0
 
+    cursor.execute("SELECT user_id FROM pontos_shl ORDER BY pontos DESC")
+    ranking_dados_shl = [uid for (uid,) in cursor.fetchall()]
+    rank_shl = ranking_dados_shl.index(membro.id) + 1 if membro.id in ranking_dados_shl else "N/A"
+
     cursor.execute("SELECT pontos FROM pontos_tempo WHERE user_id = %s", (membro.id,))
     r = cursor.fetchone()
     pontos_tempo = r[0] if r else 0
@@ -6776,7 +6842,7 @@ def criar_embed_status_jogador(membro: discord.Member):
         return tier, nome_tier, barra, progresso
 
     tier_pontos, nome_tier_pontos, barra_pontos, prog_pontos = get_tier_data(pontos)
-    tier_solo, nome_tier_solo, barra_solo, prog_solo = get_tier_data(pontos_solo)
+    tier_shl, nome_tier_shl, barra_shl, prog_shl = get_tier_data(pontos_shl)
     tier_team, nome_tier_team, barra_team, prog_team = get_tier_data(pontos_team)
 
     tier_roles = {
@@ -6816,12 +6882,12 @@ def criar_embed_status_jogador(membro: discord.Member):
     )
 
     embed.add_field(
-        name="🔥 SOLO WINS",
+        name="⚡ SHL MODE WINS",
         value=(
-            f"**Tier {tier_solo} • {nome_tier_solo}**\n"
-            f"{barra_solo}\n"
-            f"`{prog_solo}/10` no tier atual\n"
-            f"Total: **{pontos_solo:02} vitórias**"
+            f"**Tier {tier_shl} • {nome_tier_shl}**\n"
+            f"{barra_shl}\n"
+            f"`{prog_shl}/10` no tier atual • 🏅 `#{rank_shl}`\n"
+            f"Total: **{pontos_shl:02} vitórias**"
         ),
         inline=False
     )
@@ -6837,17 +6903,6 @@ def criar_embed_status_jogador(membro: discord.Member):
         inline=False
     )
 
-
-    embed.add_field(
-        name="⚡ SHL MODE WINS",
-        value=(
-            f"Total: **{pontos_shl:02} vitórias**\n"
-            f"🪙 Recompensa: **+{CREDITOS_POR_SHL_WIN} créditos por vitória**\n"
-            "Separado de Team Wins, bónus diários e objetivos de equipa."
-        ),
-        inline=False
-    )
-
     embed.add_field(
         name="🕒 ATIVIDADE",
         value=(
@@ -6859,7 +6914,7 @@ def criar_embed_status_jogador(membro: discord.Member):
     embed.add_field(
         name="🏆 RESUMO",
         value=(
-            f"🎯 Total vitórias registadas: **{pontos_solo + pontos_team + pontos_shl}**\n"
+            f"🎯 Total vitórias registadas: **{pontos_team + pontos_shl}**\n"
             f"📊 Participações: **{pontos}**"
         ),
         inline=False
