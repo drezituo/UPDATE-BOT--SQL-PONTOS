@@ -1431,6 +1431,16 @@ if conn:
         )
         """)
 
+        cursor.execute("""
+        ALTER TABLE pedidos_reembolso_inscricao
+        ADD COLUMN IF NOT EXISTS log_channel_id BIGINT
+        """)
+
+        cursor.execute("""
+        ALTER TABLE pedidos_reembolso_inscricao
+        ADD COLUMN IF NOT EXISTS log_message_id BIGINT
+        """)
+
         conn.commit()
         print("✅ Tabelas verificadas/criadas com sucesso.")
 
@@ -1463,6 +1473,7 @@ async def on_ready():
     bot.add_view(PainelEquipasView())
     bot.add_view(PainelCarteiraView())
     bot.add_view(PedidoLojaStaffView())
+    bot.add_view(DevolucaoStaffView())
     await carregar_views_termos_pendentes()
     await garantir_painel_equipas_no_fundo()
     await garantir_painel_carteira_no_fundo()
@@ -13255,6 +13266,154 @@ class LojaJogadorView(discord.ui.View):
 
 
 
+class DevolucaoStaffView(discord.ui.View):
+    """Ações persistentes da staff para pedidos de devolução de inscrições."""
+    def __init__(self, bloqueado: bool = False):
+        super().__init__(timeout=None)
+        if bloqueado:
+            for item in self.children:
+                item.disabled = True
+
+    async def _staff_only(self, interaction: discord.Interaction) -> bool:
+        if interaction.guild is None or not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Apenas a staff/admin pode processar devoluções.", ephemeral=True)
+            return False
+        return True
+
+    async def _obter_pedido(self, interaction: discord.Interaction, for_update: bool = False):
+        conn = get_connection()
+        if not conn:
+            return None, None, None
+        cur = conn.cursor()
+        try:
+            sufixo = " FOR UPDATE" if for_update else ""
+            cur.execute(
+                "SELECT inscricao_id, user_id, tipo, estado, valor_creditos FROM pedidos_reembolso_inscricao "
+                "WHERE log_message_id=%s" + sufixo,
+                (interaction.message.id,)
+            )
+            return conn, cur, cur.fetchone()
+        except Exception:
+            cur.close(); conn.close()
+            raise
+
+    async def _editar_embed_estado(self, interaction: discord.Interaction, estado_txt: str, cor, processado_por=None):
+        embed = interaction.message.embeds[0] if interaction.message.embeds else discord.Embed(title="💶 Pedido de devolução")
+        embed.color = cor
+        alterado = False
+        for i, campo in enumerate(embed.fields):
+            if campo.name == "📌 Estado":
+                embed.set_field_at(i, name="📌 Estado", value=estado_txt, inline=False)
+                alterado = True
+                break
+        if not alterado:
+            embed.add_field(name="📌 Estado", value=estado_txt, inline=False)
+        if processado_por:
+            embed.add_field(name="👮 Processado por", value=processado_por.mention, inline=True)
+            embed.add_field(name="🕒 Processado em", value=f"<t:{int(discord.utils.utcnow().timestamp())}:F>", inline=True)
+        await interaction.message.edit(embed=embed, view=DevolucaoStaffView(bloqueado=True))
+
+    async def _notificar(self, interaction: discord.Interaction, user_id: int, mensagem: str):
+        user = interaction.guild.get_member(user_id) if interaction.guild else None
+        if user is None:
+            try:
+                user = await bot.fetch_user(user_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                user = None
+        if user:
+            try:
+                await user.send(mensagem)
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+
+    @discord.ui.button(
+        label="Devolução efetuada",
+        emoji="✅",
+        style=discord.ButtonStyle.success,
+        custom_id="reembolso_staff:processar"
+    )
+    async def processar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+
+        conn, cur, row = await self._obter_pedido(interaction, for_update=True)
+        if conn is None:
+            return await interaction.followup.send(DB_ERROR_MSG, ephemeral=True)
+        try:
+            if not row:
+                conn.rollback()
+                return await interaction.followup.send("⚠️ Não encontrei o pedido associado a esta mensagem.", ephemeral=True)
+            inscricao_id, user_id, tipo, estado, valor_creditos = row
+            if tipo != 'devolucao':
+                conn.rollback()
+                return await interaction.followup.send("ℹ️ Este pedido não é uma devolução manual.", ephemeral=True)
+            if estado != 'pendente':
+                conn.rollback()
+                return await interaction.followup.send(f"ℹ️ Este pedido já está **{estado}**.", ephemeral=True)
+            cur.execute(
+                "UPDATE pedidos_reembolso_inscricao SET estado='processado', processado_por=%s, processado_em=NOW() "
+                "WHERE inscricao_id=%s AND estado='pendente'",
+                (interaction.user.id, inscricao_id)
+            )
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            print(f"Erro ao processar devolução: {e}")
+            return await interaction.followup.send("⚠️ Não foi possível processar a devolução.", ephemeral=True)
+        finally:
+            cur.close(); conn.close()
+
+        await self._editar_embed_estado(interaction, "✅ Devolução efetuada", discord.Color.green(), interaction.user)
+        await self._notificar(
+            interaction, user_id,
+            f"✅ A staff confirmou que a devolução relativa à inscrição **#{inscricao_id}** foi efetuada."
+        )
+        await interaction.followup.send("✅ Pedido marcado como devolução efetuada.", ephemeral=True)
+
+    @discord.ui.button(
+        label="Rejeitar pedido",
+        emoji="❌",
+        style=discord.ButtonStyle.danger,
+        custom_id="reembolso_staff:rejeitar"
+    )
+    async def rejeitar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+
+        conn, cur, row = await self._obter_pedido(interaction, for_update=True)
+        if conn is None:
+            return await interaction.followup.send(DB_ERROR_MSG, ephemeral=True)
+        try:
+            if not row:
+                conn.rollback()
+                return await interaction.followup.send("⚠️ Não encontrei o pedido associado a esta mensagem.", ephemeral=True)
+            inscricao_id, user_id, tipo, estado, valor_creditos = row
+            if estado != 'pendente':
+                conn.rollback()
+                return await interaction.followup.send(f"ℹ️ Este pedido já está **{estado}**.", ephemeral=True)
+            cur.execute(
+                "UPDATE pedidos_reembolso_inscricao SET estado='cancelado', processado_por=%s, processado_em=NOW() "
+                "WHERE inscricao_id=%s AND estado='pendente'",
+                (interaction.user.id, inscricao_id)
+            )
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            print(f"Erro ao rejeitar devolução: {e}")
+            return await interaction.followup.send("⚠️ Não foi possível rejeitar o pedido.", ephemeral=True)
+        finally:
+            cur.close(); conn.close()
+
+        await self._editar_embed_estado(interaction, "❌ Pedido rejeitado", discord.Color.red(), interaction.user)
+        await self._notificar(
+            interaction, user_id,
+            f"❌ O pedido de devolução relativo à inscrição **#{inscricao_id}** foi rejeitado pela staff. Contacta a staff se precisares de esclarecimentos."
+        )
+        await interaction.followup.send("❌ Pedido de devolução rejeitado.", ephemeral=True)
+
+
 class EscolhaCancelamentoValidadoView(discord.ui.View):
     def __init__(self, inscricao_id, message_id, user_id, nome_jogador, inscrito_por, thread_id):
         super().__init__(timeout=180)
@@ -13291,18 +13450,74 @@ class EscolhaCancelamentoValidadoView(discord.ui.View):
                 ]
             )
         else:
-            await enviar_log_bot(
-                interaction.guild,
-                "💶 Novo pedido de devolução",
-                "O jogador cancelou uma inscrição validada e pediu devolução. **A staff deve processar este pedido.**",
-                cor=discord.Color.orange(),
-                campos=[
-                    ("👤 Jogador", interaction.user.mention, True),
-                    ("🎮 Jogo", jogo, True),
-                    ("🆔 Inscrição", f"#{self.inscricao_id}", True),
-                    ("📌 Estado", "⏳ Pendente de processamento", False),
-                ]
+            canal = bot.get_channel(BOT_LOG_CHANNEL_ID)
+            if canal is None and interaction.guild is not None:
+                canal = interaction.guild.get_channel(BOT_LOG_CHANNEL_ID)
+            if canal is None:
+                try:
+                    canal = await bot.fetch_channel(BOT_LOG_CHANNEL_ID)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    canal = None
+
+            if canal is None:
+                print(f"[LOG BOT] Canal {BOT_LOG_CHANNEL_ID} não encontrado para devolução #{self.inscricao_id}")
+                return
+
+            # Se já existir um log associado ao pedido, tenta atualizar/reutilizar essa mensagem.
+            log_message_id = None
+            conn = get_connection()
+            if conn:
+                cur = conn.cursor()
+                try:
+                    cur.execute(
+                        "SELECT log_message_id FROM pedidos_reembolso_inscricao WHERE inscricao_id=%s",
+                        (self.inscricao_id,)
+                    )
+                    row = cur.fetchone()
+                    log_message_id = row[0] if row else None
+                finally:
+                    cur.close(); conn.close()
+
+            embed = discord.Embed(
+                title="💶 Novo pedido de devolução",
+                description="O jogador cancelou uma inscrição validada e pediu devolução. **A staff deve processar este pedido.**",
+                color=discord.Color.orange(),
+                timestamp=discord.utils.utcnow()
             )
+            embed.add_field(name="👤 Jogador", value=interaction.user.mention, inline=True)
+            embed.add_field(name="🎮 Jogo", value=jogo, inline=True)
+            embed.add_field(name="🆔 Inscrição", value=f"#{self.inscricao_id}", inline=True)
+            embed.add_field(name="📌 Estado", value="⏳ Pendente de processamento", inline=False)
+            embed.set_footer(text="Log automático do bot")
+
+            msg = None
+            if log_message_id:
+                try:
+                    msg = await canal.fetch_message(log_message_id)
+                    await msg.edit(embed=embed, view=DevolucaoStaffView())
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    msg = None
+            if msg is None:
+                try:
+                    msg = await canal.send(embed=embed, view=DevolucaoStaffView())
+                except (discord.Forbidden, discord.HTTPException) as e:
+                    print(f"[LOG BOT] Falha ao enviar pedido de devolução: {e}")
+                    return
+
+            conn = get_connection()
+            if conn:
+                cur = conn.cursor()
+                try:
+                    cur.execute(
+                        "UPDATE pedidos_reembolso_inscricao SET log_channel_id=%s, log_message_id=%s WHERE inscricao_id=%s",
+                        (canal.id, msg.id, self.inscricao_id)
+                    )
+                    conn.commit()
+                except Exception as e:
+                    conn.rollback()
+                    print(f"Erro ao guardar referência do log da devolução: {e}")
+                finally:
+                    cur.close(); conn.close()
 
     async def _cancelar(self, interaction, tipo):
         # Responde imediatamente ao Discord para evitar o erro “didn't respond in time”.
