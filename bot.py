@@ -14127,14 +14127,29 @@ class EscolhaCancelamentoValidadoView(discord.ui.View):
                     )
 
                 if metodo_pagamento == 'economia':
-                    movimentar_creditos_cursor(
-                        cur,
-                        self.user_id,
-                        PRECO_ENTRADA_GRATUITA,
-                        'devolucao_inscricao',
-                        'Créditos devolvidos pelo cancelamento',
-                        f'devolucao-inscricao:{self.inscricao_id}'
-                    )
+                    # Se o próprio jogador escolheu "Converter em Créditos", os créditos
+                    # recebidos no cancelamento ficam restritos para sorteios, mesmo quando
+                    # a inscrição tinha sido validada com créditos da carteira. Isto garante
+                    # que qualquer compensação escolhida como conversão nunca pode ser usada
+                    # para comprar entradas de sorteio.
+                    if tipo == 'creditos':
+                        movimentar_creditos_cursor(
+                            cur,
+                            self.user_id,
+                            PRECO_ENTRADA_GRATUITA,
+                            'conversao_cancelamento',
+                            'Inscrição validada convertida em créditos',
+                            f'conversao-inscricao:{self.inscricao_id}'
+                        )
+                    else:
+                        movimentar_creditos_cursor(
+                            cur,
+                            self.user_id,
+                            PRECO_ENTRADA_GRATUITA,
+                            'devolucao_inscricao',
+                            'Créditos devolvidos pelo cancelamento',
+                            f'devolucao-inscricao:{self.inscricao_id}'
+                        )
                     tipo_final = 'creditos'
                 elif tipo == 'creditos':
                     movimentar_creditos_cursor(
