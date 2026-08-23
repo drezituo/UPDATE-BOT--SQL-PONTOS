@@ -1507,45 +1507,27 @@ if conn:
         ADD COLUMN IF NOT EXISTS numero_devolucao TEXT
         """)
 
-        # Correção única das restrições de sorteio.
-        # Não tentamos inferir créditos restritos através de todo o histórico da carteira,
-        # porque isso pode classificar créditos normais como se fossem conversões.
-        # A partir desta versão, só uma conversão REAL de inscrição adiciona saldo restrito.
+        # Reset único das restrições de sorteio.
+        # Não existem conversões históricas reais a preservar nesta comunidade.
+        # Por isso todos começam com 0 créditos restritos nesta versão.
+        # A partir daqui, SOMENTE novas ações "Converter em Créditos" adicionam
+        # exatamente o valor convertido ao saldo restrito para sorteios.
         cursor.execute("""
-        CREATE TABLE IF NOT EXISTS economia_restricoes_sorteio_correcao_v2 (
+        CREATE TABLE IF NOT EXISTS economia_restricoes_sorteio_reset_v3 (
             id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
             concluida BOOLEAN NOT NULL DEFAULT FALSE,
             concluida_em TIMESTAMPTZ
         )
         """)
-        cursor.execute("SELECT concluida FROM economia_restricoes_sorteio_correcao_v2 WHERE id=1")
-        correcao_row = cursor.fetchone()
-        if not correcao_row or not correcao_row[0]:
-            # Limpa a reconstrução antiga, que podia restringir créditos de outros jogadores.
-            cursor.execute("UPDATE economia_restricoes_sorteio SET saldo_restrito=0, atualizado_em=NOW()")
-
-            # Repõe apenas conversões de inscrição efetivamente registadas pelo bot.
-            # No estado atual da comunidade isto preserva a conversão já efetuada e não
-            # restringe jogadores que nunca escolheram 'Converter em Créditos'.
-            cursor.execute("""
-                SELECT p.user_id, COALESCE(SUM(p.valor_creditos), 0), COALESCE(c.saldo, 0)
-                FROM pedidos_reembolso_inscricao p
-                LEFT JOIN economia_carteiras c ON c.user_id = p.user_id
-                WHERE p.tipo = 'creditos'
-                  AND p.estado = 'processado'
-                  AND p.valor_creditos > 0
-                GROUP BY p.user_id, c.saldo
-            """)
-            for uid, total_convertido, saldo_atual in cursor.fetchall():
-                restrito_exato = min(int(total_convertido or 0), int(saldo_atual or 0))
-                cursor.execute(
-                    "INSERT INTO economia_restricoes_sorteio (user_id,saldo_restrito,atualizado_em) VALUES (%s,%s,NOW()) "
-                    "ON CONFLICT (user_id) DO UPDATE SET saldo_restrito=EXCLUDED.saldo_restrito, atualizado_em=NOW()",
-                    (int(uid), restrito_exato)
-                )
-
+        cursor.execute("SELECT concluida FROM economia_restricoes_sorteio_reset_v3 WHERE id=1")
+        reset_row = cursor.fetchone()
+        if not reset_row or not reset_row[0]:
             cursor.execute(
-                "INSERT INTO economia_restricoes_sorteio_correcao_v2 (id,concluida,concluida_em) VALUES (1,TRUE,NOW()) "
+                "UPDATE economia_restricoes_sorteio SET saldo_restrito=0, atualizado_em=NOW()"
+            )
+            cursor.execute(
+                "INSERT INTO economia_restricoes_sorteio_reset_v3 (id,concluida,concluida_em) "
+                "VALUES (1,TRUE,NOW()) "
                 "ON CONFLICT (id) DO UPDATE SET concluida=TRUE, concluida_em=NOW()"
             )
 
