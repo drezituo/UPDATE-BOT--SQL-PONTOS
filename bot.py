@@ -1507,41 +1507,45 @@ if conn:
         ADD COLUMN IF NOT EXISTS numero_devolucao TEXT
         """)
 
-        # Migração única: calcula quanto do saldo atual veio de conversões de cancelamentos
-        # e ainda não foi consumido por compras/gastos posteriores.
-        cursor.execute("SELECT concluida FROM economia_restricoes_sorteio_migracao WHERE id=1")
-        mig_row = cursor.fetchone()
-        if not mig_row or not mig_row[0]:
-            cursor.execute("SELECT DISTINCT user_id FROM economia_movimentos ORDER BY user_id")
-            usuarios_mig = [int(r[0]) for r in cursor.fetchall()]
-            for uid in usuarios_mig:
-                cursor.execute("SELECT quantidade, tipo FROM economia_movimentos WHERE user_id=%s ORDER BY id", (uid,))
-                movimentos = cursor.fetchall()
-                saldo_exec = 0
-                restrito_exec = 0
-                for quantidade, tipo_mov in movimentos:
-                    q = int(quantidade)
-                    if q >= 0:
-                        saldo_exec += q
-                        if tipo_mov == 'conversao_cancelamento':
-                            restrito_exec += q
-                    else:
-                        gasto_exec = -q
-                        livre_exec = max(saldo_exec - restrito_exec, 0)
-                        consumo_restrito = max(gasto_exec - livre_exec, 0)
-                        restrito_exec = max(restrito_exec - consumo_restrito, 0)
-                        saldo_exec = max(saldo_exec - gasto_exec, 0)
-                cursor.execute("SELECT saldo FROM economia_carteiras WHERE user_id=%s", (uid,))
-                saldo_row = cursor.fetchone()
-                saldo_real = int(saldo_row[0]) if saldo_row else 0
-                restrito_exec = min(restrito_exec, saldo_real)
+        # Correção única das restrições de sorteio.
+        # Não tentamos inferir créditos restritos através de todo o histórico da carteira,
+        # porque isso pode classificar créditos normais como se fossem conversões.
+        # A partir desta versão, só uma conversão REAL de inscrição adiciona saldo restrito.
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS economia_restricoes_sorteio_correcao_v2 (
+            id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+            concluida BOOLEAN NOT NULL DEFAULT FALSE,
+            concluida_em TIMESTAMPTZ
+        )
+        """)
+        cursor.execute("SELECT concluida FROM economia_restricoes_sorteio_correcao_v2 WHERE id=1")
+        correcao_row = cursor.fetchone()
+        if not correcao_row or not correcao_row[0]:
+            # Limpa a reconstrução antiga, que podia restringir créditos de outros jogadores.
+            cursor.execute("UPDATE economia_restricoes_sorteio SET saldo_restrito=0, atualizado_em=NOW()")
+
+            # Repõe apenas conversões de inscrição efetivamente registadas pelo bot.
+            # No estado atual da comunidade isto preserva a conversão já efetuada e não
+            # restringe jogadores que nunca escolheram 'Converter em Créditos'.
+            cursor.execute("""
+                SELECT p.user_id, COALESCE(SUM(p.valor_creditos), 0), COALESCE(c.saldo, 0)
+                FROM pedidos_reembolso_inscricao p
+                LEFT JOIN economia_carteiras c ON c.user_id = p.user_id
+                WHERE p.tipo = 'creditos'
+                  AND p.estado = 'processado'
+                  AND p.valor_creditos > 0
+                GROUP BY p.user_id, c.saldo
+            """)
+            for uid, total_convertido, saldo_atual in cursor.fetchall():
+                restrito_exato = min(int(total_convertido or 0), int(saldo_atual or 0))
                 cursor.execute(
                     "INSERT INTO economia_restricoes_sorteio (user_id,saldo_restrito,atualizado_em) VALUES (%s,%s,NOW()) "
                     "ON CONFLICT (user_id) DO UPDATE SET saldo_restrito=EXCLUDED.saldo_restrito, atualizado_em=NOW()",
-                    (uid, restrito_exec)
+                    (int(uid), restrito_exato)
                 )
+
             cursor.execute(
-                "INSERT INTO economia_restricoes_sorteio_migracao (id,concluida,concluida_em) VALUES (1,TRUE,NOW()) "
+                "INSERT INTO economia_restricoes_sorteio_correcao_v2 (id,concluida,concluida_em) VALUES (1,TRUE,NOW()) "
                 "ON CONFLICT (id) DO UPDATE SET concluida=TRUE, concluida_em=NOW()"
             )
 
