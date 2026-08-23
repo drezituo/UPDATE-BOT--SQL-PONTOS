@@ -5,6 +5,7 @@ import asyncio
 import psycopg2
 import os
 import random
+import secrets
 import re
 from html import escape
 from datetime import datetime, timezone, timedelta
@@ -1341,6 +1342,58 @@ if conn:
         """)
 
         cursor.execute("""
+        CREATE TABLE IF NOT EXISTS economia_restricoes_sorteio (
+            user_id BIGINT PRIMARY KEY,
+            saldo_restrito INTEGER NOT NULL DEFAULT 0 CHECK (saldo_restrito >= 0),
+            atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS economia_restricoes_sorteio_migracao (
+            id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+            concluida BOOLEAN NOT NULL DEFAULT FALSE,
+            concluida_em TIMESTAMPTZ
+        )
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sorteios (
+            id BIGSERIAL PRIMARY KEY,
+            nome TEXT NOT NULL,
+            descricao TEXT NOT NULL DEFAULT '',
+            preco_entrada INTEGER NOT NULL CHECK (preco_entrada > 0),
+            limite_por_jogador INTEGER NOT NULL DEFAULT 10 CHECK (limite_por_jogador > 0),
+            encerra_em TIMESTAMPTZ NOT NULL,
+            estado TEXT NOT NULL DEFAULT 'ativo' CHECK (estado IN ('ativo','fechado','sorteado','cancelado')),
+            criado_por BIGINT NOT NULL,
+            criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            vencedor_user_id BIGINT,
+            numero_vencedor INTEGER,
+            sorteado_por BIGINT,
+            sorteado_em TIMESTAMPTZ
+        )
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sorteio_entradas (
+            id BIGSERIAL PRIMARY KEY,
+            sorteio_id BIGINT NOT NULL REFERENCES sorteios(id) ON DELETE CASCADE,
+            numero INTEGER NOT NULL,
+            user_id BIGINT NOT NULL,
+            preco_pago INTEGER NOT NULL CHECK (preco_pago >= 0),
+            ativa BOOLEAN NOT NULL DEFAULT TRUE,
+            criada_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (sorteio_id, numero)
+        )
+        """)
+
+        cursor.execute("""
+        CREATE INDEX IF NOT EXISTS ix_sorteio_entradas_user
+        ON sorteio_entradas (sorteio_id, user_id)
+        """)
+
+        cursor.execute("""
         CREATE TABLE IF NOT EXISTS loja_produtos (
             id BIGSERIAL PRIMARY KEY,
             nome TEXT NOT NULL,
@@ -1453,6 +1506,44 @@ if conn:
         ALTER TABLE pedidos_reembolso_inscricao
         ADD COLUMN IF NOT EXISTS numero_devolucao TEXT
         """)
+
+        # Migração única: calcula quanto do saldo atual veio de conversões de cancelamentos
+        # e ainda não foi consumido por compras/gastos posteriores.
+        cursor.execute("SELECT concluida FROM economia_restricoes_sorteio_migracao WHERE id=1")
+        mig_row = cursor.fetchone()
+        if not mig_row or not mig_row[0]:
+            cursor.execute("SELECT DISTINCT user_id FROM economia_movimentos ORDER BY user_id")
+            usuarios_mig = [int(r[0]) for r in cursor.fetchall()]
+            for uid in usuarios_mig:
+                cursor.execute("SELECT quantidade, tipo FROM economia_movimentos WHERE user_id=%s ORDER BY id", (uid,))
+                movimentos = cursor.fetchall()
+                saldo_exec = 0
+                restrito_exec = 0
+                for quantidade, tipo_mov in movimentos:
+                    q = int(quantidade)
+                    if q >= 0:
+                        saldo_exec += q
+                        if tipo_mov == 'conversao_cancelamento':
+                            restrito_exec += q
+                    else:
+                        gasto_exec = -q
+                        livre_exec = max(saldo_exec - restrito_exec, 0)
+                        consumo_restrito = max(gasto_exec - livre_exec, 0)
+                        restrito_exec = max(restrito_exec - consumo_restrito, 0)
+                        saldo_exec = max(saldo_exec - gasto_exec, 0)
+                cursor.execute("SELECT saldo FROM economia_carteiras WHERE user_id=%s", (uid,))
+                saldo_row = cursor.fetchone()
+                saldo_real = int(saldo_row[0]) if saldo_row else 0
+                restrito_exec = min(restrito_exec, saldo_real)
+                cursor.execute(
+                    "INSERT INTO economia_restricoes_sorteio (user_id,saldo_restrito,atualizado_em) VALUES (%s,%s,NOW()) "
+                    "ON CONFLICT (user_id) DO UPDATE SET saldo_restrito=EXCLUDED.saldo_restrito, atualizado_em=NOW()",
+                    (uid, restrito_exec)
+                )
+            cursor.execute(
+                "INSERT INTO economia_restricoes_sorteio_migracao (id,concluida,concluida_em) VALUES (1,TRUE,NOW()) "
+                "ON CONFLICT (id) DO UPDATE SET concluida=TRUE, concluida_em=NOW()"
+            )
 
         conn.commit()
         print("✅ Tabelas verificadas/criadas com sucesso.")
@@ -13162,19 +13253,46 @@ def garantir_carteira_cursor(cursor, user_id: int):
 
 
 def movimentar_creditos_cursor(cursor, user_id: int, quantidade: int, tipo: str, motivo: str, referencia: str = None):
+    """Movimenta a carteira e mantém separado o saldo que não pode ser usado em sorteios.
+
+    Créditos obtidos por conversão de uma inscrição paga ficam restritos para sorteios.
+    Compras normais podem consumir esses créditos; entradas de sorteio nunca podem.
+    """
     garantir_carteira_cursor(cursor, user_id)
     cursor.execute("SELECT saldo FROM economia_carteiras WHERE user_id = %s FOR UPDATE", (user_id,))
     saldo = int(cursor.fetchone()[0])
-    novo = saldo + int(quantidade)
+
+    cursor.execute(
+        "INSERT INTO economia_restricoes_sorteio (user_id, saldo_restrito) VALUES (%s,0) "
+        "ON CONFLICT (user_id) DO NOTHING",
+        (user_id,)
+    )
+    cursor.execute("SELECT saldo_restrito FROM economia_restricoes_sorteio WHERE user_id=%s FOR UPDATE", (user_id,))
+    restrito = int(cursor.fetchone()[0])
+
+    quantidade = int(quantidade)
+    novo = saldo + quantidade
     if novo < 0:
         raise ValueError("Saldo insuficiente")
 
-    ganho = max(int(quantidade), 0)
-    gasto = max(-int(quantidade), 0)
+    if quantidade > 0 and tipo == "conversao_cancelamento":
+        restrito += quantidade
+    elif quantidade < 0 and tipo != "compra_sorteio":
+        gasto = -quantidade
+        disponivel_nao_restrito = max(saldo - restrito, 0)
+        consumo_restrito = max(gasto - disponivel_nao_restrito, 0)
+        restrito = max(restrito - consumo_restrito, 0)
+
+    ganho = max(quantidade, 0)
+    gasto = max(-quantidade, 0)
     cursor.execute(
         "UPDATE economia_carteiras SET saldo=%s, total_ganho=total_ganho+%s, "
         "total_gasto=total_gasto+%s, atualizado_em=NOW() WHERE user_id=%s",
         (novo, ganho, gasto, user_id)
+    )
+    cursor.execute(
+        "UPDATE economia_restricoes_sorteio SET saldo_restrito=%s, atualizado_em=NOW() WHERE user_id=%s",
+        (min(restrito, novo), user_id)
     )
     cursor.execute(
         "INSERT INTO economia_movimentos (user_id, quantidade, tipo, motivo, referencia) "
@@ -13182,6 +13300,22 @@ def movimentar_creditos_cursor(cursor, user_id: int, quantidade: int, tipo: str,
         (user_id, quantidade, tipo, motivo, referencia)
     )
     return novo
+
+
+def obter_saldo_elegivel_sorteio_cursor(cursor, user_id: int):
+    garantir_carteira_cursor(cursor, user_id)
+    cursor.execute(
+        "INSERT INTO economia_restricoes_sorteio (user_id, saldo_restrito) VALUES (%s,0) "
+        "ON CONFLICT (user_id) DO NOTHING",
+        (user_id,)
+    )
+    cursor.execute(
+        "SELECT c.saldo, r.saldo_restrito FROM economia_carteiras c "
+        "JOIN economia_restricoes_sorteio r ON r.user_id=c.user_id WHERE c.user_id=%s FOR UPDATE",
+        (user_id,)
+    )
+    saldo, restrito = map(int, cursor.fetchone())
+    return saldo, max(saldo - restrito, 0), min(restrito, saldo)
 
 
 def reverter_movimento_referencia_cursor(cursor, user_id: int, referencia_original: str, motivo: str):
@@ -13288,7 +13422,7 @@ def criar_embed_carteira_publico():
     embed = discord.Embed(
         title="💰 Carteira do Jogador",
         description=(
-            "Consulta o teu saldo, explora a loja física e acompanha os teus pedidos.\n\n"
+            "Consulta o teu saldo, explora a loja, participa em sorteios e acompanha os teus pedidos.\n\n"
             f"✅ Presença: **+{CREDITOS_POR_PRESENCA} créditos**\n"
             f"🏆 Team Win: **+{CREDITOS_POR_TEAMWIN} créditos**\n"
             f"⚡ SHL Mode Win: **+{CREDITOS_POR_SHL_WIN} créditos**\n"
@@ -13325,6 +13459,245 @@ def criar_embed_saldo_jogador(user_id: int):
     embed.add_field(name="🏆 Team Wins", value=str(teamwins), inline=True)
     return embed
 
+
+
+def listar_sorteios_loja_sync():
+    conn = get_connection()
+    if not conn:
+        return []
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT s.id, s.nome, s.descricao, s.preco_entrada, s.limite_por_jogador,
+                   s.encerra_em, s.estado,
+                   COUNT(se.id) FILTER (WHERE se.ativa=TRUE) AS entradas,
+                   COUNT(DISTINCT se.user_id) FILTER (WHERE se.ativa=TRUE) AS participantes
+            FROM sorteios s
+            LEFT JOIN sorteio_entradas se ON se.sorteio_id=s.id
+            WHERE s.estado IN ('ativo','fechado','sorteado')
+            GROUP BY s.id
+            ORDER BY CASE WHEN s.estado='ativo' THEN 0 ELSE 1 END, s.encerra_em ASC
+        """)
+        return cur.fetchall()
+    finally:
+        cur.close(); conn.close()
+
+
+def criar_embed_sorteio(row, user_id=None):
+    sorteio_id,nome,descricao,preco,limite,encerra_em,estado,entradas,participantes=row
+    agora=utc_now()
+    ativo = estado == 'ativo' and encerra_em > agora
+    estado_txt = '🟢 Aberto' if ativo else ('🏆 Sorteado' if estado=='sorteado' else '🔒 Encerrado')
+    embed=discord.Embed(title=f"🎟️ Sorteio — {nome}", description=descricao or "Sem descrição.", color=discord.Color.gold())
+    embed.add_field(name="Entrada", value=f"🪙 **{preco:,} créditos**".replace(',', '.'), inline=True)
+    embed.add_field(name="Limite", value=f"**{limite}** por jogador", inline=True)
+    embed.add_field(name="Estado", value=estado_txt, inline=True)
+    embed.add_field(name="🎫 Entradas", value=str(int(entradas or 0)), inline=True)
+    embed.add_field(name="👥 Participantes", value=str(int(participantes or 0)), inline=True)
+    embed.add_field(name="⏰ Encerra", value=f"<t:{int(encerra_em.timestamp())}:F>\n<t:{int(encerra_em.timestamp())}:R>", inline=False)
+    if user_id:
+        conn=get_connection(); cur=conn.cursor()
+        try:
+            cur.execute("SELECT COUNT(*) FROM sorteio_entradas WHERE sorteio_id=%s AND user_id=%s AND ativa=TRUE",(sorteio_id,user_id))
+            minhas=int(cur.fetchone()[0])
+        finally: cur.close(); conn.close()
+        embed.add_field(name="👤 As tuas entradas", value=f"**{minhas}/{limite}**", inline=False)
+    embed.set_footer(text=f"Sorteio #{sorteio_id} • números atribuídos por ordem crescente")
+    return embed
+
+
+class ComprarEntradasSorteioModal(discord.ui.Modal, title="Comprar entradas no sorteio"):
+    quantidade=discord.ui.TextInput(label="Quantidade de entradas", placeholder="Ex.: 1, 2, 5", min_length=1, max_length=3)
+    def __init__(self, sorteio_id:int, user_id:int):
+        super().__init__(); self.sorteio_id=sorteio_id; self.user_id=user_id
+    async def on_submit(self, interaction):
+        try: qtd=int(str(self.quantidade).strip())
+        except ValueError: return await interaction.response.send_message("⚠️ Indica uma quantidade válida.",ephemeral=True)
+        if qtd <= 0: return await interaction.response.send_message("⚠️ A quantidade tem de ser superior a zero.",ephemeral=True)
+        conn=get_connection()
+        if not conn: return await interaction.response.send_message(DB_ERROR_MSG,ephemeral=True)
+        cur=conn.cursor()
+        try:
+            cur.execute("SELECT id,nome,preco_entrada,limite_por_jogador,encerra_em,estado FROM sorteios WHERE id=%s FOR UPDATE",(self.sorteio_id,))
+            row=cur.fetchone()
+            if not row:
+                conn.rollback(); return await interaction.response.send_message("⚠️ Sorteio não encontrado.",ephemeral=True)
+            sid,nome,preco,limite,encerra_em,estado=row
+            if estado!='ativo' or encerra_em <= utc_now():
+                if estado=='ativo': cur.execute("UPDATE sorteios SET estado='fechado' WHERE id=%s",(sid,)); conn.commit()
+                else: conn.rollback()
+                return await interaction.response.send_message("🔒 Este sorteio já está encerrado.",ephemeral=True)
+            cur.execute("SELECT COUNT(*) FROM sorteio_entradas WHERE sorteio_id=%s AND user_id=%s AND ativa=TRUE",(sid,self.user_id))
+            atuais=int(cur.fetchone()[0])
+            if atuais + qtd > limite:
+                conn.rollback(); return await interaction.response.send_message(f"⚠️ O limite é **{limite} entradas**. Já tens **{atuais}**.",ephemeral=True)
+            total=qtd*int(preco)
+            saldo,total_elegivel,restrito=obter_saldo_elegivel_sorteio_cursor(cur,self.user_id)
+            if total_elegivel < total:
+                conn.rollback(); return await interaction.response.send_message(
+                    f"⚠️ Não tens créditos elegíveis suficientes para o sorteio.\n"
+                    f"🪙 Saldo total: **{saldo}**\n🎟️ Elegível para sorteios: **{total_elegivel}**\n"
+                    f"🔒 Restritos (de devoluções/conversões): **{restrito}**\n💰 Necessário: **{total}**",ephemeral=True)
+            cur.execute("SELECT COALESCE(MAX(numero),0) FROM sorteio_entradas WHERE sorteio_id=%s",(sid,))
+            primeiro=int(cur.fetchone()[0])+1
+            numeros=list(range(primeiro,primeiro+qtd))
+            ref=f"sorteio:{sid}:{self.user_id}:{primeiro}-{numeros[-1]}"
+            movimentar_creditos_cursor(cur,self.user_id,-total,"compra_sorteio",f"{qtd} entrada(s) no sorteio {nome}",ref)
+            for num in numeros:
+                cur.execute("INSERT INTO sorteio_entradas (sorteio_id,numero,user_id,preco_pago) VALUES (%s,%s,%s,%s)",(sid,num,self.user_id,preco))
+            conn.commit()
+        except Exception as e:
+            conn.rollback(); print(f"Erro compra sorteio: {e}"); return await interaction.response.send_message("⚠️ Não foi possível comprar as entradas.",ephemeral=True)
+        finally: cur.close(); conn.close()
+        nums=', '.join(f"#{n:03d}" for n in numeros)
+        await interaction.response.send_message(f"✅ Compraste **{qtd} entrada(s)** por **{total} créditos**.\n🎟️ Números: **{nums}**",ephemeral=True)
+        await enviar_log_bot(interaction.guild,"🎟️ Entradas de sorteio compradas",f"Compra no sorteio **{nome}**.",cor=discord.Color.gold(),campos=[("👤 Jogador",interaction.user.mention,True),("🎟️ Quantidade",str(qtd),True),("🪙 Total",f"{total} créditos",True),("🔢 Números",nums,False)])
+
+
+class SorteioJogadorView(discord.ui.View):
+    def __init__(self,sorteio_id:int,user_id:int):
+        super().__init__(timeout=300); self.sorteio_id=sorteio_id; self.user_id=user_id
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Este sorteio pertence a outra consulta.",ephemeral=True); return False
+        return True
+    @discord.ui.button(label="Comprar entradas",emoji="🎟️",style=discord.ButtonStyle.success)
+    async def comprar(self,interaction,button):
+        await interaction.response.send_modal(ComprarEntradasSorteioModal(self.sorteio_id,self.user_id))
+    @discord.ui.button(label="As minhas entradas",emoji="🔢",style=discord.ButtonStyle.secondary)
+    async def minhas(self,interaction,button):
+        conn=get_connection(); cur=conn.cursor()
+        try:
+            cur.execute("SELECT numero FROM sorteio_entradas WHERE sorteio_id=%s AND user_id=%s AND ativa=TRUE ORDER BY numero",(self.sorteio_id,self.user_id))
+            nums=[int(r[0]) for r in cur.fetchall()]
+        finally: cur.close(); conn.close()
+        texto=', '.join(f"#{n:03d}" for n in nums) or "Ainda não tens entradas neste sorteio."
+        await interaction.response.send_message(f"🎟️ **As tuas entradas**\n{texto}",ephemeral=True)
+
+
+class SelecionarItemLoja(discord.ui.Select):
+    def __init__(self,produtos,sorteios):
+        opts=[]
+        for p in produtos[:15]:
+            opts.append(discord.SelectOption(label=p[1][:100],value=f"p:{p[0]}",description=f"📦 {p[4]} · {p[3]} créditos"[:100],emoji="📦"))
+        for s in sorteios[:10]:
+            estado='Aberto' if s[6]=='ativo' and s[5]>utc_now() else 'Encerrado'
+            opts.append(discord.SelectOption(label=s[1][:100],value=f"s:{s[0]}",description=f"🎟️ {s[3]} créditos/entrada · {estado}"[:100],emoji="🎟️"))
+        super().__init__(placeholder="Seleciona um produto ou sorteio",options=opts[:25])
+    async def callback(self,interaction):
+        if interaction.user.id != self.view.user_id:
+            return await interaction.response.send_message("❌ Esta loja pertence a outro jogador.",ephemeral=True)
+        tipo,raw=self.values[0].split(':',1); item_id=int(raw)
+        if tipo=='p':
+            row=next((p for p in self.view.produtos if p[0]==item_id),None)
+            if not row: return await interaction.response.send_message("⚠️ Produto indisponível.",ephemeral=True)
+            return await interaction.response.send_message(embed=criar_embed_produto(row),view=ComprarProdutoView(item_id,interaction.user.id),ephemeral=True)
+        row=next((r for r in self.view.sorteios if r[0]==item_id),None)
+        if not row: return await interaction.response.send_message("⚠️ Sorteio indisponível.",ephemeral=True)
+        aberto=row[6]=='ativo' and row[5]>utc_now()
+        await interaction.response.send_message(embed=criar_embed_sorteio(row,interaction.user.id),view=SorteioJogadorView(item_id,interaction.user.id) if aberto else None,ephemeral=True)
+
+
+class CriarSorteioModal(discord.ui.Modal,title="Criar sorteio"):
+    nome=discord.ui.TextInput(label="Nome / prémio",max_length=100)
+    descricao=discord.ui.TextInput(label="Descrição",style=discord.TextStyle.paragraph,max_length=1000,required=False)
+    preco=discord.ui.TextInput(label="Créditos por entrada",placeholder="Ex.: 100",max_length=10)
+    limite=discord.ui.TextInput(label="Máximo de entradas por jogador",placeholder="Ex.: 10",max_length=5)
+    termina=discord.ui.TextInput(label="Data e hora de encerramento",placeholder="Ex.: 31/08/2026 22:00",max_length=30)
+    async def on_submit(self,interaction):
+        try:
+            preco=int(str(self.preco)); limite=int(str(self.limite))
+            dt_local=datetime.strptime(str(self.termina).strip(),"%d/%m/%Y %H:%M").replace(tzinfo=FUSO_JOGO)
+            encerra=dt_local.astimezone(timezone.utc)
+        except ValueError:
+            return await interaction.response.send_message("⚠️ Confirma preço/limite e usa a data no formato **DD/MM/AAAA HH:MM**.",ephemeral=True)
+        if preco<=0 or limite<=0 or encerra<=utc_now():
+            return await interaction.response.send_message("⚠️ Preço, limite e data de encerramento têm de ser válidos.",ephemeral=True)
+        conn=get_connection(); cur=conn.cursor()
+        try:
+            cur.execute("INSERT INTO sorteios (nome,descricao,preco_entrada,limite_por_jogador,encerra_em,criado_por) VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",(str(self.nome).strip(),str(self.descricao).strip(),preco,limite,encerra,interaction.user.id))
+            sid=cur.fetchone()[0]; conn.commit()
+        except Exception as e:
+            conn.rollback(); print(f"Erro criar sorteio: {e}"); return await interaction.response.send_message("⚠️ Não foi possível criar o sorteio.",ephemeral=True)
+        finally: cur.close(); conn.close()
+        await interaction.response.send_message(f"✅ Sorteio **#{sid} — {str(self.nome).strip()}** criado e já aparece na Loja.",ephemeral=True)
+        await enviar_log_bot(interaction.guild,"🎟️ Sorteio criado",f"Sorteio **#{sid} — {str(self.nome).strip()}** criado.",cor=discord.Color.gold(),campos=[("🪙 Entrada",f"{preco} créditos",True),("🎫 Limite",str(limite),True),("⏰ Encerra",f"<t:{int(encerra.timestamp())}:F>",False)])
+
+
+class GerirSorteioView(discord.ui.View):
+    def __init__(self,sorteio_id:int):
+        super().__init__(timeout=300); self.sorteio_id=sorteio_id
+    async def interaction_check(self,interaction):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Apenas staff/admin.",ephemeral=True); return False
+        return True
+    async def _row(self):
+        conn=get_connection(); cur=conn.cursor()
+        try:
+            cur.execute("SELECT id,nome,descricao,preco_entrada,limite_por_jogador,encerra_em,estado,0,0 FROM sorteios WHERE id=%s",(self.sorteio_id,)); return cur.fetchone()
+        finally: cur.close(); conn.close()
+    @discord.ui.button(label="Fechar vendas",emoji="🔒",style=discord.ButtonStyle.secondary)
+    async def fechar(self,interaction,button):
+        conn=get_connection(); cur=conn.cursor()
+        try:
+            cur.execute("UPDATE sorteios SET estado='fechado' WHERE id=%s AND estado='ativo' RETURNING nome",(self.sorteio_id,)); row=cur.fetchone()
+            if not row: conn.rollback(); return await interaction.response.send_message("⚠️ O sorteio já não está ativo.",ephemeral=True)
+            conn.commit()
+        finally: cur.close(); conn.close()
+        await interaction.response.send_message(f"🔒 Sorteio **{row[0]}** fechado para novas entradas.",ephemeral=True)
+    @discord.ui.button(label="Sortear vencedor",emoji="🏆",style=discord.ButtonStyle.success)
+    async def sortear(self,interaction,button):
+        conn=get_connection(); cur=conn.cursor()
+        try:
+            cur.execute("SELECT nome,estado FROM sorteios WHERE id=%s FOR UPDATE",(self.sorteio_id,)); sr=cur.fetchone()
+            if not sr: conn.rollback(); return await interaction.response.send_message("⚠️ Sorteio não encontrado.",ephemeral=True)
+            nome,estado=sr
+            if estado in ('sorteado','cancelado'): conn.rollback(); return await interaction.response.send_message("⚠️ Este sorteio já foi finalizado.",ephemeral=True)
+            cur.execute("SELECT numero,user_id FROM sorteio_entradas WHERE sorteio_id=%s AND ativa=TRUE ORDER BY numero",(self.sorteio_id,)); entradas=cur.fetchall()
+            if not entradas: conn.rollback(); return await interaction.response.send_message("⚠️ Não existem entradas para sortear.",ephemeral=True)
+            numero,user_id=secrets.choice(entradas)
+            cur.execute("UPDATE sorteios SET estado='sorteado',vencedor_user_id=%s,numero_vencedor=%s,sorteado_por=%s,sorteado_em=NOW() WHERE id=%s",(user_id,numero,interaction.user.id,self.sorteio_id)); conn.commit()
+        finally: cur.close(); conn.close()
+        embed=discord.Embed(title="🏆 Vencedor do Sorteio",description=f"🎁 **{nome}**\n\n🎟️ Entrada vencedora: **#{int(numero):03d}**\n👤 Vencedor: <@{user_id}>",color=discord.Color.gold())
+        await interaction.response.send_message(embed=embed)
+        await enviar_log_bot(interaction.guild,"🏆 Sorteio realizado",f"Sorteio **#{self.sorteio_id} — {nome}** concluído.",cor=discord.Color.gold(),campos=[("🎟️ Entrada",f"#{int(numero):03d}",True),("👤 Vencedor",f"<@{user_id}>",True),("👑 Sorteado por",interaction.user.mention,True)])
+        try: await (await bot.fetch_user(user_id)).send(f"🏆 Parabéns! A tua entrada **#{int(numero):03d}** venceu o sorteio **{nome}**.")
+        except Exception: pass
+    @discord.ui.button(label="Cancelar e devolver",emoji="↩️",style=discord.ButtonStyle.danger)
+    async def cancelar(self,interaction,button):
+        conn=get_connection(); cur=conn.cursor()
+        try:
+            cur.execute("SELECT nome,estado FROM sorteios WHERE id=%s FOR UPDATE",(self.sorteio_id,)); sr=cur.fetchone()
+            if not sr: conn.rollback(); return await interaction.response.send_message("⚠️ Sorteio não encontrado.",ephemeral=True)
+            nome,estado=sr
+            if estado in ('sorteado','cancelado'): conn.rollback(); return await interaction.response.send_message("⚠️ Este sorteio já foi finalizado.",ephemeral=True)
+            cur.execute("SELECT user_id,COALESCE(SUM(preco_pago),0) FROM sorteio_entradas WHERE sorteio_id=%s AND ativa=TRUE GROUP BY user_id",(self.sorteio_id,)); reembolsos=cur.fetchall()
+            for uid,valor in reembolsos:
+                movimentar_creditos_cursor(cur,int(uid),int(valor),"reembolso_sorteio",f"Devolução do sorteio cancelado {nome}",f"reembolso-sorteio:{self.sorteio_id}:{uid}")
+            cur.execute("UPDATE sorteio_entradas SET ativa=FALSE WHERE sorteio_id=%s",(self.sorteio_id,))
+            cur.execute("UPDATE sorteios SET estado='cancelado' WHERE id=%s",(self.sorteio_id,)); conn.commit()
+        except Exception as e:
+            conn.rollback(); print(f"Erro cancelar sorteio: {e}"); return await interaction.response.send_message("⚠️ Não foi possível cancelar o sorteio.",ephemeral=True)
+        finally: cur.close(); conn.close()
+        total=sum(int(v) for _,v in reembolsos)
+        await interaction.response.send_message(f"↩️ Sorteio **{nome}** cancelado. Foram devolvidos **{total} créditos** aos participantes.",ephemeral=True)
+        await enviar_log_bot(interaction.guild,"↩️ Sorteio cancelado",f"Sorteio **#{self.sorteio_id} — {nome}** cancelado.",cor=discord.Color.orange(),campos=[("🪙 Créditos devolvidos",str(total),True),("👥 Jogadores",str(len(reembolsos)),True)])
+
+
+class SelecionarSorteioAdmin(discord.ui.Select):
+    def __init__(self,rows):
+        opts=[discord.SelectOption(label=r[1][:100],value=str(r[0]),description=f"#{r[0]} · {r[6]} · {r[3]} cr/entrada"[:100]) for r in rows[:25]]
+        super().__init__(placeholder="Seleciona um sorteio",options=opts)
+    async def callback(self,interaction):
+        if not interaction.user.guild_permissions.administrator: return await interaction.response.send_message("❌ Apenas staff/admin.",ephemeral=True)
+        sid=int(self.values[0]); row=next((r for r in self.view.rows if r[0]==sid),None)
+        await interaction.response.send_message(embed=criar_embed_sorteio(row),view=GerirSorteioView(sid),ephemeral=True)
+
+
+class ListaSorteiosAdminView(discord.ui.View):
+    def __init__(self,rows):
+        super().__init__(timeout=300); self.rows=rows
+        if rows: self.add_item(SelecionarSorteioAdmin(rows))
 
 def listar_produtos_loja_sync():
     conn=get_connection()
@@ -13418,8 +13791,12 @@ class SelecionarProduto(discord.ui.Select):
 
 class LojaJogadorView(discord.ui.View):
     def __init__(self,user_id:int):
-        super().__init__(timeout=300); self.user_id=user_id; self.produtos=listar_produtos_loja_sync()
-        if self.produtos: self.add_item(SelecionarProduto(self.produtos))
+        super().__init__(timeout=300)
+        self.user_id=user_id
+        self.produtos=listar_produtos_loja_sync()
+        self.sorteios=listar_sorteios_loja_sync()
+        if self.produtos or self.sorteios:
+            self.add_item(SelecionarItemLoja(self.produtos,self.sorteios))
 
 
 
@@ -13900,9 +14277,9 @@ class PainelCarteiraView(discord.ui.View):
     @discord.ui.button(label="Loja", emoji="🛒", style=discord.ButtonStyle.success, custom_id="carteira:loja")
     async def loja(self, interaction, button):
         view=LojaJogadorView(interaction.user.id)
-        embed=discord.Embed(title="🛒 Loja", description="Seleciona um produto físico para ver os detalhes e comprar.", color=discord.Color.blurple())
-        if not view.produtos: embed.description="A loja ainda não tem produtos disponíveis."
-        await interaction.response.send_message(embed=embed, view=view if view.produtos else None, ephemeral=True)
+        embed=discord.Embed(title="🛒 Loja", description="Seleciona um produto físico ou um 🎟️ sorteio.", color=discord.Color.blurple())
+        if not view.produtos and not view.sorteios: embed.description="A loja ainda não tem produtos ou sorteios disponíveis."
+        await interaction.response.send_message(embed=embed, view=view if (view.produtos or view.sorteios) else None, ephemeral=True)
 
     @discord.ui.button(label="Os Meus Pedidos", emoji="📦", style=discord.ButtonStyle.secondary, custom_id="carteira:pedidos")
     async def pedidos(self, interaction, button):
@@ -14001,15 +14378,28 @@ async def painel_carteira_cmd(ctx):
 @bot.command(name="adicionaritem")
 @commands.has_permissions(administrator=True)
 async def adicionar_item_loja(ctx):
-    # Comandos de prefixo não conseguem abrir modal; publica um botão temporário para a staff.
     class AbrirModal(discord.ui.View):
         def __init__(self): super().__init__(timeout=120)
-        @discord.ui.button(label="Adicionar Item",emoji="➕",style=discord.ButtonStyle.success)
-        async def abrir(self,interaction,button):
+        @discord.ui.button(label="Produto",emoji="📦",style=discord.ButtonStyle.success)
+        async def produto(self,interaction,button):
             if not interaction.user.guild_permissions.administrator:
                 return await interaction.response.send_message("❌ Apenas staff.",ephemeral=True)
             await interaction.response.send_modal(AdicionarProdutoModal())
-    await ctx.send("🛠️ Gestão da Loja",view=AbrirModal(),delete_after=120)
+        @discord.ui.button(label="Sorteio",emoji="🎟️",style=discord.ButtonStyle.primary)
+        async def sorteio(self,interaction,button):
+            if not interaction.user.guild_permissions.administrator:
+                return await interaction.response.send_message("❌ Apenas staff.",ephemeral=True)
+            await interaction.response.send_modal(CriarSorteioModal())
+    await ctx.send("🛠️ Gestão da Loja — escolhe o tipo de item",view=AbrirModal(),delete_after=120)
+
+
+@bot.command(name="gerirsorteios", aliases=["sorteiosstaff"])
+@commands.has_permissions(administrator=True)
+async def gerir_sorteios_admin(ctx):
+    rows=listar_sorteios_loja_sync()
+    if not rows:
+        return await ctx.send("ℹ️ Não existem sorteios para gerir.")
+    await ctx.send(embed=discord.Embed(title="🎟️ Gestão de Sorteios",description="Seleciona um sorteio para fechar vendas, sortear ou cancelar.",color=discord.Color.gold()),view=ListaSorteiosAdminView(rows))
 
 
 @bot.command(name="pedidosloja")
