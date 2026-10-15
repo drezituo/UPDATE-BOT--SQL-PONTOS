@@ -1071,6 +1071,18 @@ if conn:
         """)
 
         cursor.execute("""
+        CREATE TABLE IF NOT EXISTS jogos_info_publica (
+            thread_id BIGINT PRIMARY KEY,
+            local_jogo TEXT,
+            valor_inscricao TEXT,
+            metodo_pagamento TEXT,
+            numero_pagamento TEXT,
+            instrucoes TEXT
+        )
+        
+        """)
+
+        cursor.execute("""
         CREATE TABLE IF NOT EXISTS inscricoes_jogos (
             id BIGSERIAL PRIMARY KEY,
             thread_id BIGINT NOT NULL,
@@ -1749,6 +1761,53 @@ class CancelarInscricaoModal(discord.ui.Modal, title="Cancelar inscrição"):
         await cancelar_inscricao_interaction(interaction, str(self.numero))
 
 
+class DefinirNumeroPagamentoModal(discord.ui.Modal, title="📱 Número para pagamento"):
+    numero = discord.ui.TextInput(label="Número MB WAY ou IBAN", placeholder="Ex.: 9XXXXXXXX", max_length=100, required=True)
+
+    def __init__(self, thread_id: int):
+        super().__init__()
+        self.thread_id = thread_id
+        conn = get_connection()
+        if conn:
+            cur = conn.cursor()
+            try:
+                cur.execute("SELECT numero_pagamento FROM jogos_info_publica WHERE thread_id = %s", (thread_id,))
+                row = cur.fetchone()
+                if row and row[0]:
+                    self.numero.default = row[0][:100]
+            finally:
+                cur.close()
+                conn.close()
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not interaction.guild or not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("❌ Apenas administradores.", ephemeral=True)
+        numero = self.numero.value.strip()
+        if not numero:
+            return await interaction.response.send_message("⚠️ Introduz um número válido.", ephemeral=True)
+        conn = get_connection()
+        if not conn:
+            return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
+        cur = conn.cursor()
+        try:
+            cur.execute("""
+                INSERT INTO jogos_info_publica (thread_id, numero_pagamento)
+                VALUES (%s, %s)
+                ON CONFLICT (thread_id) DO UPDATE SET numero_pagamento = EXCLUDED.numero_pagamento
+            """, (self.thread_id, numero))
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            print(f"Erro ao atualizar número de pagamento: {exc}")
+            return await interaction.response.send_message("⚠️ Erro ao guardar o número.", ephemeral=True)
+        finally:
+            cur.close()
+            conn.close()
+        await interaction.response.send_message(
+            "✅ Número de pagamento atualizado para este jogo. As próximas mensagens privadas usarão este número.",
+            ephemeral=True)
+
+
 class InscricoesView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -1779,6 +1838,7 @@ class InscricoesView(discord.ui.View):
     )
     async def botao_enviar_termo(self, interaction: discord.Interaction, button: discord.ui.Button):
         await enviar_termo_interaction(interaction)
+
 
 
 class TermoAprovacaoView(discord.ui.View):
@@ -2156,18 +2216,40 @@ async def processar_termo_recebido_dm(message: discord.Message) -> bool:
     return True
 
 
-async def enviar_instrucoes_pagamento_dm(jogador, thread_name: str, inscrito_por=None):
+async def enviar_instrucoes_pagamento_dm(jogador, thread_name: str, inscrito_por=None, thread_id=None):
     """Envia a notificação ao jogador inscrito e a quem criou a inscrição.
 
     Se forem a mesma pessoa, envia apenas uma DM para evitar mensagens duplicadas.
     Retorna um dicionário com o resultado de cada envio.
     """
     resultados = {"jogador": False, "inscrito_por": True}
+    numero = None
+    metodo = None
+    if thread_id is not None:
+        conn = get_connection()
+        if conn:
+            cur = conn.cursor()
+            try:
+                cur.execute("SELECT numero_pagamento, metodo_pagamento FROM jogos_info_publica WHERE thread_id = %s", (thread_id,))
+                row = cur.fetchone()
+                if row:
+                    numero, metodo = row
+            except Exception as exc:
+                print(f"Erro ao consultar dados de pagamento: {exc}")
+            finally:
+                cur.close()
+                conn.close()
+    dados_pagamento = (
+        f"\n📱 **Número para pagamento:** `{numero}`\n"
+        f"💳 **Método:** {metodo or 'Confirma com a staff'}\n"
+        if numero else "\n⚠️ **Número de pagamento ainda não configurado. Contacta a staff antes de pagar.**\n"
+    )
 
     try:
         await jogador.send(
             "💳 **Inscrição pendente de pagamento**\n\n"
             f"A tua inscrição em **{thread_name}** foi criada e está pendente de pagamento.\n"
+            f"{dados_pagamento}\n"
             "Envia nesta conversa o comprovativo em **PDF, JPG ou PNG**.\n\n"
             "Depois do envio, a staff irá validar o comprovativo e a inscrição será finalizada."
         )
@@ -2544,7 +2626,8 @@ async def criar_inscricao_interaction(interaction: discord.Interaction, numero_t
     dms_enviadas = await enviar_instrucoes_pagamento_dm(
         membro_jogador,
         interaction.channel.name,
-        interaction.user
+        interaction.user,
+        thread_id=interaction.channel.id
     )
 
     resposta = f"✅ Inscrição criada para **{nome}**. Está pendente de pagamento."
@@ -3035,7 +3118,8 @@ async def inscrever(ctx, *, nome: str):
     dms_enviadas = await enviar_instrucoes_pagamento_dm(
         jogador_dm,
         ctx.channel.name,
-        ctx.author
+        ctx.author,
+        thread_id=ctx.channel.id
     )
 
     await apagar_mensagem_comando(ctx)
@@ -4450,6 +4534,12 @@ class PainelJogoView(discord.ui.View):
             await interaction.response.send_message("❌ Apenas staff/admin pode usar este painel.", ephemeral=True)
             return False
         return True
+
+    @discord.ui.button(label="Número pagamento", emoji="📱", style=discord.ButtonStyle.secondary, row=4)
+    async def definir_numero_pagamento(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction):
+            return
+        await interaction.response.send_modal(DefinirNumeroPagamentoModal(self.thread_id))
 
     @discord.ui.button(label="Definir data/hora", emoji="📅", style=discord.ButtonStyle.primary, row=2)
     async def definir_data_hora(self, interaction: discord.Interaction, button: discord.ui.Button):
