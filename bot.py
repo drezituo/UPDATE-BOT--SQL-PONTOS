@@ -13405,21 +13405,26 @@ def remover_teamwins_economia_cursor(cursor, user_id: int, quantidade: int, moti
 
 
 def criar_embed_carteira_publico():
+    """Apresentação moderna do painel; mantém os mesmos valores e ações."""
     embed = discord.Embed(
-        title="💰 Carteira do Jogador",
+        title="LOJA  /  SORTEIOS",
         description=(
-            "Consulta o teu saldo, explora a loja, participa em sorteios e acompanha os teus pedidos.\n\n"
-            f"✅ Presença: **+{CREDITOS_POR_PRESENCA} créditos**\n"
-            f"🏆 Team Win: **+{CREDITOS_POR_TEAMWIN} créditos**\n"
-            f"⚡ SHL Mode Win: **+{CREDITOS_POR_SHL_WIN} créditos**\n"
-            f"🎁 Entrada gratuita: **{PRECO_ENTRADA_GRATUITA} créditos**"
+            "**O teu espaço de recompensas**\n"
+            "Consulta o saldo, descobre produtos e participa nos sorteios da comunidade.\n\n"
+            "**COMO GANHAR CRÉDITOS**\n"
+            f"`+{CREDITOS_POR_PRESENCA}`  Presença em jogo\n"
+            f"`+{CREDITOS_POR_TEAMWIN}`  Team Win\n"
+            f"`+{CREDITOS_POR_SHL_WIN}`  SHL Mode Win\n\n"
+            f"**ENTRADA GRATUITA**  ·  {PRECO_ENTRADA_GRATUITA:,} créditos".replace(',', '.')
         ),
-        color=discord.Color.gold(),
+        color=discord.Color.from_rgb(69, 91, 83),
         timestamp=discord.utils.utcnow()
     )
-    embed.set_footer(text="As consultas e compras são privadas para cada jogador.")
+    capa = os.getenv("LOJA_CAPA_URL", "").strip()
+    if capa.startswith(("https://", "http://")):
+        embed.set_image(url=capa)
+    embed.set_footer(text="Consultas, compras e participações são privadas para cada jogador.")
     return embed
-
 
 def criar_embed_saldo_jogador(user_id: int):
     conn = get_connection()
@@ -13470,27 +13475,40 @@ def listar_sorteios_loja_sync():
 
 
 def criar_embed_sorteio(row, user_id=None):
+    """Apenas apresentação; mantém consultas, regras e contagens existentes."""
     sorteio_id,nome,descricao,preco,limite,encerra_em,estado,entradas,participantes=row
     agora=utc_now()
     ativo = estado == 'ativo' and encerra_em > agora
-    estado_txt = '🟢 Aberto' if ativo else ('🏆 Sorteado' if estado=='sorteado' else '🔒 Encerrado')
-    embed=discord.Embed(title=f"🎟️ Sorteio — {nome}", description=descricao or "Sem descrição.", color=discord.Color.gold())
-    embed.add_field(name="Entrada", value=f"🪙 **{preco:,} créditos**".replace(',', '.'), inline=True)
-    embed.add_field(name="Limite", value=f"**{limite}** por jogador", inline=True)
-    embed.add_field(name="Estado", value=estado_txt, inline=True)
-    embed.add_field(name="🎫 Entradas", value=str(int(entradas or 0)), inline=True)
-    embed.add_field(name="👥 Participantes", value=str(int(participantes or 0)), inline=True)
-    embed.add_field(name="⏰ Encerra", value=f"<t:{int(encerra_em.timestamp())}:F>\n<t:{int(encerra_em.timestamp())}:R>", inline=False)
+    estado_txt = '● Inscrições abertas' if ativo else ('★ Sorteio realizado' if estado=='sorteado' else '● Encerrado')
+    cor = discord.Color.from_rgb(69, 91, 83) if ativo else discord.Color.from_rgb(110, 119, 127)
+    # Imagem opcional no texto da descrição: uma linha "Imagem: https://...".
+    # Não requer migração nem altera a descrição guardada na base de dados.
+    descricao_visual = descricao or "Sem descrição disponível."
+    imagem_match = re.search(r'(?im)^\s*Imagem:\s*(https?://\S+)\s*$', descricao_visual)
+    imagem_url = imagem_match.group(1) if imagem_match else None
+    if imagem_match:
+        descricao_visual = (descricao_visual[:imagem_match.start()] + descricao_visual[imagem_match.end():]).strip() or "Sem descrição disponível."
+    embed=discord.Embed(
+        title=f"SORTEIO  /  {nome}",
+        description=f"{descricao_visual}\n\n**{estado_txt}**",
+        color=cor
+    )
+    if imagem_url:
+        embed.set_image(url=imagem_url)
+    embed.add_field(name="VALOR POR ENTRADA", value=f"**{preco:,} créditos**".replace(',', '.'), inline=True)
+    embed.add_field(name="LIMITE POR JOGADOR", value=f"**{limite} entradas**", inline=True)
+    embed.add_field(name="ENTRADAS EM JOGO", value=f"**{int(entradas or 0)}**", inline=True)
+    embed.add_field(name="PARTICIPANTES", value=f"**{int(participantes or 0)}**", inline=True)
+    embed.add_field(name="ENCERRAMENTO", value=f"<t:{int(encerra_em.timestamp())}:F>\n<t:{int(encerra_em.timestamp())}:R>", inline=False)
     if user_id:
         conn=get_connection(); cur=conn.cursor()
         try:
             cur.execute("SELECT COUNT(*) FROM sorteio_entradas WHERE sorteio_id=%s AND user_id=%s AND ativa=TRUE",(sorteio_id,user_id))
             minhas=int(cur.fetchone()[0])
         finally: cur.close(); conn.close()
-        embed.add_field(name="👤 As tuas entradas", value=f"**{minhas}/{limite}**", inline=False)
-    embed.set_footer(text=f"Sorteio #{sorteio_id} • números atribuídos por ordem crescente")
+        embed.add_field(name="AS TUAS ENTRADAS", value=f"**{minhas}/{limite}**", inline=False)
+    embed.set_footer(text=f"SORTEIO #{sorteio_id}  •  Números atribuídos por ordem crescente")
     return embed
-
 
 class ComprarEntradasSorteioModal(discord.ui.Modal, title="Comprar entradas no sorteio"):
     quantidade=discord.ui.TextInput(label="Quantidade de entradas", placeholder="Ex.: 1, 2, 5", min_length=1, max_length=3)
@@ -13697,15 +13715,20 @@ def listar_produtos_loja_sync():
 
 
 def criar_embed_produto(row):
+    """Ficha visual de produto; não altera compra, stock nem preço."""
     produto_id,nome,descricao,preco,categoria,stock,imagem=row
-    embed=discord.Embed(title=f"🛒 {nome}", description=descricao or "Sem descrição.", color=discord.Color.blurple())
-    embed.add_field(name="Preço", value=f"🪙 **{preco:,} créditos**".replace(',', '.'), inline=True)
-    embed.add_field(name="Categoria", value=categoria, inline=True)
-    embed.add_field(name="Stock", value="Ilimitado" if stock is None else str(stock), inline=True)
+    disponibilidade = "Disponível" if stock is None or stock > 0 else "Esgotado"
+    embed=discord.Embed(
+        title=f"LOJA  /  {nome}",
+        description=descricao or "Sem descrição disponível.",
+        color=discord.Color.from_rgb(69, 91, 83)
+    )
+    embed.add_field(name="PREÇO", value=f"**{preco:,} créditos**".replace(',', '.'), inline=True)
+    embed.add_field(name="CATEGORIA", value=str(categoria), inline=True)
+    embed.add_field(name="DISPONIBILIDADE", value=f"**{disponibilidade}**\n" + ("Stock ilimitado" if stock is None else f"{stock} unidade(s)"), inline=False)
     if imagem: embed.set_image(url=imagem)
-    embed.set_footer(text=f"Produto #{produto_id}")
+    embed.set_footer(text=f"PRODUTO #{produto_id}  •  Confirma a compra no botão abaixo")
     return embed
-
 
 class ComprarProdutoView(discord.ui.View):
     def __init__(self, produto_id:int, user_id:int):
@@ -14471,6 +14494,276 @@ async def cancelar_pedido(ctx,pedido_id:int,*,motivo:str="Cancelado pela staff")
         ]
     )
     await ctx.send(f"✅ Pedido cancelado e créditos devolvidos.")
+
+
+
+
+# ---------- FOTOGRAFIAS DA LOJA E SORTEIOS (ADITIVO) ----------
+def guardar_fotografia_item(tipo, item_id, imagem_url):
+    """Atualiza apenas a imagem; para sorteios usa a descrição já existente."""
+    conn = get_connection()
+    if conn is None:
+        return False
+    cur = conn.cursor()
+    try:
+        if tipo == 'produto':
+            cur.execute('UPDATE loja_produtos SET imagem_url=%s WHERE id=%s RETURNING id',
+                        (imagem_url, item_id))
+        elif tipo == 'sorteio':
+            cur.execute('SELECT descricao FROM sorteios WHERE id=%s FOR UPDATE', (item_id,))
+            row = cur.fetchone()
+            if not row:
+                return False
+            descricao = re.sub(r'(?im)^\s*Imagem:\s*https?://\S+\s*$', '', row[0] or '').strip()
+            if imagem_url:
+                descricao = (descricao + '\nImagem: ' + imagem_url).strip()
+            cur.execute('UPDATE sorteios SET descricao=%s WHERE id=%s RETURNING id',
+                        (descricao, item_id))
+        else:
+            return False
+        if not cur.fetchone():
+            conn.rollback()
+            return False
+        conn.commit()
+        return True
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+
+class FotografiaURLModal(discord.ui.Modal, title='Fotografia do produto ou sorteio'):
+    def __init__(self, tipo, item_id):
+        super().__init__(timeout=300)
+        self.tipo, self.item_id = tipo, item_id
+        self.url = discord.ui.TextInput(label='Link direto da imagem (https://)', max_length=1000)
+        self.add_item(self.url)
+
+    async def on_submit(self, interaction):
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message('❌ Apenas administradores.', ephemeral=True)
+        url = str(self.url).strip()
+        if not re.fullmatch(r'https://[^\s]+', url, re.IGNORECASE):
+            return await interaction.response.send_message('⚠️ Usa um endereço HTTPS válido.', ephemeral=True)
+        try:
+            ok = guardar_fotografia_item(self.tipo, self.item_id, url)
+        except Exception as exc:
+            print(f'Erro a guardar fotografia: {exc}')
+            ok = False
+        await interaction.response.send_message(
+            '✅ Fotografia guardada. Abre novamente o produto/sorteio para a veres.' if ok
+            else '⚠️ Não foi possível guardar a fotografia.', ephemeral=True)
+
+
+class FotografiaUploadView(discord.ui.View):
+    """Permite carregar ficheiro sem depender de FileUpload em versões recentes de discord.py."""
+    def __init__(self, tipo, item_id, autor_id):
+        super().__init__(timeout=180)
+        self.tipo, self.item_id, self.autor_id = tipo, item_id, autor_id
+
+    @discord.ui.button(label='Enviar fotografia', emoji='📷', style=discord.ButtonStyle.primary)
+    async def enviar(self, interaction, button):
+        if interaction.user.id != self.autor_id or not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message('❌ Apenas o administrador que abriu este painel.', ephemeral=True)
+        canal = interaction.channel
+        await interaction.response.send_message(
+            '📷 Envia **uma imagem como anexo** neste canal nos próximos 90 segundos. '
+            'A imagem será republicada pelo bot para manter um link próprio. '
+            'A publicação ficará visível no canal: usa um canal privado da staff.', ephemeral=True)
+
+        def check(msg):
+            return msg.author.id == self.autor_id and msg.channel.id == canal.id and bool(msg.attachments)
+
+        try:
+            mensagem = await bot.wait_for('message', check=check, timeout=90)
+        except asyncio.TimeoutError:
+            return await interaction.followup.send('⌛ Tempo esgotado. Volta a clicar no botão.', ephemeral=True)
+        anexo = next((a for a in mensagem.attachments if
+                      (a.content_type or '').lower().startswith('image/') and
+                      a.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif'))), None)
+        if anexo is None or anexo.size > 8 * 1024 * 1024:
+            return await interaction.followup.send('⚠️ Envia PNG, JPG, WEBP ou GIF até 8 MB.', ephemeral=True)
+        try:
+            ficheiro = await anexo.to_file()
+            arquivo = await canal.send(content=f'📷 Imagem de {self.tipo} #{self.item_id} (arquivo do bot)', file=ficheiro)
+            url = arquivo.attachments[0].url
+            ok = guardar_fotografia_item(self.tipo, self.item_id, url)
+            if not ok:
+                await arquivo.delete()
+                return await interaction.followup.send('⚠️ Item não encontrado ou erro de base de dados.', ephemeral=True)
+            await interaction.followup.send('✅ Fotografia guardada! Não apagues a mensagem de arquivo enviada pelo bot.', ephemeral=True)
+        except (discord.HTTPException, discord.Forbidden, OSError, Exception) as exc:
+            print(f'Erro no upload de fotografia: {exc}')
+            await interaction.followup.send('⚠️ Não foi possível guardar a imagem. Verifica as permissões do bot.', ephemeral=True)
+
+
+# ---------- GESTÃO VISUAL POR BOTÕES (ADITIVA) ----------
+# Não substitui comandos, compras, sorteios ou operações financeiras existentes.
+class EditarCampoLojaModal(discord.ui.Modal):
+    def __init__(self, tipo, item_id, campo, titulo, atual):
+        super().__init__(title=f"Editar {titulo}"[:45], timeout=300)
+        self.tipo, self.item_id, self.campo = tipo, item_id, campo
+        self.valor = discord.ui.TextInput(label=titulo[:45], default=str(atual or '')[:1000],
+                                          style=discord.TextStyle.paragraph if campo == 'descricao' else discord.TextStyle.short,
+                                          max_length=1000 if campo == 'descricao' else 200,
+                                          required=campo != 'imagem_url')
+        self.add_item(self.valor)
+
+    async def on_submit(self, interaction):
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message('❌ Apenas administradores.', ephemeral=True)
+        valor = str(self.valor).strip()
+        if self.campo in ('preco', 'preco_entrada', 'limite_por_jogador', 'stock'):
+            try:
+                valor = int(valor) if valor else None
+            except ValueError:
+                return await interaction.response.send_message('⚠️ Introduz um número válido.', ephemeral=True)
+            if (valor is None and self.campo != 'stock') or (valor is not None and valor < (0 if self.campo in ('stock', 'preco') else 1)):
+                return await interaction.response.send_message('⚠️ Valor fora dos limites permitidos.', ephemeral=True)
+        if self.campo == 'imagem_url' and valor and not re.match(r'^https?://[^\s]+$', valor):
+            return await interaction.response.send_message('⚠️ Indica um URL http(s) válido.', ephemeral=True)
+        if self.campo == 'nome' and not valor:
+            return await interaction.response.send_message('⚠️ O nome não pode estar vazio.', ephemeral=True)
+        tabela = 'loja_produtos' if self.tipo == 'produto' else 'sorteios'
+        permitidos = ({'nome', 'descricao', 'preco', 'categoria', 'stock', 'imagem_url'}
+                      if self.tipo == 'produto' else {'nome', 'descricao', 'preco_entrada', 'limite_por_jogador'})
+        if self.campo not in permitidos:
+            return await interaction.response.send_message('⚠️ Campo não permitido.', ephemeral=True)
+        conn = get_connection()
+        if not conn:
+            return await interaction.response.send_message('⚠️ Base de dados indisponível.', ephemeral=True)
+        cur = conn.cursor()
+        try:
+            cur.execute(f'UPDATE {tabela} SET {self.campo}=%s WHERE id=%s RETURNING id',
+                        (valor or None if self.campo == 'imagem_url' else valor, self.item_id))
+            if not cur.fetchone():
+                conn.rollback()
+                return await interaction.response.send_message('⚠️ Item não encontrado.', ephemeral=True)
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            print(f'Erro ao editar {tabela}: {e}')
+            return await interaction.response.send_message('⚠️ Não foi possível guardar. Confirma os dados.', ephemeral=True)
+        finally:
+            cur.close(); conn.close()
+        await interaction.response.send_message(f'✅ {self.campo} atualizado no {self.tipo} #{self.item_id}.', ephemeral=True)
+
+
+class EditarItemLojaView(discord.ui.View):
+    def __init__(self, tipo, item_id):
+        super().__init__(timeout=300)
+        self.tipo, self.item_id = tipo, item_id
+        campos = [('nome','Nome'), ('descricao','Descrição')]
+        campos += ([('preco','Preço'), ('categoria','Categoria'), ('stock','Stock'), ('imagem_url','Fotografia URL')]
+                   if tipo == 'produto' else [('preco_entrada','Créditos por entrada'), ('limite_por_jogador','Limite por jogador')])
+        for campo, titulo in campos:
+            botao = discord.ui.Button(label=titulo, style=discord.ButtonStyle.secondary, custom_id=f'editloja:{tipo}:{item_id}:{campo}')
+            async def editar(interaction, campo=campo, titulo=titulo):
+                if not interaction.user.guild_permissions.administrator:
+                    return await interaction.response.send_message('❌ Apenas administradores.', ephemeral=True)
+                tabela = 'loja_produtos' if self.tipo == 'produto' else 'sorteios'
+                conn = get_connection()
+                if not conn:
+                    return await interaction.response.send_message('⚠️ Base de dados indisponível.', ephemeral=True)
+                cur = conn.cursor()
+                try:
+                    cur.execute(f'SELECT {campo} FROM {tabela} WHERE id=%s', (self.item_id,))
+                    row = cur.fetchone()
+                finally:
+                    cur.close(); conn.close()
+                if not row:
+                    return await interaction.response.send_message('⚠️ Item não encontrado.', ephemeral=True)
+                await interaction.response.send_modal(EditarCampoLojaModal(self.tipo, self.item_id, campo, titulo, row[0]))
+            botao.callback = editar
+            self.add_item(botao)
+
+
+    @discord.ui.button(label='🖼️ Alterar imagem (link)', style=discord.ButtonStyle.primary, row=2)
+    async def imagem_link(self, interaction, button):
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message('❌ Apenas administradores.', ephemeral=True)
+        await interaction.response.send_modal(FotografiaURLModal(self.tipo, self.item_id))
+
+    @discord.ui.button(label='📤 Carregar imagem', style=discord.ButtonStyle.success, row=2)
+    async def imagem_upload(self, interaction, button):
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message('❌ Apenas administradores.', ephemeral=True)
+        await interaction.response.send_message(
+            'Para carregar a fotografia, usa o botão abaixo num **canal privado da staff**.',
+            view=FotografiaUploadView(self.tipo, self.item_id, interaction.user.id), ephemeral=True)
+
+    @discord.ui.button(label='🗑️ Remover imagem', style=discord.ButtonStyle.danger, row=2)
+    async def remover_imagem(self, interaction, button):
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message('❌ Apenas administradores.', ephemeral=True)
+        try:
+            ok = guardar_fotografia_item(self.tipo, self.item_id, None)
+        except Exception as exc:
+            print(f'Erro ao remover fotografia: {exc}')
+            ok = False
+        await interaction.response.send_message('✅ Fotografia removida.' if ok else '⚠️ Não foi possível remover.', ephemeral=True)
+
+
+class SelecionarItemEdicao(discord.ui.Select):
+    def __init__(self, tipo, rows):
+        self.tipo = tipo
+        options = [discord.SelectOption(label=str(r[1])[:100], value=str(r[0]), description=f'ID #{r[0]}') for r in rows[:25]]
+        super().__init__(placeholder='Escolhe o item para editar', options=options)
+
+    async def callback(self, interaction):
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message('❌ Apenas administradores.', ephemeral=True)
+        item_id = int(self.values[0])
+        await interaction.response.send_message(f'🛠️ **Editar {self.tipo} #{item_id}** — escolhe o campo:',
+                                                view=EditarItemLojaView(self.tipo, item_id), ephemeral=True)
+
+
+class ListaEdicaoLojaView(discord.ui.View):
+    def __init__(self, tipo, rows):
+        super().__init__(timeout=300)
+        self.add_item(SelecionarItemEdicao(tipo, rows))
+
+
+class PainelEdicaoLojaView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+
+    @discord.ui.button(label='Editar produtos', emoji='📦', style=discord.ButtonStyle.primary)
+    async def produtos(self, interaction, button):
+        await self._abrir(interaction, 'produto')
+
+    @discord.ui.button(label='Editar sorteios', emoji='🎟️', style=discord.ButtonStyle.success)
+    async def sorteios(self, interaction, button):
+        await self._abrir(interaction, 'sorteio')
+
+    async def _abrir(self, interaction, tipo):
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message('❌ Apenas administradores.', ephemeral=True)
+        conn = get_connection()
+        if not conn:
+            return await interaction.response.send_message('⚠️ Base de dados indisponível.', ephemeral=True)
+        cur = conn.cursor()
+        try:
+            tabela = 'loja_produtos' if tipo == 'produto' else 'sorteios'
+            cur.execute(f'SELECT id,nome FROM {tabela} ORDER BY id DESC LIMIT 25')
+            rows = cur.fetchall()
+        finally:
+            cur.close(); conn.close()
+        if not rows:
+            return await interaction.response.send_message('ℹ️ Não existem itens.', ephemeral=True)
+        await interaction.response.send_message('Seleciona o item que queres editar:',
+                                                view=ListaEdicaoLojaView(tipo, rows), ephemeral=True)
+
+
+@bot.command(name='editarloja')
+@commands.has_permissions(administrator=True)
+async def editar_loja_botoes(ctx):
+    await ctx.send(embed=discord.Embed(title='🛠️ Gestão da loja e sorteios',
+                   description='Seleciona uma área para editar os dados através de botões.\n'
+                               'As compras, os créditos e os sorteios continuam com a lógica atual.',
+                   color=discord.Color.blurple()), view=PainelEdicaoLojaView(), delete_after=300)
 
 
 bot.run(TOKEN)
