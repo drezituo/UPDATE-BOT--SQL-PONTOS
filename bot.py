@@ -13405,26 +13405,28 @@ def remover_teamwins_economia_cursor(cursor, user_id: int, quantidade: int, moti
 
 
 def criar_embed_carteira_publico():
-    """Apresentação moderna do painel; mantém os mesmos valores e ações."""
+    """Painel público mais expressivo; mantém os valores e ações."""
     embed = discord.Embed(
-        title="LOJA  /  SORTEIOS",
+        title="🛍️  LOJA  •  🎟️ SORTEIOS",
         description=(
-            "**O teu espaço de recompensas**\n"
-            "Consulta o saldo, descobre produtos e participa nos sorteios da comunidade.\n\n"
-            "**COMO GANHAR CRÉDITOS**\n"
-            f"`+{CREDITOS_POR_PRESENCA}`  Presença em jogo\n"
-            f"`+{CREDITOS_POR_TEAMWIN}`  Team Win\n"
-            f"`+{CREDITOS_POR_SHL_WIN}`  SHL Mode Win\n\n"
-            f"**ENTRADA GRATUITA**  ·  {PRECO_ENTRADA_GRATUITA:,} créditos".replace(',', '.')
+            "✨ **Bem-vindo à loja da comunidade!**\n"
+            "Troca os teus créditos por recompensas e participa nos sorteios.\n\n"
+            "🎮 **GANHA CRÉDITOS A JOGAR**\n"
+            f"🎯 **+{CREDITOS_POR_PRESENCA}** · Presença em jogo\n"
+            f"🏆 **+{CREDITOS_POR_TEAMWIN}** · Team Win\n"
+            f"⚡ **+{CREDITOS_POR_SHL_WIN}** · SHL Mode Win\n\n"
+            f"🎁 **Entrada gratuita:** {PRECO_ENTRADA_GRATUITA:,} créditos".replace(',', '.') +
+            "\n\n👇 **Usa os botões abaixo para explorar!**"
         ),
-        color=discord.Color.from_rgb(69, 91, 83),
+        color=discord.Color.from_rgb(67, 120, 110),
         timestamp=discord.utils.utcnow()
     )
     capa = os.getenv("LOJA_CAPA_URL", "").strip()
     if capa.startswith(("https://", "http://")):
         embed.set_image(url=capa)
-    embed.set_footer(text="Consultas, compras e participações são privadas para cada jogador.")
+    embed.set_footer(text="🔐 Consultas, compras e participações privadas")
     return embed
+
 
 def criar_embed_saldo_jogador(user_id: int):
     conn = get_connection()
@@ -13475,40 +13477,39 @@ def listar_sorteios_loja_sync():
 
 
 def criar_embed_sorteio(row, user_id=None):
-    """Apenas apresentação; mantém consultas, regras e contagens existentes."""
+    """Apresentação com emojis; preserva consultas e regras do sorteio."""
     sorteio_id,nome,descricao,preco,limite,encerra_em,estado,entradas,participantes=row
     agora=utc_now()
     ativo = estado == 'ativo' and encerra_em > agora
-    estado_txt = '● Inscrições abertas' if ativo else ('★ Sorteio realizado' if estado=='sorteado' else '● Encerrado')
-    cor = discord.Color.from_rgb(69, 91, 83) if ativo else discord.Color.from_rgb(110, 119, 127)
-    # Imagem opcional no texto da descrição: uma linha "Imagem: https://...".
-    # Não requer migração nem altera a descrição guardada na base de dados.
+    estado_txt = '🟢 Participações abertas' if ativo else ('🏆 Sorteio realizado' if estado=='sorteado' else '🔒 Participações encerradas')
+    cor = discord.Color.from_rgb(67, 120, 110) if ativo else discord.Color.from_rgb(110, 119, 127)
     descricao_visual = descricao or "Sem descrição disponível."
     imagem_match = re.search(r'(?im)^\s*Imagem:\s*(https?://\S+)\s*$', descricao_visual)
     imagem_url = imagem_match.group(1) if imagem_match else None
     if imagem_match:
         descricao_visual = (descricao_visual[:imagem_match.start()] + descricao_visual[imagem_match.end():]).strip() or "Sem descrição disponível."
     embed=discord.Embed(
-        title=f"SORTEIO  /  {nome}",
-        description=f"{descricao_visual}\n\n**{estado_txt}**",
+        title=f"🎟️ SORTEIO  •  {nome}",
+        description=f"🎁 {descricao_visual}\n\n**{estado_txt}**",
         color=cor
     )
     if imagem_url:
         embed.set_image(url=imagem_url)
-    embed.add_field(name="VALOR POR ENTRADA", value=f"**{preco:,} créditos**".replace(',', '.'), inline=True)
-    embed.add_field(name="LIMITE POR JOGADOR", value=f"**{limite} entradas**", inline=True)
-    embed.add_field(name="ENTRADAS EM JOGO", value=f"**{int(entradas or 0)}**", inline=True)
-    embed.add_field(name="PARTICIPANTES", value=f"**{int(participantes or 0)}**", inline=True)
-    embed.add_field(name="ENCERRAMENTO", value=f"<t:{int(encerra_em.timestamp())}:F>\n<t:{int(encerra_em.timestamp())}:R>", inline=False)
+    embed.add_field(name="🪙 Preço por entrada", value=f"**{preco:,} créditos**".replace(',', '.'), inline=True)
+    embed.add_field(name="🎫 Limite por jogador", value=f"**{limite} entradas**", inline=True)
+    embed.add_field(name="🎟️ Entradas adquiridas", value=f"**{int(entradas or 0)}**", inline=True)
+    embed.add_field(name="👥 Participantes", value=f"**{int(participantes or 0)}**", inline=True)
+    embed.add_field(name="⏳ Data de encerramento", value=f"📅 <t:{int(encerra_em.timestamp())}:F>\n⌛ <t:{int(encerra_em.timestamp())}:R>", inline=False)
     if user_id:
         conn=get_connection(); cur=conn.cursor()
         try:
             cur.execute("SELECT COUNT(*) FROM sorteio_entradas WHERE sorteio_id=%s AND user_id=%s AND ativa=TRUE",(sorteio_id,user_id))
             minhas=int(cur.fetchone()[0])
         finally: cur.close(); conn.close()
-        embed.add_field(name="AS TUAS ENTRADAS", value=f"**{minhas}/{limite}**", inline=False)
-    embed.set_footer(text=f"SORTEIO #{sorteio_id}  •  Números atribuídos por ordem crescente")
+        embed.add_field(name="🙋 As tuas entradas", value=f"**{minhas}/{limite}** 🎫", inline=False)
+    embed.set_footer(text=f"🎲 Sorteio #{sorteio_id}  •  Números atribuídos por ordem crescente")
     return embed
+
 
 class ComprarEntradasSorteioModal(discord.ui.Modal, title="Comprar entradas no sorteio"):
     quantidade=discord.ui.TextInput(label="Quantidade de entradas", placeholder="Ex.: 1, 2, 5", min_length=1, max_length=3)
@@ -13715,20 +13716,21 @@ def listar_produtos_loja_sync():
 
 
 def criar_embed_produto(row):
-    """Ficha visual de produto; não altera compra, stock nem preço."""
+    """Ficha de produto com emojis; mantém preços, stock e imagens."""
     produto_id,nome,descricao,preco,categoria,stock,imagem=row
-    disponibilidade = "Disponível" if stock is None or stock > 0 else "Esgotado"
+    disponibilidade = "🟢 Disponível" if stock is None or stock > 0 else "🔴 Esgotado"
     embed=discord.Embed(
-        title=f"LOJA  /  {nome}",
-        description=descricao or "Sem descrição disponível.",
-        color=discord.Color.from_rgb(69, 91, 83)
+        title=f"🛍️ LOJA  •  {nome}",
+        description=f"✨ {descricao or 'Sem descrição disponível.'}",
+        color=discord.Color.from_rgb(67, 120, 110) if stock is None or stock > 0 else discord.Color.from_rgb(130, 130, 130)
     )
-    embed.add_field(name="PREÇO", value=f"**{preco:,} créditos**".replace(',', '.'), inline=True)
-    embed.add_field(name="CATEGORIA", value=str(categoria), inline=True)
-    embed.add_field(name="DISPONIBILIDADE", value=f"**{disponibilidade}**\n" + ("Stock ilimitado" if stock is None else f"{stock} unidade(s)"), inline=False)
+    embed.add_field(name="🪙 Preço", value=f"**{preco:,} créditos**".replace(',', '.'), inline=True)
+    embed.add_field(name="🏷️ Categoria", value=str(categoria), inline=True)
+    embed.add_field(name="📦 Disponibilidade", value=f"**{disponibilidade}**\n" + ("♾️ Stock ilimitado" if stock is None else f"📊 {stock} unidade(s)"), inline=False)
     if imagem: embed.set_image(url=imagem)
-    embed.set_footer(text=f"PRODUTO #{produto_id}  •  Confirma a compra no botão abaixo")
+    embed.set_footer(text=f"🛒 Produto #{produto_id}  •  Confirma a compra no botão abaixo")
     return embed
+
 
 class ComprarProdutoView(discord.ui.View):
     def __init__(self, produto_id:int, user_id:int):
@@ -14765,5 +14767,63 @@ async def editar_loja_botoes(ctx):
                                'As compras, os créditos e os sorteios continuam com a lógica atual.',
                    color=discord.Color.blurple()), view=PainelEdicaoLojaView(), delete_after=300)
 
+
+
+# ---------- PAINEL UNIFICADO DE ADMINISTRAÇÃO DA LOJA ----------
+# Apenas interface: reutiliza os modais e views já existentes.
+class PainelUnificadoLojaView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+
+    @discord.ui.button(label="Adicionar produto", emoji="📦", style=discord.ButtonStyle.success, row=0)
+    async def adicionar_produto(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("❌ Apenas administradores.", ephemeral=True)
+        await interaction.response.send_modal(AdicionarProdutoModal())
+
+    @discord.ui.button(label="Criar sorteio", emoji="🎟️", style=discord.ButtonStyle.success, row=0)
+    async def criar_sorteio(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("❌ Apenas administradores.", ephemeral=True)
+        await interaction.response.send_modal(CriarSorteioModal())
+
+    @discord.ui.button(label="Editar produtos", emoji="🖼️", style=discord.ButtonStyle.primary, row=1)
+    async def editar_produtos(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await PainelEdicaoLojaView()._abrir(interaction, 'produto')
+
+    @discord.ui.button(label="Editar sorteios", emoji="✏️", style=discord.ButtonStyle.primary, row=1)
+    async def editar_sorteios(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await PainelEdicaoLojaView()._abrir(interaction, 'sorteio')
+
+    @discord.ui.button(label="Gerir sorteios", emoji="⚙️", style=discord.ButtonStyle.secondary, row=2)
+    async def gerir_sorteios(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("❌ Apenas administradores.", ephemeral=True)
+        rows = listar_sorteios_loja_sync()
+        if not rows:
+            return await interaction.response.send_message("ℹ️ Não existem sorteios para gerir.", ephemeral=True)
+        await interaction.response.send_message(
+            embed=discord.Embed(title="🎟️ Gestão de Sorteios",
+                                description="Seleciona um sorteio para fechar vendas, sortear ou cancelar.",
+                                color=discord.Color.blurple()),
+            view=ListaSorteiosAdminView(rows), ephemeral=True)
+
+
+@bot.command(name="abrirloja")
+@commands.has_permissions(administrator=True)
+async def abrir_loja_admin(ctx):
+    embed = discord.Embed(
+        title="🛍️ PAINEL DE GESTÃO  •  LOJA & SORTEIOS",
+        description=("✨ **Central de administração**\n\n"
+                     "📦 **Adicionar produto** · Cria um novo artigo\n"
+                     "🎟️ **Criar sorteio** · Lança um novo prémio\n"
+                     "🖼️ **Editar produtos** · Atualiza dados e fotografias\n"
+                     "✏️ **Editar sorteios** · Ajusta entradas e imagens\n"
+                     "⚙️ **Gerir sorteios** · Fecha, sorteia ou cancela\n\n"
+                     "👇 **Escolhe uma ação nos botões abaixo.**\n"
+                     "🔒 *Acesso reservado à administração.*"),
+        color=discord.Color.from_rgb(65, 75, 85))
+    embed.set_footer(text="Este painel não altera a lógica de compras, créditos ou sorteios.")
+    await ctx.send(embed=embed, view=PainelUnificadoLojaView(), delete_after=300)
 
 bot.run(TOKEN)
