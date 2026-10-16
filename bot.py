@@ -13958,8 +13958,9 @@ def obter_produtos_montra_carteira():
         )""")
         cur.execute("ALTER TABLE carteira_montra_config ADD COLUMN IF NOT EXISTS sorteio_destaque_id BIGINT")
         cur.execute("ALTER TABLE carteira_montra_config ADD COLUMN IF NOT EXISTS destaques_selecionados TEXT")
+        cur.execute("ALTER TABLE carteira_montra_config ADD COLUMN IF NOT EXISTS novidades_selecionadas TEXT")
         conn.commit()
-        cur.execute("SELECT produto_destaque_id, sorteio_destaque_id, destaques_selecionados FROM carteira_montra_config WHERE id=1")
+        cur.execute("SELECT produto_destaque_id, sorteio_destaque_id, destaques_selecionados, novidades_selecionadas FROM carteira_montra_config WHERE id=1")
         config = cur.fetchone()
         cur.execute("""SELECT id, nome, preco, categoria, imagem_url FROM loja_produtos
             WHERE ativo=TRUE AND (stock IS NULL OR stock>0)
@@ -14000,7 +14001,23 @@ def obter_produtos_montra_carteira():
             if item and not any((x[0], x[3]) == (item[0], item[3]) for x in destaques):
                 destaques.append(item)
         ids_destacados = {p[0] for p in destaques if p[3] != 'sorteio'}
-        novidades = [r for r in recentes if r[0] not in ids_destacados][:3]
+        # NULL = comportamento automático anterior; string vazia = ocultar novidades.
+        if config and config[3] is not None:
+            ids_novidades = []
+            for raw in config[3].split(',')[:3]:
+                try:
+                    ids_novidades.append(int(raw))
+                except (TypeError, ValueError):
+                    continue
+            novidades = []
+            for pid in ids_novidades:
+                cur.execute("""SELECT id, nome, preco, categoria, imagem_url FROM loja_produtos
+                    WHERE id=%s AND ativo=TRUE AND (stock IS NULL OR stock>0)""", (pid,))
+                artigo = cur.fetchone()
+                if artigo and artigo[0] not in ids_destacados:
+                    novidades.append(artigo)
+        else:
+            novidades = [r for r in recentes if r[0] not in ids_destacados][:3]
         return destaques, novidades
     except Exception as exc:
         conn.rollback()
@@ -14092,17 +14109,20 @@ class PainelCarteiraV2View(discord.ui.LayoutView):
         else:
             painel.add_item(discord.ui.TextDisplay("Em breve, novo conteúdo em destaque."))
         painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
-        painel.add_item(discord.ui.TextDisplay("🆕 **Novos produtos**"))
-        if novidades_loja:
+        # A opção "ocultar novidades" não mostra sequer o título nem conteúdo antigo.
+        novidades_ocultas = obter_novidades_ocultas_carteira()
+        if not novidades_ocultas:
+            painel.add_item(discord.ui.TextDisplay("🆕 **Novos produtos**"))
+        if not novidades_ocultas and novidades_loja:
             painel.add_item(discord.ui.TextDisplay("\n".join(formatar_produto_montra(p) for p in novidades_loja)))
             imagens_novas = [discord.MediaGalleryItem(media=p[4]) for p in novidades_loja if url_imagem_carteira(p[4])]
             if imagens_novas:
                 painel.add_item(discord.ui.MediaGallery(*imagens_novas))
-        elif novidades_texto and novidades_texto.strip():
+        elif not novidades_ocultas and novidades_texto and novidades_texto.strip():
             painel.add_item(discord.ui.TextDisplay(novidades_texto.strip()[:1800]))
-        else:
+        elif not novidades_ocultas:
             painel.add_item(discord.ui.TextDisplay("Novidades a anunciar."))
-        if not novidades_loja and url_imagem_carteira(novidades_imagem_url):
+        if not novidades_ocultas and not novidades_loja and url_imagem_carteira(novidades_imagem_url):
             painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=novidades_imagem_url.strip())))
         painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
         painel.add_item(discord.ui.TextDisplay(
@@ -15149,6 +15169,74 @@ class EditarVisualCarteiraModal(discord.ui.Modal, title="Editar painel da Cartei
             await interaction.followup.send("✅ Dados guardados, mas não foi possível atualizar a mensagem. Usa /painel_carteira.", ephemeral=True)
 
 
+def obter_novidades_ocultas_carteira():
+    """Indica se o administrador optou por esconder toda a secção de novidades."""
+    conn = get_connection()
+    if not conn:
+        return False
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT novidades_selecionadas FROM carteira_montra_config WHERE id=1")
+        row = cur.fetchone()
+        return bool(row and row[0] == '')
+    except Exception:
+        conn.rollback()
+        return False
+    finally:
+        cur.close()
+        conn.close()
+
+
+class EscolherNovidadesCarteira(discord.ui.Select):
+    def __init__(self, produtos):
+        options = [
+            discord.SelectOption(label="Não mostrar novos produtos", value="ocultar", emoji="🚫"),
+            discord.SelectOption(label="Automático (mais recentes)", value="auto", emoji="🔄"),
+        ]
+        for _, pid, nome, preco in produtos[:23]:
+            options.append(discord.SelectOption(label=str(nome)[:100], value=f"produto:{pid}",
+                description=f"{int(preco):,} créditos".replace(',', '.'), emoji="📦"))
+        super().__init__(placeholder="Gerir novos produtos (até 3)", options=options,
+            min_values=1, max_values=min(3, len(options)))
+
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("❌ Apenas administradores.", ephemeral=True)
+        valores = list(self.values)
+        if ("ocultar" in valores or "auto" in valores) and len(valores) > 1:
+            return await interaction.response.send_message(
+                "⚠️ Seleciona Não mostrar ou Automático isoladamente.", ephemeral=True)
+        escolha = None if valores == ["auto"] else ("" if valores == ["ocultar"] else
+            ",".join(v.split(':', 1)[1] for v in valores))
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        conn = get_connection()
+        if not conn:
+            return await interaction.followup.send("❌ Base de dados indisponível.", ephemeral=True)
+        cur = conn.cursor()
+        try:
+            cur.execute("""CREATE TABLE IF NOT EXISTS carteira_montra_config (
+                id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id=1),
+                produto_destaque_id BIGINT, sorteio_destaque_id BIGINT)""")
+            cur.execute("ALTER TABLE carteira_montra_config ADD COLUMN IF NOT EXISTS novidades_selecionadas TEXT")
+            cur.execute("""INSERT INTO carteira_montra_config (id, novidades_selecionadas)
+                VALUES (1, %s) ON CONFLICT (id) DO UPDATE
+                SET novidades_selecionadas=EXCLUDED.novidades_selecionadas""", (escolha,))
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            print(f"[CARTEIRA] Erro ao guardar novidades: {exc!r}")
+            return await interaction.followup.send("❌ Não foi possível guardar as novidades.", ephemeral=True)
+        finally:
+            cur.close()
+            conn.close()
+        try:
+            await garantir_painel_carteira_no_fundo()
+            await interaction.followup.send("✅ Novidades guardadas e painel atualizado.", ephemeral=True)
+        except Exception as exc:
+            print(f"[CARTEIRA] Erro ao atualizar novidades: {exc!r}")
+            await interaction.followup.send("✅ Guardado. Atualiza com /painel_carteira.", ephemeral=True)
+
+
 class EscolherDestaqueCarteira(discord.ui.Select):
     def __init__(self, produtos):
         options = [discord.SelectOption(label="Automático (produto mais recente)", value="auto", emoji="🔄")]
@@ -15203,6 +15291,7 @@ class GerirMontraCarteiraView(discord.ui.View):
     def __init__(self, produtos):
         super().__init__(timeout=180)
         self.add_item(EscolherDestaqueCarteira(produtos))
+        self.add_item(EscolherNovidadesCarteira([p for p in produtos if p[0] == "produto"]))
 
 
 @bot.tree.command(name="gerir_montra", description="Escolher produtos da loja para a montra da Carteira")
@@ -15232,7 +15321,7 @@ async def gerir_montra_slash(interaction: discord.Interaction):
     await interaction.response.send_message(
         "🛍️ **Gerir montra da Carteira**\n"
         "Seleciona até **3 produtos ou sorteios** para **🌟 Conteúdo destacado**. "
-        "A secção **🆕 Novos produtos** mostra automaticamente até 3 produtos recentes da loja.\n"
+        "Na secção **🆕 Novos produtos**, escolhe os artigos ou **Não mostrar novos produtos**.\n"
         "A imagem de capa continua a ser editada em `/editar_carteira`.\n"
         "*Seleciona vários itens no menu (até 3). Automático deve ser selecionado sozinho.*",
         view=GerirMontraCarteiraView(produtos), ephemeral=True)
