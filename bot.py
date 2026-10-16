@@ -969,17 +969,17 @@ async def atualizar_embed_estado(channel: discord.Thread):
     preenchidos = min(round(percentagem / 10), 10)
     barra = "🟩" * preenchidos + "⬛" * (10 - preenchidos)
     estado_aberto = bool(abertas and vagas > 0)
-    estado = "🟢 **INSCRIÇÕES ABERTAS**" if estado_aberto else (
-        "🔴 **VAGAS ESGOTADAS**" if abertas else "🔒 **INSCRIÇÕES FECHADAS**")
-    data_texto = "📅 **Data a anunciar**"
-    cancelamento_texto = "⏳ **Cancelamento:** data por definir"
+    estado = "🟢 Inscrições abertas" if estado_aberto else (
+        "🔴 Vagas esgotadas" if abertas else "🔒 Inscrições fechadas")
+    data_texto = "📅 Data a anunciar"
+    cancelamento_texto = "⏳ Cancelamentos permitidos até: data e hora por definir"
     if inicio_jogo:
         if inicio_jogo.tzinfo is None:
             inicio_jogo = inicio_jogo.replace(tzinfo=timezone.utc)
         local = inicio_jogo.astimezone(FUSO_JOGO)
-        data_texto = f"📅 **{local:%d/%m/%Y}**  ·  🕘 **{local:%H:%M}**"
+        data_texto = f"📅 {local:%d/%m/%Y}  ·  🕘 {local:%H:%M}"
         limite_cancelamento = (inicio_jogo - timedelta(hours=HORAS_LIMITE_CANCELAMENTO)).astimezone(FUSO_JOGO)
-        cancelamento_texto = f"⏳ **Cancelar até:** {limite_cancelamento:%d/%m às %H:%M}"
+        cancelamento_texto = f"⏳ Cancelamentos permitidos até {limite_cancelamento:%d/%m/%Y às %H:%M}"
 
     banner_url = None
     try:
@@ -991,14 +991,15 @@ async def atualizar_embed_estado(channel: discord.Thread):
         print(f"[PAINEL INSCRIÇÕES] Não foi possível obter o banner: {exc}")
         conn.rollback()
 
-    titulo_jogo = discord.utils.escape_markdown(channel.name or "Jogo CQB")
-    cabecalho = f"## 🎯 {titulo_jogo[:85]}\n{estado}\n{data_texto}"
+    # O bloco de código cria uma moldura discreta e evita os títulos Markdown gigantes.
+    # Não incluir Markdown dentro do bloco: o Discord mostra-o literalmente.
+    titulo_jogo = (channel.name or "Jogo CQB").replace("`", "'").replace("\n", " ").strip()
+    cabecalho = f"```\n🎯 {titulo_jogo[:70]}\n```\n{estado}  ·  {data_texto}"
     ocupacao = (
-        f"### 👥 {total} inscritos  ·  🎟️ {vagas} vagas\n"
-        f"{barra}  **{percentagem}%**\n"
-        f"-# Limite: {limite} jogadores"
+        f"👥 **{total}/{limite}** inscritos  ·  🎟️ **{vagas}** vagas\n"
+        f"{barra}  `{percentagem}%`"
     )
-    detalhes = f"{cancelamento_texto}\n💳 **Pagamento MB WAY:** instruções por mensagem privada"
+    detalhes = cancelamento_texto
 
     if estado_msg_id:
         try:
@@ -1877,7 +1878,7 @@ class InscricoesV2View(discord.ui.LayoutView):
         super().__init__(timeout=None)
         cabecalho = cabecalho or "## 🎯 STUNHOUSE CQB\n🎟️ Inscrições"
         ocupacao = ocupacao or "👥 Consulta as vagas disponíveis no painel do jogo."
-        detalhes = detalhes or "💳 Pagamento: instruções enviadas por mensagem privada."
+        detalhes = detalhes or "⏳ Consulta o prazo de cancelamento no painel do jogo."
         painel = discord.ui.Container(accent_colour=discord.Color.green())
         if banner_url and banner_url.startswith(("https://", "http://")):
             painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=banner_url)))
