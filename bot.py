@@ -14034,7 +14034,7 @@ class CompraDestaqueCarteiraButton(discord.ui.Button):
     def __init__(self, posicao: int, tipo: str):
         self.posicao = posicao
         super().__init__(
-            label="🎟️ Participar no sorteio" if tipo == "sorteio" else "🛒 Comprar agora",
+            label=f"🎟️ Sorteio {posicao + 1}" if tipo == "sorteio" else f"🛒 Comprar {posicao + 1}",
             style=discord.ButtonStyle.success,
             custom_id=f"carteira:destaque:comprar:{posicao}",
         )
@@ -14071,20 +14071,22 @@ class PainelCarteiraV2View(discord.ui.LayoutView):
         imagem_capa = url_imagem_carteira(capa_url)
         if imagem_capa:
             painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=imagem_capa)))
-        elif destaques and url_imagem_carteira(destaques[0][4]):
-            painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=destaques[0][4])))
         painel.add_item(discord.ui.TextDisplay("🌟 **Conteúdo destacado**"))
         if destaques:
+            # Uma única galeria mostra até três fotografias lado a lado.
+            # A ordem das legendas e dos botões corresponde à ordem da galeria.
+            imagens = [discord.MediaGalleryItem(media=d[4]) for d in destaques
+                       if url_imagem_carteira(d[4])]
+            if imagens:
+                painel.add_item(discord.ui.MediaGallery(*imagens))
+            descricoes = [f"**{posicao + 1}.** {formatar_produto_montra(destaque)}"
+                          for posicao, destaque in enumerate(destaques)]
+            painel.add_item(discord.ui.TextDisplay("\n".join(descricoes)))
+            linha_compra = discord.ui.ActionRow()
             for posicao, destaque in enumerate(destaques):
-                if posicao:
-                    painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
-                painel.add_item(discord.ui.TextDisplay(formatar_produto_montra(destaque)))
-                if url_imagem_carteira(destaque[4]) and (imagem_capa or posicao > 0):
-                    painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=destaque[4])))
-                linha_compra = discord.ui.ActionRow()
                 linha_compra.add_item(CompraDestaqueCarteiraButton(
                     posicao, "sorteio" if destaque[3] == "sorteio" else "produto"))
-                painel.add_item(linha_compra)
+            painel.add_item(linha_compra)
         elif destaque_texto and destaque_texto.strip():
             painel.add_item(discord.ui.TextDisplay(destaque_texto.strip()[:1800]))
         else:
