@@ -5619,27 +5619,43 @@ class PainelEquipasHallV2View(discord.ui.LayoutView):
         painel.add_item(discord.ui.TextDisplay("```\n👤 STATUS\n```"))
         painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
         painel.add_item(discord.ui.TextDisplay("### 👤 Top 5 Jogadores"))
-        # MediaGallery com duas imagens cria a apresentação lado a lado do Discord.
-        # Mantemos a ordem do ranking, sem deslocar os nomes se faltar um avatar.
-        imagens_jogadores = []
-        for uid, _pontos in jogadores[:2]:
+        # Sections V2 usam thumbnails compactas, sem ampliar os avatares.
+        for pos, (uid, pontos) in enumerate(jogadores[:2]):
             membro = guild.get_member(uid) if guild else None
+            nome = membro.display_name if membro else f"Jogador {uid}"
+            nome = discord.utils.escape_markdown(nome).replace("`", "'")[:48]
+            medalha = ("🥇", "🥈")[pos]
+            legenda = discord.ui.TextDisplay(
+                f"{medalha} **{nome}**\n`{pontos:,} pts`".replace(",", " ")
+            )
             if membro:
-                imagens_jogadores.append(discord.MediaGalleryItem(media=membro.display_avatar.url))
-        if len(imagens_jogadores) == 2:
-            painel.add_item(discord.ui.MediaGallery(*imagens_jogadores))
-        elif len(imagens_jogadores) == 1:
-            painel.add_item(discord.ui.MediaGallery(*imagens_jogadores))
-        painel.add_item(discord.ui.TextDisplay(top_jogadores))
+                painel.add_item(discord.ui.Section(
+                    legenda, accessory=discord.ui.Thumbnail(membro.display_avatar.url)
+                ))
+            else:
+                painel.add_item(legenda)
+        if len(jogadores) > 2:
+            painel.add_item(discord.ui.TextDisplay("\n".join(top_jogadores.splitlines()[2:])))
+        elif not jogadores:
+            painel.add_item(discord.ui.TextDisplay(top_jogadores))
         painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
         painel.add_item(discord.ui.TextDisplay("### 🛡️ Top 5 Equipas"))
-        imagens_equipas = []
-        for _nome, _pontos, logo_url in equipas[:2]:
+        for pos, (nome, pontos, logo_url) in enumerate(equipas[:2]):
+            nome_seguro = discord.utils.escape_markdown(nome).replace("`", "'")[:48]
+            medalha = ("🥇", "🥈")[pos]
+            legenda = discord.ui.TextDisplay(
+                f"{medalha} **{nome_seguro}**\n`{pontos:,} pts`".replace(",", " ")
+            )
             if logo_url and str(logo_url).startswith(("https://", "http://")):
-                imagens_equipas.append(discord.MediaGalleryItem(media=logo_url))
-        if imagens_equipas:
-            painel.add_item(discord.ui.MediaGallery(*imagens_equipas))
-        painel.add_item(discord.ui.TextDisplay(top_equipas))
+                painel.add_item(discord.ui.Section(
+                    legenda, accessory=discord.ui.Thumbnail(str(logo_url))
+                ))
+            else:
+                painel.add_item(legenda)
+        if len(equipas) > 2:
+            painel.add_item(discord.ui.TextDisplay("\n".join(top_equipas.splitlines()[2:])))
+        elif not equipas:
+            painel.add_item(discord.ui.TextDisplay(top_equipas))
         painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
         painel.add_item(discord.ui.TextDisplay("🔒 Os status pessoais e de equipa são consultados em privado."))
         originais = PainelEquipasView()
