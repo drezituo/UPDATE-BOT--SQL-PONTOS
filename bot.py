@@ -13945,6 +13945,49 @@ def obter_config_visual_carteira():
         conn.close()
 
 
+def obter_produtos_montra_carteira():
+    """Produtos da loja disponíveis: um destaque escolhido e três novidades automáticas."""
+    conn = get_connection()
+    if not conn:
+        return None, []
+    cur = conn.cursor()
+    try:
+        cur.execute("""CREATE TABLE IF NOT EXISTS carteira_montra_config (
+            id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+            produto_destaque_id BIGINT
+        )""")
+        conn.commit()
+        cur.execute("SELECT produto_destaque_id FROM carteira_montra_config WHERE id=1")
+        config = cur.fetchone()
+        escolhido = config[0] if config else None
+        cur.execute("""SELECT id, nome, preco, categoria, imagem_url FROM loja_produtos
+            WHERE ativo=TRUE AND (stock IS NULL OR stock>0)
+            ORDER BY criado_em DESC, id DESC LIMIT 4""")
+        recentes = cur.fetchall()
+        destaque = None
+        if escolhido:
+            cur.execute("""SELECT id, nome, preco, categoria, imagem_url FROM loja_produtos
+                WHERE id=%s AND ativo=TRUE AND (stock IS NULL OR stock>0)""", (escolhido,))
+            destaque = cur.fetchone()
+        if destaque is None:
+            destaque = recentes[0] if recentes else None
+        novidades = [r for r in recentes if not destaque or r[0] != destaque[0]][:3]
+        return destaque, novidades
+    except Exception as exc:
+        conn.rollback()
+        print(f"[CARTEIRA] Erro ao obter montra da loja: {exc!r}")
+        return None, []
+    finally:
+        cur.close()
+        conn.close()
+
+
+def formatar_produto_montra(produto):
+    _id, nome, preco, categoria, _imagem = produto
+    nome = discord.utils.escape_markdown(str(nome))
+    return f"**{nome[:90]}** · 🪙 **{int(preco):,} créditos**".replace(",", ".")
+
+
 def url_imagem_carteira(valor):
     valor = (valor or "").strip()
     return valor if valor.startswith(("https://", "http://")) else None
@@ -13963,30 +14006,46 @@ class PainelCarteiraV2View(discord.ui.LayoutView):
         super().__init__(timeout=None)
         painel = discord.ui.Container(accent_colour=discord.Color.from_rgb(67, 120, 110))
         capa_url, destaque_texto, novidades_texto, novidades_imagem_url = obter_config_visual_carteira()
-        destaque = obter_destaque_loja_carteira()
+        destaque, novidades_loja = obter_produtos_montra_carteira()
         imagem_capa = url_imagem_carteira(capa_url)
         if imagem_capa:
             painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=imagem_capa)))
         elif destaque and url_imagem_carteira(destaque[4]):
             painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=destaque[4])))
-        painel.add_item(discord.ui.TextDisplay("🌟 **Produtos em destaque**"))
-        if destaque_texto and destaque_texto.strip():
+        painel.add_item(discord.ui.TextDisplay("🌟 **Conteúdo destacado**"))
+        if destaque:
+            painel.add_item(discord.ui.TextDisplay(formatar_produto_montra(destaque)))
+            # A capa é editorial; a fotografia do produto é independente.
+            if url_imagem_carteira(destaque[4]) and imagem_capa:
+                painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=destaque[4])))
+        elif destaque_texto and destaque_texto.strip():
             painel.add_item(discord.ui.TextDisplay(destaque_texto.strip()[:1800]))
-        elif destaque:
-            _id, nome, preco, categoria, _imagem = destaque
-            painel.add_item(discord.ui.TextDisplay(
-                f"**{discord.utils.escape_markdown(str(nome))}** · 🪙 **{int(preco):,} créditos**".replace(",", ".")
-            ))
         else:
-            painel.add_item(discord.ui.TextDisplay("Em breve, novos produtos em destaque."))
+            painel.add_item(discord.ui.TextDisplay("Em breve, novo conteúdo em destaque."))
         painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
         painel.add_item(discord.ui.TextDisplay("🆕 **Novos produtos**"))
-        painel.add_item(discord.ui.TextDisplay(
-            novidades_texto.strip()[:1800] if novidades_texto and novidades_texto.strip()
-            else "Novidades a anunciar."
-        ))
-        if url_imagem_carteira(novidades_imagem_url):
+        if novidades_loja:
+            painel.add_item(discord.ui.TextDisplay("\n".join(formatar_produto_montra(p) for p in novidades_loja)))
+            imagens_novas = [discord.MediaGalleryItem(media=p[4]) for p in novidades_loja if url_imagem_carteira(p[4])]
+            if imagens_novas:
+                painel.add_item(discord.ui.MediaGallery(*imagens_novas))
+        elif novidades_texto and novidades_texto.strip():
+            painel.add_item(discord.ui.TextDisplay(novidades_texto.strip()[:1800]))
+        else:
+            painel.add_item(discord.ui.TextDisplay("Novidades a anunciar."))
+        if not novidades_loja and url_imagem_carteira(novidades_imagem_url):
             painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=novidades_imagem_url.strip())))
+        painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+        painel.add_item(discord.ui.TextDisplay(
+            "🪙 **Como adquirir créditos**\n"
+            f"⭐ Cada presença: **+{CREDITOS_POR_PRESENCA} créditos**\n"
+            f"👥 Cada Team Win: **+{CREDITOS_POR_TEAMWIN} créditos**\n"
+            f"🎯 Objetivos de equipa: **+{CREDITOS_POR_OBJETIVO_EQUIPA} créditos** por membro e marco\n"
+            f"🏆 Bónus diário de Team Wins: "
+            f"**2 vitórias +{BONUS_TEAMWINS_DIARIO[2]}** · "
+            f"**5 vitórias +{BONUS_TEAMWINS_DIARIO[5]}** · "
+            f"**10 vitórias +{BONUS_TEAMWINS_DIARIO[10]}**"
+        ))
         self.add_item(painel)
         # Reutiliza as ações originais, sem alterar a lógica de compras ou movimentos.
         originais = PainelCarteiraView()
@@ -14973,7 +15032,7 @@ async def garantir_painel_carteira_no_fundo(force_repost=False):
 
 class EditarVisualCarteiraModal(discord.ui.Modal, title="Editar painel da Carteira"):
     capa = discord.ui.TextInput(label="Imagem de capa (URL)", placeholder="https://...", required=False, max_length=500)
-    destaque = discord.ui.TextInput(label="Produtos em destaque", style=discord.TextStyle.paragraph, required=False, max_length=1800)
+    destaque = discord.ui.TextInput(label="Conteúdo destacado", style=discord.TextStyle.paragraph, required=False, max_length=1800)
     novidades = discord.ui.TextInput(label="Novos produtos", style=discord.TextStyle.paragraph, required=False, max_length=1800)
     imagem_novidades = discord.ui.TextInput(label="Imagem dos novos produtos (URL)", placeholder="https://...", required=False, max_length=500)
 
@@ -15019,6 +15078,81 @@ class EditarVisualCarteiraModal(discord.ui.Modal, title="Editar painel da Cartei
         except Exception as exc:
             print(f"[CARTEIRA] Erro ao atualizar visual: {exc!r}")
             await interaction.followup.send("✅ Dados guardados, mas não foi possível atualizar a mensagem. Usa /painel_carteira.", ephemeral=True)
+
+
+class EscolherDestaqueCarteira(discord.ui.Select):
+    def __init__(self, produtos):
+        options = [discord.SelectOption(label="Automático (produto mais recente)", value="auto", emoji="🔄")]
+        for produto in produtos[:24]:
+            pid, nome, preco, _categoria, _imagem = produto
+            options.append(discord.SelectOption(
+                label=str(nome)[:100], value=str(pid),
+                description=f"{int(preco):,} créditos".replace(",", "."), emoji="📦"))
+        super().__init__(placeholder="Escolhe o produto em destaque", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("❌ Apenas administradores.", ephemeral=True)
+        escolhido = None if self.values[0] == "auto" else int(self.values[0])
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        conn = get_connection()
+        if not conn:
+            return await interaction.followup.send("❌ Base de dados indisponível.", ephemeral=True)
+        cur = conn.cursor()
+        try:
+            cur.execute("""CREATE TABLE IF NOT EXISTS carteira_montra_config (
+                id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1), produto_destaque_id BIGINT)""")
+            cur.execute("""INSERT INTO carteira_montra_config (id, produto_destaque_id)
+                VALUES (1, %s) ON CONFLICT (id) DO UPDATE
+                SET produto_destaque_id=EXCLUDED.produto_destaque_id""", (escolhido,))
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            print(f"[CARTEIRA] Erro ao selecionar destaque: {exc!r}")
+            return await interaction.followup.send("❌ Não foi possível guardar o destaque.", ephemeral=True)
+        finally:
+            cur.close()
+            conn.close()
+        try:
+            await garantir_painel_carteira_no_fundo()
+            await interaction.followup.send("✅ Destaque guardado. A montra foi atualizada.", ephemeral=True)
+        except Exception as exc:
+            print(f"[CARTEIRA] Erro ao atualizar montra: {exc!r}")
+            await interaction.followup.send("✅ Guardado. Atualiza o painel com /painel_carteira.", ephemeral=True)
+
+
+class GerirMontraCarteiraView(discord.ui.View):
+    def __init__(self, produtos):
+        super().__init__(timeout=180)
+        self.add_item(EscolherDestaqueCarteira(produtos))
+
+
+@bot.tree.command(name="gerir_montra", description="Escolher produtos da loja para a montra da Carteira")
+@app_commands.default_permissions(administrator=True)
+@app_commands.checks.has_permissions(administrator=True)
+async def gerir_montra_slash(interaction: discord.Interaction):
+    conn = get_connection()
+    if not conn:
+        return await interaction.response.send_message("❌ Base de dados indisponível.", ephemeral=True)
+    cur = conn.cursor()
+    try:
+        cur.execute("""SELECT id, nome, preco, categoria, imagem_url FROM loja_produtos
+            WHERE ativo=TRUE AND (stock IS NULL OR stock>0)
+            ORDER BY criado_em DESC, id DESC LIMIT 24""")
+        produtos = cur.fetchall()
+    except Exception as exc:
+        print(f"[CARTEIRA] Erro ao listar produtos: {exc!r}")
+        return await interaction.response.send_message("❌ Não foi possível listar os produtos.", ephemeral=True)
+    finally:
+        cur.close()
+        conn.close()
+    await interaction.response.send_message(
+        "🛍️ **Gerir montra da Carteira**\n"
+        "Seleciona o produto para **🌟 Conteúdo destacado**. "
+        "A secção **🆕 Novos produtos** mostra automaticamente até 3 produtos recentes da loja.\n"
+        "A imagem de capa continua a ser editada em `/editar_carteira`.\n"
+        "*O menu apresenta os 24 produtos disponíveis mais recentes.*",
+        view=GerirMontraCarteiraView(produtos), ephemeral=True)
 
 
 @bot.tree.command(name="editar_carteira", description="Editar capa, destaques e novidades da Carteira")
@@ -15492,4 +15626,3 @@ async def abrir_loja_admin(ctx):
     await ctx.send(embed=embed, view=PainelUnificadoLojaView(), delete_after=300)
 
 bot.run(TOKEN)
-
