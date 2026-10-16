@@ -13913,6 +13913,34 @@ def obter_destaque_loja_carteira():
         conn.close()
 
 
+def obter_config_visual_carteira():
+    """Lê as opções editoriais do painel; mantém o painel funcional sem configuração."""
+    conn = get_connection()
+    if not conn:
+        return (None, None, None, None)
+    cur = conn.cursor()
+    try:
+        cur.execute("""CREATE TABLE IF NOT EXISTS carteira_visual_config (
+            id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+            capa_url TEXT, destaque_texto TEXT, novidades_texto TEXT, novidades_imagem_url TEXT
+        )""")
+        conn.commit()
+        cur.execute("SELECT capa_url, destaque_texto, novidades_texto, novidades_imagem_url FROM carteira_visual_config WHERE id=1")
+        return cur.fetchone() or (None, None, None, None)
+    except Exception as exc:
+        conn.rollback()
+        print(f"[CARTEIRA] Erro na configuração visual: {exc!r}")
+        return (None, None, None, None)
+    finally:
+        cur.close()
+        conn.close()
+
+
+def url_imagem_carteira(valor):
+    valor = (valor or "").strip()
+    return valor if valor.startswith(("https://", "http://")) else None
+
+
 def criar_embed_carteira_publico():
     """Compatibilidade com chamadas antigas; o painel principal usa Components V2."""
     embed = discord.Embed(title="💰 Carteira de Jogador", color=discord.Color.green())
@@ -13925,26 +13953,31 @@ class PainelCarteiraV2View(discord.ui.LayoutView):
     def __init__(self):
         super().__init__(timeout=None)
         painel = discord.ui.Container(accent_colour=discord.Color.from_rgb(67, 120, 110))
+        capa_url, destaque_texto, novidades_texto, novidades_imagem_url = obter_config_visual_carteira()
         destaque = obter_destaque_loja_carteira()
-        if destaque:
-            _id, nome, preco, categoria, imagem_url = destaque
-            if imagem_url and str(imagem_url).startswith(("https://", "http://")):
-                painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=imagem_url)))
-        painel.add_item(discord.ui.TextDisplay("```\n💰 CARTEIRA DE JOGADOR\n```\n🛍️ Loja · 🎟️ Sorteios · 🪙 Créditos"))
-        painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
-        if destaque:
+        imagem_capa = url_imagem_carteira(capa_url)
+        if imagem_capa:
+            painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=imagem_capa)))
+        elif destaque and url_imagem_carteira(destaque[4]):
+            painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=destaque[4])))
+        painel.add_item(discord.ui.TextDisplay("🌟 **Produtos em destaque**"))
+        if destaque_texto and destaque_texto.strip():
+            painel.add_item(discord.ui.TextDisplay(destaque_texto.strip()[:1800]))
+        elif destaque:
+            _id, nome, preco, categoria, _imagem = destaque
             painel.add_item(discord.ui.TextDisplay(
-                f"📦 **Produto em destaque**\n**{discord.utils.escape_markdown(str(nome))}** · "
-                f"🪙 **{int(preco):,} créditos** · {discord.utils.escape_markdown(str(categoria))}".replace(",", ".")
+                f"**{discord.utils.escape_markdown(str(nome))}** · 🪙 **{int(preco):,} créditos**".replace(",", ".")
             ))
         else:
-            painel.add_item(discord.ui.TextDisplay("🛍️ **Loja**\nOs próximos produtos estarão disponíveis aqui."))
+            painel.add_item(discord.ui.TextDisplay("Em breve, novos produtos em destaque."))
         painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+        painel.add_item(discord.ui.TextDisplay("🆕 **Novos produtos**"))
         painel.add_item(discord.ui.TextDisplay(
-            f"🎯 **+{CREDITOS_POR_PRESENCA}** Presença  ·  🏆 **+{CREDITOS_POR_TEAMWIN}** Team Win\n"
-            f"⚡ **+{CREDITOS_POR_SHL_WIN}** SHL Win  ·  🎁 Entrada gratuita: **{PRECO_ENTRADA_GRATUITA:,}** créditos".replace(",", ".")
+            novidades_texto.strip()[:1800] if novidades_texto and novidades_texto.strip()
+            else "Novidades a anunciar."
         ))
-        painel.add_item(discord.ui.TextDisplay("🔐 Saldo, compras e histórico são apresentados apenas a ti."))
+        if url_imagem_carteira(novidades_imagem_url):
+            painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=novidades_imagem_url.strip())))
         self.add_item(painel)
         # Reutiliza as ações originais, sem alterar a lógica de compras ou movimentos.
         originais = PainelCarteiraView()
@@ -14927,6 +14960,63 @@ async def garantir_painel_carteira_no_fundo(force_repost=False):
             cur.execute("INSERT INTO painel_carteira_config (id,channel_id,message_id) VALUES (1,%s,%s) ON CONFLICT(id) DO UPDATE SET channel_id=EXCLUDED.channel_id,message_id=EXCLUDED.message_id",(canal.id,msg.id)); conn.commit()
         finally: cur.close(); conn.close()
         return msg
+
+
+class EditarVisualCarteiraModal(discord.ui.Modal, title="Editar painel da Carteira"):
+    capa = discord.ui.TextInput(label="Imagem de capa (URL)", placeholder="https://...", required=False, max_length=500)
+    destaque = discord.ui.TextInput(label="Produtos em destaque", style=discord.TextStyle.paragraph, required=False, max_length=1800)
+    novidades = discord.ui.TextInput(label="Novos produtos", style=discord.TextStyle.paragraph, required=False, max_length=1800)
+    imagem_novidades = discord.ui.TextInput(label="Imagem dos novos produtos (URL)", placeholder="https://...", required=False, max_length=500)
+
+    def __init__(self):
+        super().__init__()
+        capa, destaque, novidades, imagem_novidades = obter_config_visual_carteira()
+        self.capa.default = (capa or "")[:500]
+        self.destaque.default = (destaque or "")[:1800]
+        self.novidades.default = (novidades or "")[:1800]
+        self.imagem_novidades.default = (imagem_novidades or "")[:500]
+
+    async def on_submit(self, interaction: discord.Interaction):
+        capa = str(self.capa.value).strip()
+        imagem = str(self.imagem_novidades.value).strip()
+        if (capa and not url_imagem_carteira(capa)) or (imagem and not url_imagem_carteira(imagem)):
+            return await interaction.response.send_message("⚠️ As imagens precisam de URLs http:// ou https://.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        conn = get_connection()
+        if not conn:
+            return await interaction.followup.send("❌ Base de dados indisponível.", ephemeral=True)
+        cur = conn.cursor()
+        try:
+            cur.execute("""INSERT INTO carteira_visual_config
+                (id, capa_url, destaque_texto, novidades_texto, novidades_imagem_url)
+                VALUES (1,%s,%s,%s,%s)
+                ON CONFLICT (id) DO UPDATE SET
+                capa_url=EXCLUDED.capa_url, destaque_texto=EXCLUDED.destaque_texto,
+                novidades_texto=EXCLUDED.novidades_texto,
+                novidades_imagem_url=EXCLUDED.novidades_imagem_url""",
+                (capa or None, str(self.destaque.value).strip() or None,
+                 str(self.novidades.value).strip() or None, imagem or None))
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            print(f"[CARTEIRA] Erro ao guardar visual: {exc!r}")
+            return await interaction.followup.send("❌ Não foi possível guardar as informações.", ephemeral=True)
+        finally:
+            cur.close()
+            conn.close()
+        try:
+            await garantir_painel_carteira_no_fundo()
+            await interaction.followup.send("✅ Painel da Carteira guardado e atualizado.", ephemeral=True)
+        except Exception as exc:
+            print(f"[CARTEIRA] Erro ao atualizar visual: {exc!r}")
+            await interaction.followup.send("✅ Dados guardados, mas não foi possível atualizar a mensagem. Usa /painel_carteira.", ephemeral=True)
+
+
+@bot.tree.command(name="editar_carteira", description="Editar capa, destaques e novidades da Carteira")
+@app_commands.default_permissions(administrator=True)
+@app_commands.checks.has_permissions(administrator=True)
+async def editar_carteira_slash(interaction: discord.Interaction):
+    await interaction.response.send_modal(EditarVisualCarteiraModal())
 
 
 @bot.group(name="painel_carteira", aliases=["painelcarteira"], invoke_without_command=True)
