@@ -5637,67 +5637,160 @@ def obter_detalhes_ranking_status_sync(jogadores, equipas):
     return detalhes_j, detalhes_e
 
 
+def obter_visual_status_sync():
+    """Configuração opcional do painel; não interfere com os dados de jogo."""
+    conn = get_connection()
+    if not conn:
+        return (None, "Classificação competitiva · Stunhouse CQB", "Consulta o teu perfil ou gere a tua equipa nos botões abaixo.")
+    cur = conn.cursor()
+    try:
+        cur.execute("""CREATE TABLE IF NOT EXISTS status_visual_config (
+            id SMALLINT PRIMARY KEY CHECK (id=1),
+            capa_url TEXT, subtitulo TEXT, rodape TEXT
+        )""")
+        conn.commit()
+        cur.execute("SELECT capa_url, subtitulo, rodape FROM status_visual_config WHERE id=1")
+        row = cur.fetchone()
+        return row if row else (None, "Classificação competitiva · Stunhouse CQB", "Consulta o teu perfil ou gere a tua equipa nos botões abaixo.")
+    except Exception as exc:
+        conn.rollback()
+        print(f"[STATUS] Configuração visual: {exc}")
+        return (None, "Classificação competitiva · Stunhouse CQB", "Consulta o teu perfil ou gere a tua equipa nos botões abaixo.")
+    finally:
+        cur.close()
+        conn.close()
+
+
+def guardar_visual_status_sync(capa, subtitulo, rodape):
+    conn = get_connection()
+    if not conn:
+        return False
+    cur = conn.cursor()
+    try:
+        cur.execute("""CREATE TABLE IF NOT EXISTS status_visual_config (
+            id SMALLINT PRIMARY KEY CHECK (id=1),
+            capa_url TEXT, subtitulo TEXT, rodape TEXT
+        )""")
+        cur.execute("""INSERT INTO status_visual_config (id,capa_url,subtitulo,rodape)
+            VALUES (1,%s,%s,%s) ON CONFLICT (id) DO UPDATE SET
+            capa_url=EXCLUDED.capa_url, subtitulo=EXCLUDED.subtitulo, rodape=EXCLUDED.rodape""",
+            (capa or None, subtitulo, rodape))
+        conn.commit()
+        return True
+    except Exception as exc:
+        conn.rollback()
+        print(f"[STATUS] Guardar configuração: {exc}")
+        return False
+    finally:
+        cur.close()
+        conn.close()
+
+
+class EditarStatusVisualModal(discord.ui.Modal, title="Editar painel Status"):
+    capa = discord.ui.TextInput(label="URL da imagem de capa", placeholder="https://... (vazio para remover)", required=False, max_length=500)
+    subtitulo = discord.ui.TextInput(label="Subtítulo", required=False, max_length=180)
+    rodape = discord.ui.TextInput(label="Texto final", style=discord.TextStyle.paragraph, required=False, max_length=500)
+
+    def __init__(self):
+        super().__init__()
+        capa, subtitulo, rodape = obter_visual_status_sync()
+        self.capa.default = (capa or "")[:500]
+        self.subtitulo.default = (subtitulo or "")[:180]
+        self.rodape.default = (rodape or "")[:500]
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("⛔ Apenas administradores.", ephemeral=True)
+        capa = str(self.capa.value).strip()
+        if capa and not capa.startswith(("https://", "http://")):
+            return await interaction.response.send_message("⚠️ Introduz uma URL http(s) válida.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        ok = await asyncio.to_thread(guardar_visual_status_sync, capa,
+            str(self.subtitulo.value).strip(), str(self.rodape.value).strip())
+        if not ok:
+            return await interaction.followup.send("❌ Não foi possível guardar a configuração.", ephemeral=True)
+        try:
+            await garantir_painel_equipas_no_fundo()
+            await interaction.followup.send("✅ Visual do Status guardado e painel atualizado.", ephemeral=True)
+        except Exception as exc:
+            print(f"[STATUS] Erro ao atualizar painel: {exc}")
+            await interaction.followup.send("✅ Guardado. Republica com `!painel equipas` se necessário.", ephemeral=True)
+
+
+@bot.tree.command(name="editar_status", description="Editar capa e textos do painel Status")
+@app_commands.default_permissions(administrator=True)
+async def editar_status(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("⛔ Apenas administradores.", ephemeral=True)
+    await interaction.response.send_modal(EditarStatusVisualModal())
+
+
 class PainelEquipasHallV2View(discord.ui.LayoutView):
-    """Painel público V2; delega nos callbacks antigos para preservar funcionalidades."""
+    """Painel público V2, com pódio e ações originais preservadas."""
     def __init__(self, jogadores=None, equipas=None, guild=None):
         super().__init__(timeout=None)
         if jogadores is None or equipas is None:
             jogadores, equipas = obter_rankings_hall_of_fame_sync()
-        top_jogadores, top_equipas = formatar_hall_of_fame(guild, jogadores, equipas)
         detalhes_j, detalhes_e = obter_detalhes_ranking_status_sync(jogadores, equipas)
+        capa, subtitulo, rodape = obter_visual_status_sync()
         painel = discord.ui.Container(accent_colour=discord.Color.gold())
-        painel.add_item(discord.ui.TextDisplay("## 👤 STATUS\n*Classificação competitiva · Stunhouse CQB*"))
+        painel.add_item(discord.ui.TextDisplay("## 👤 STATUS" + (f"\n*{discord.utils.escape_markdown(subtitulo)}*" if subtitulo else "")))
+        if capa and str(capa).startswith(("https://", "http://")):
+            painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=str(capa))))
         painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
-        painel.add_item(discord.ui.TextDisplay("### 🏅 Jogadores · Top 5"))
+        painel.add_item(discord.ui.TextDisplay("### 🏅 TOP 5 · JOGADORES"))
         for pos, (uid, pontos) in enumerate(jogadores[:3]):
             membro = guild.get_member(uid) if guild else None
             nome = membro.display_name if membro else f"Jogador {uid}"
             nome = discord.utils.escape_markdown(nome).replace("`", "'")[:48]
             medalha = ("🥇", "🥈", "🥉")[pos]
             detalhes = detalhes_j.get(uid)
-            texto = f"{medalha} **{nome}**  ·  `{pontos:,} pts`".replace(",", " ")
+            texto = f"{medalha} **{nome}**\n` {pontos:,} PTS `  ·  ` #{pos+1:02d} `".replace(",", " ")
             if detalhes:
-                texto += (f"\n🎯 Solo **{detalhes[0]}**   ·   🤝 Team **{detalhes[1]}**"
-                          f"   ·   🎮 Presenças **{detalhes[2]}**")
+                texto += (f"\n` 🎯 Solo {detalhes[0]} `  ` 🤝 Team {detalhes[1]} `"
+                          f"\n` 🎮 Presenças {detalhes[2]} `")
             legenda = discord.ui.TextDisplay(texto)
             if membro:
-                painel.add_item(discord.ui.Section(
-                    legenda, accessory=discord.ui.Thumbnail(membro.display_avatar.url)
-                ))
+                painel.add_item(discord.ui.Section(legenda, accessory=discord.ui.Thumbnail(membro.display_avatar.url)))
             else:
                 painel.add_item(legenda)
-            if pos < min(len(jogadores), 3) - 1:
+            if pos < min(len(jogadores), 3)-1:
                 painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small, visible=False))
         if len(jogadores) > 3:
-            painel.add_item(discord.ui.TextDisplay("\n".join(top_jogadores.splitlines()[3:])))
+            linhas = []
+            for pos, (uid, pts) in enumerate(jogadores[3:5], start=4):
+                membro = guild.get_member(uid) if guild else None
+                nome = discord.utils.escape_markdown(membro.display_name if membro else f"Jogador {uid}").replace("`", "'")[:42]
+                linhas.append(f"` {pos:02d} ` **{nome}**  ·  `{pts} pts`")
+            painel.add_item(discord.ui.TextDisplay("\n".join(linhas)))
         elif not jogadores:
-            painel.add_item(discord.ui.TextDisplay(top_jogadores))
+            painel.add_item(discord.ui.TextDisplay("*Ainda não existem jogadores classificados.*"))
         painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
-        painel.add_item(discord.ui.TextDisplay("### 🛡️ Equipas · Top 5"))
+        painel.add_item(discord.ui.TextDisplay("### 🛡️ TOP 5 · EQUIPAS"))
         for pos, (nome, pontos, logo_url) in enumerate(equipas[:3]):
             nome_seguro = discord.utils.escape_markdown(nome).replace("`", "'")[:48]
             medalha = ("🥇", "🥈", "🥉")[pos]
             detalhes = detalhes_e.get(nome)
-            texto = f"{medalha} **{nome_seguro}**  ·  `{pontos:,} pts`".replace(",", " ")
+            texto = f"{medalha} **{nome_seguro}**\n` {pontos:,} PTS `  ·  ` #{pos+1:02d} `".replace(",", " ")
             if detalhes:
-                texto += (f"\n👥 Membros **{detalhes.get('membros', 0)}**"
-                          f"   ·   🎯 Solo **{detalhes.get('solo', 0)}**"
-                          f"   ·   🤝 Team **{detalhes.get('team', 0)}**")
+                texto += (f"\n` 👥 Membros {detalhes.get('membros', 0)} `"
+                          f"  ` 🎯 Solo {detalhes.get('solo', 0)} `"
+                          f"\n` 🤝 Team {detalhes.get('team', 0)} `")
             legenda = discord.ui.TextDisplay(texto)
             if logo_url and str(logo_url).startswith(("https://", "http://")):
-                painel.add_item(discord.ui.Section(
-                    legenda, accessory=discord.ui.Thumbnail(str(logo_url))
-                ))
+                painel.add_item(discord.ui.Section(legenda, accessory=discord.ui.Thumbnail(str(logo_url))))
             else:
                 painel.add_item(legenda)
-            if pos < min(len(equipas), 3) - 1:
+            if pos < min(len(equipas), 3)-1:
                 painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small, visible=False))
         if len(equipas) > 3:
-            painel.add_item(discord.ui.TextDisplay("\n".join(top_equipas.splitlines()[3:])))
+            linhas = [f"` {pos:02d} ` **{discord.utils.escape_markdown(nome).replace(chr(96), chr(39))[:42]}**  ·  `{pts} pts`"
+                      for pos, (nome, pts, _) in enumerate(equipas[3:5], start=4)]
+            painel.add_item(discord.ui.TextDisplay("\n".join(linhas)))
         elif not equipas:
-            painel.add_item(discord.ui.TextDisplay(top_equipas))
+            painel.add_item(discord.ui.TextDisplay("*Ainda não existem equipas classificadas.*"))
         painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
-        painel.add_item(discord.ui.TextDisplay("🔒 **Consultas privadas** · Usa os botões para veres o teu status ou gerires a tua equipa."))
+        painel.add_item(discord.ui.TextDisplay("🔒 **Consultas privadas**" + (f" · {discord.utils.escape_markdown(rodape)}" if rodape else "")))
         originais = PainelEquipasView()
         linha = discord.ui.ActionRow()
         for botao_antigo in originais.children:
