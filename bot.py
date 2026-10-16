@@ -15740,6 +15740,85 @@ async def editar_loja_botoes(ctx):
 
 
 
+# ---------- GESTÃO SEGURA DOS ITENS DA LOJA ----------
+# Desativação lógica: conserva os pedidos e o histórico de compras.
+class ConfirmarRemocaoItemLojaView(discord.ui.View):
+    def __init__(self, produto_id: int, nome: str, administrador_id: int):
+        super().__init__(timeout=120)
+        self.produto_id = produto_id
+        self.nome = nome
+        self.administrador_id = administrador_id
+
+    @discord.ui.button(label="Confirmar remoção", emoji="🗑️", style=discord.ButtonStyle.danger)
+    async def confirmar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.administrador_id or not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("❌ Apenas o administrador que iniciou a operação pode confirmar.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        conn = get_connection()
+        if not conn:
+            return await interaction.followup.send("⚠️ Base de dados indisponível.", ephemeral=True)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE loja_produtos SET ativo=FALSE, atualizado_em=NOW() WHERE id=%s AND ativo=TRUE RETURNING nome", (self.produto_id,))
+                row = cur.fetchone()
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            print(f"[LOJA] Erro ao desativar produto {self.produto_id}: {exc}")
+            return await interaction.followup.send("⚠️ Não foi possível remover o produto.", ephemeral=True)
+        finally:
+            conn.close()
+        for item in self.children:
+            item.disabled = True
+        await interaction.followup.send(
+            f"✅ **{discord.utils.escape_markdown(row[0])}** removido da venda. O histórico de pedidos foi preservado." if row else "ℹ️ Este produto já estava removido.", ephemeral=True)
+        try:
+            await interaction.message.edit(view=self)
+        except discord.HTTPException:
+            pass
+
+    @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.secondary)
+    async def cancelar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.administrador_id:
+            return await interaction.response.send_message("❌ Esta confirmação não te pertence.", ephemeral=True)
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(content="Operação cancelada.", view=self)
+
+
+class SelecionarItemRemocaoLoja(discord.ui.Select):
+    def __init__(self, produtos):
+        opcoes = [discord.SelectOption(label=str(nome)[:100], value=str(pid), description=f"ID #{pid} · {preco} créditos"[:100]) for pid, nome, preco in produtos]
+        super().__init__(placeholder="Escolhe um produto para remover", options=opcoes)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("❌ Apenas administradores.", ephemeral=True)
+        produto_id = int(self.values[0])
+        conn = get_connection()
+        if not conn:
+            return await interaction.response.send_message("⚠️ Base de dados indisponível.", ephemeral=True)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT nome FROM loja_produtos WHERE id=%s AND ativo=TRUE", (produto_id,))
+                row = cur.fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return await interaction.response.send_message("ℹ️ Produto já não está disponível.", ephemeral=True)
+        nome = row[0]
+        await interaction.response.send_message(
+            f"⚠️ Queres retirar **{discord.utils.escape_markdown(nome)}** da Loja?\n"
+            "Deixará de estar disponível para compra. Os pedidos antigos serão preservados.",
+            view=ConfirmarRemocaoItemLojaView(produto_id, nome, interaction.user.id), ephemeral=True)
+
+
+class ListaRemocaoLojaView(discord.ui.View):
+    def __init__(self, produtos):
+        super().__init__(timeout=300)
+        self.add_item(SelecionarItemRemocaoLoja(produtos))
+
+
 # ---------- PAINEL UNIFICADO DE ADMINISTRAÇÃO DA LOJA ----------
 # Apenas interface: reutiliza os modais e views já existentes.
 class PainelUnificadoLojaView(discord.ui.View):
@@ -15766,6 +15845,28 @@ class PainelUnificadoLojaView(discord.ui.View):
     async def editar_sorteios(self, interaction: discord.Interaction, button: discord.ui.Button):
         await PainelEdicaoLojaView()._abrir(interaction, 'sorteio')
 
+    @discord.ui.button(label="Gerir itens", emoji="🗑️", style=discord.ButtonStyle.danger, row=2)
+    async def gerir_itens(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("❌ Apenas administradores.", ephemeral=True)
+        conn = get_connection()
+        if not conn:
+            return await interaction.response.send_message("⚠️ Base de dados indisponível.", ephemeral=True)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, nome, preco FROM loja_produtos WHERE ativo=TRUE ORDER BY id DESC LIMIT 25")
+                produtos = cur.fetchall()
+        except Exception as exc:
+            print(f"[LOJA] Erro a listar itens: {exc}")
+            return await interaction.response.send_message("⚠️ Não foi possível consultar os produtos.", ephemeral=True)
+        finally:
+            conn.close()
+        if not produtos:
+            return await interaction.response.send_message("ℹ️ Não existem produtos ativos para remover.", ephemeral=True)
+        await interaction.response.send_message(
+            "🗑️ **Gerir itens da Loja**\nSeleciona o produto que pretendes retirar da venda. Será pedida confirmação.",
+            view=ListaRemocaoLojaView(produtos), ephemeral=True)
+
     @discord.ui.button(label="Gerir sorteios", emoji="⚙️", style=discord.ButtonStyle.secondary, row=2)
     async def gerir_sorteios(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not interaction.user.guild_permissions.administrator:
@@ -15790,7 +15891,8 @@ async def abrir_loja_admin(ctx):
                      "🎟️ **Criar sorteio** · Lança um novo prémio\n"
                      "🖼️ **Editar produtos** · Atualiza dados e fotografias\n"
                      "✏️ **Editar sorteios** · Ajusta entradas e imagens\n"
-                     "⚙️ **Gerir sorteios** · Fecha, sorteia ou cancela\n\n"
+                     "⚙️ **Gerir sorteios** · Fecha, sorteia ou cancela\n"
+                     "🗑️ **Gerir itens** · Retira produtos da venda\n\n"
                      "👇 **Escolhe uma ação nos botões abaixo.**\n"
                      "🔒 *Acesso reservado à administração.*"),
         color=discord.Color.from_rgb(65, 75, 85))
