@@ -5641,30 +5641,35 @@ def obter_detalhes_ranking_status_sync(jogadores, equipas):
 
 
 def obter_visual_status_sync():
-    """Configuração opcional do painel; não interfere com os dados de jogo."""
+    """Capa principal, capas dos rankings e textos guardados no PostgreSQL."""
+    defaults = (None, "Classificação competitiva · Stunhouse CQB",
+                "Consulta o teu perfil ou gere a tua equipa nos botões abaixo.", None, None)
     conn = get_connection()
     if not conn:
-        return (None, "Classificação competitiva · Stunhouse CQB", "Consulta o teu perfil ou gere a tua equipa nos botões abaixo.")
+        return defaults
     cur = conn.cursor()
     try:
         cur.execute("""CREATE TABLE IF NOT EXISTS status_visual_config (
             id SMALLINT PRIMARY KEY CHECK (id=1),
-            capa_url TEXT, subtitulo TEXT, rodape TEXT
+            capa_url TEXT, subtitulo TEXT, rodape TEXT,
+            capa_jogadores_url TEXT, capa_equipas_url TEXT
         )""")
+        cur.execute("ALTER TABLE status_visual_config ADD COLUMN IF NOT EXISTS capa_jogadores_url TEXT")
+        cur.execute("ALTER TABLE status_visual_config ADD COLUMN IF NOT EXISTS capa_equipas_url TEXT")
         conn.commit()
-        cur.execute("SELECT capa_url, subtitulo, rodape FROM status_visual_config WHERE id=1")
-        row = cur.fetchone()
-        return row if row else (None, "Classificação competitiva · Stunhouse CQB", "Consulta o teu perfil ou gere a tua equipa nos botões abaixo.")
+        cur.execute("""SELECT capa_url, subtitulo, rodape, capa_jogadores_url, capa_equipas_url
+                       FROM status_visual_config WHERE id=1""")
+        return cur.fetchone() or defaults
     except Exception as exc:
         conn.rollback()
-        print(f"[STATUS] Configuração visual: {exc}")
-        return (None, "Classificação competitiva · Stunhouse CQB", "Consulta o teu perfil ou gere a tua equipa nos botões abaixo.")
+        print(f"[STATUS] Erro ao obter capas: {exc}")
+        return defaults
     finally:
         cur.close()
         conn.close()
 
 
-def guardar_visual_status_sync(capa, subtitulo, rodape):
+def guardar_visual_status_sync(capa, subtitulo, rodape, capa_jogadores, capa_equipas):
     conn = get_connection()
     if not conn:
         return False
@@ -5672,17 +5677,26 @@ def guardar_visual_status_sync(capa, subtitulo, rodape):
     try:
         cur.execute("""CREATE TABLE IF NOT EXISTS status_visual_config (
             id SMALLINT PRIMARY KEY CHECK (id=1),
-            capa_url TEXT, subtitulo TEXT, rodape TEXT
+            capa_url TEXT, subtitulo TEXT, rodape TEXT,
+            capa_jogadores_url TEXT, capa_equipas_url TEXT
         )""")
-        cur.execute("""INSERT INTO status_visual_config (id,capa_url,subtitulo,rodape)
-            VALUES (1,%s,%s,%s) ON CONFLICT (id) DO UPDATE SET
-            capa_url=EXCLUDED.capa_url, subtitulo=EXCLUDED.subtitulo, rodape=EXCLUDED.rodape""",
-            (capa or None, subtitulo, rodape))
+        cur.execute("ALTER TABLE status_visual_config ADD COLUMN IF NOT EXISTS capa_jogadores_url TEXT")
+        cur.execute("ALTER TABLE status_visual_config ADD COLUMN IF NOT EXISTS capa_equipas_url TEXT")
+        cur.execute("""INSERT INTO status_visual_config
+            (id,capa_url,subtitulo,rodape,capa_jogadores_url,capa_equipas_url)
+            VALUES (1,%s,%s,%s,%s,%s)
+            ON CONFLICT (id) DO UPDATE SET
+            capa_url=EXCLUDED.capa_url,
+            subtitulo=EXCLUDED.subtitulo,
+            rodape=EXCLUDED.rodape,
+            capa_jogadores_url=EXCLUDED.capa_jogadores_url,
+            capa_equipas_url=EXCLUDED.capa_equipas_url""",
+            (capa or None, subtitulo, rodape, capa_jogadores or None, capa_equipas or None))
         conn.commit()
         return True
     except Exception as exc:
         conn.rollback()
-        print(f"[STATUS] Guardar configuração: {exc}")
+        print(f"[STATUS] Erro ao guardar capas: {exc}")
         return False
     finally:
         cur.close()
@@ -5690,37 +5704,46 @@ def guardar_visual_status_sync(capa, subtitulo, rodape):
 
 
 class EditarStatusVisualModal(discord.ui.Modal, title="Editar painel Status"):
-    capa = discord.ui.TextInput(label="URL da imagem de capa", placeholder="https://... (vazio para remover)", required=False, max_length=500)
+    capa = discord.ui.TextInput(label="Capa principal (URL)", required=False, max_length=500)
+    capa_jogadores = discord.ui.TextInput(label="Capa Top 5 Jogadores (URL)", required=False, max_length=500)
+    capa_equipas = discord.ui.TextInput(label="Capa Top 5 Equipas (URL)", required=False, max_length=500)
     subtitulo = discord.ui.TextInput(label="Subtítulo", required=False, max_length=180)
-    rodape = discord.ui.TextInput(label="Texto final", style=discord.TextStyle.paragraph, required=False, max_length=500)
+    rodape = discord.ui.TextInput(label="Texto final", style=discord.TextStyle.paragraph,
+                                  required=False, max_length=500)
 
     def __init__(self):
         super().__init__()
-        capa, subtitulo, rodape = obter_visual_status_sync()
+        capa, subtitulo, rodape, capa_j, capa_e = obter_visual_status_sync()
         self.capa.default = (capa or "")[:500]
+        self.capa_jogadores.default = (capa_j or "")[:500]
+        self.capa_equipas.default = (capa_e or "")[:500]
         self.subtitulo.default = (subtitulo or "")[:180]
         self.rodape.default = (rodape or "")[:500]
 
     async def on_submit(self, interaction: discord.Interaction):
         if not interaction.user.guild_permissions.administrator:
             return await interaction.response.send_message("⛔ Apenas administradores.", ephemeral=True)
-        capa = str(self.capa.value).strip()
-        if capa and not capa.startswith(("https://", "http://")):
-            return await interaction.response.send_message("⚠️ Introduz uma URL http(s) válida.", ephemeral=True)
+        values = [str(v.value).strip() for v in
+                  (self.capa, self.capa_jogadores, self.capa_equipas)]
+        if any(v and not v.startswith(("https://", "http://")) for v in values):
+            return await interaction.response.send_message(
+                "⚠️ As capas devem ter um endereço http(s) válido.", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
-        ok = await asyncio.to_thread(guardar_visual_status_sync, capa,
-            str(self.subtitulo.value).strip(), str(self.rodape.value).strip())
+        ok = await asyncio.to_thread(guardar_visual_status_sync,
+            values[0], str(self.subtitulo.value).strip(),
+            str(self.rodape.value).strip(), values[1], values[2])
         if not ok:
-            return await interaction.followup.send("❌ Não foi possível guardar a configuração.", ephemeral=True)
+            return await interaction.followup.send("❌ Erro ao guardar as capas.", ephemeral=True)
         try:
             await garantir_painel_equipas_no_fundo()
-            await interaction.followup.send("✅ Visual do Status guardado e painel atualizado.", ephemeral=True)
+            await interaction.followup.send("✅ Capas e textos guardados. Painel atualizado.", ephemeral=True)
         except Exception as exc:
-            print(f"[STATUS] Erro ao atualizar painel: {exc}")
-            await interaction.followup.send("✅ Guardado. Republica com `!painel equipas` se necessário.", ephemeral=True)
+            print(f"[STATUS] Falha ao atualizar: {exc}")
+            await interaction.followup.send(
+                "✅ Guardado. Verifica as URLs e republica com `!painel equipas`.", ephemeral=True)
 
 
-@bot.tree.command(name="editar_status", description="Editar capa e textos do painel Status")
+@bot.tree.command(name="editar_status", description="Editar as 3 capas e os textos do Status")
 @app_commands.default_permissions(administrator=True)
 async def editar_status(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
@@ -5872,52 +5895,98 @@ async def criar_cartoes_status(guild, jogadores, equipas):
 
 
 class PainelEquipasHallV2View(discord.ui.LayoutView):
-    """Status com cartões automáticos; botões originais preservados."""
+    """Status com 3 capas e miniaturas dos 3 primeiros classificados."""
     def __init__(self, jogadores=None, equipas=None, guild=None, cartoes=False):
         super().__init__(timeout=None)
         if jogadores is None or equipas is None:
-            jogadores,equipas=obter_rankings_hall_of_fame_sync()
-        capa,subtitulo,rodape=obter_visual_status_sync()
-        painel=discord.ui.Container(accent_colour=discord.Color.gold())
-        painel.add_item(discord.ui.TextDisplay("## 👤 STATUS" + (f"\n*{discord.utils.escape_markdown(subtitulo)}*" if subtitulo else "")))
-        if capa and str(capa).startswith(("https://","http://")):
-            painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=str(capa))))
+            jogadores, equipas = obter_rankings_hall_of_fame_sync()
+        capa, subtitulo, rodape, capa_j, capa_e = obter_visual_status_sync()
+        painel = discord.ui.Container(accent_colour=discord.Color.gold())
+        painel.add_item(discord.ui.TextDisplay(
+            "## 👤 STATUS" + (f"\n*{discord.utils.escape_markdown(subtitulo)}*" if subtitulo else "")))
+        if capa and capa.startswith(("https://", "http://")):
+            painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=capa)))
         painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
         painel.add_item(discord.ui.TextDisplay("### 🏆 TOP 5 JOGADORES"))
-        if cartoes and jogadores:
-            painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media="attachment://status_jogadores.png")))
-        else:
-            linhas,_=formatar_hall_of_fame(guild,jogadores[:3],[])
-            painel.add_item(discord.ui.TextDisplay(linhas))
-        if len(jogadores)>3:
-            linhas=[]
-            for pos,(uid,pts) in enumerate(jogadores[3:5],start=4):
-                m=guild.get_member(uid) if guild else None
-                nome=discord.utils.escape_markdown(m.display_name if m else f"Jogador {uid}")
-                linhas.append(f"**{pos:02d}**  {nome}  ·  **{pts} pontos**")
-            painel.add_item(discord.ui.TextDisplay("\n".join(linhas)))
+        if capa_j and capa_j.startswith(("https://", "http://")):
+            painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=capa_j)))
+
+        detalhes_j, detalhes_e = obter_detalhes_ranking_status_sync(jogadores, equipas)
+        medalhas = ("🥇", "🥈", "🥉")
+        for i, (uid, pontos) in enumerate(jogadores[:3]):
+            membro = guild.get_member(uid) if guild else None
+            utilizador = membro or bot.get_user(uid)
+            nome = (membro.display_name if membro else
+                    utilizador.name if utilizador else f"Jogador {uid}")
+            nome = discord.utils.escape_markdown(nome).replace("`", "'")[:55]
+            solo, team, presencas = detalhes_j.get(uid, (0, 0, 0))
+            texto = (f"{medalhas[i]} **{nome}** · **{pontos} pontos**\n"
+                     f"🎯 Solo Wins: **{solo}**  ·  🤝 Team Wins: **{team}**\n"
+                     f"🎮 Presenças: **{presencas}**")
+            avatar = str(utilizador.display_avatar.url) if utilizador else None
+            if avatar:
+                painel.add_item(discord.ui.Section(
+                    discord.ui.TextDisplay(texto),
+                    accessory=discord.ui.Thumbnail(media=avatar)))
+            else:
+                painel.add_item(discord.ui.TextDisplay(texto))
+        for i, (uid, pontos) in enumerate(jogadores[3:5], start=4):
+            membro = guild.get_member(uid) if guild else None
+            utilizador = membro or bot.get_user(uid)
+            nome = membro.display_name if membro else utilizador.name if utilizador else f"Jogador {uid}"
+            nome = discord.utils.escape_markdown(nome).replace("`", "'")[:55]
+            painel.add_item(discord.ui.TextDisplay(f"**{i:02d}** · {nome} · **{pontos} pontos**"))
+        if not jogadores:
+            painel.add_item(discord.ui.TextDisplay("Ainda não existem jogadores classificados."))
+
         painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
         painel.add_item(discord.ui.TextDisplay("### 🛡️ TOP 5 EQUIPAS"))
-        if cartoes and equipas:
-            painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media="attachment://status_equipas.png")))
-        else:
-            _,linhas=formatar_hall_of_fame(guild,[],equipas[:3])
-            painel.add_item(discord.ui.TextDisplay(linhas))
-        if len(equipas)>3:
-            linhas=[f"**{pos:02d}**  {discord.utils.escape_markdown(nome)}  ·  **{pts} pontos**"
-                for pos,(nome,pts,_) in enumerate(equipas[3:5],start=4)]
-            painel.add_item(discord.ui.TextDisplay("\n".join(linhas)))
+        if capa_e and capa_e.startswith(("https://", "http://")):
+            painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=capa_e)))
+        for i, (nome, pontos, logo_url) in enumerate(equipas[:3]):
+            nome_seguro = discord.utils.escape_markdown(str(nome)).replace("`", "'")[:55]
+            dados = detalhes_e.get(nome, {}) or {}
+            membros = dados.get("membros", dados.get("num_membros"))
+            solo = dados.get("solo", dados.get("pontos_solo"))
+            team = dados.get("team", dados.get("pontos_team"))
+            texto = f"{medalhas[i]} **{nome_seguro}** · **{pontos} pontos**"
+            estatisticas = []
+            if membros is not None:
+                estatisticas.append(f"👥 Membros: **{membros}**")
+            if solo is not None:
+                estatisticas.append(f"🎯 Solo Wins: **{solo}**")
+            if team is not None:
+                estatisticas.append(f"🤝 Team Wins: **{team}**")
+            if estatisticas:
+                texto += "\n" + "  ·  ".join(estatisticas)
+            # Miniatura padrão quando a equipa não tem logótipo configurado.
+            # O avatar genérico do Discord é uma imagem pública e estável.
+            logo_padrao = "https://cdn.discordapp.com/embed/avatars/0.png"
+            miniatura = (str(logo_url).strip()
+                         if logo_url and str(logo_url).strip().startswith(("https://", "http://"))
+                         else logo_padrao)
+            painel.add_item(discord.ui.Section(
+                discord.ui.TextDisplay(texto),
+                accessory=discord.ui.Thumbnail(media=miniatura)))
+        for i, (nome, pontos, _logo) in enumerate(equipas[3:5], start=4):
+            nome_seguro = discord.utils.escape_markdown(str(nome)).replace("`", "'")[:55]
+            painel.add_item(discord.ui.TextDisplay(f"**{i:02d}** · {nome_seguro} · **{pontos} pontos**"))
+        if not equipas:
+            painel.add_item(discord.ui.TextDisplay("Ainda não existem equipas classificadas."))
         painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
-        painel.add_item(discord.ui.TextDisplay("🔒 **Consultas privadas**" + (f" · {discord.utils.escape_markdown(rodape)}" if rodape else "")))
-        originais=PainelEquipasView()
-        linha=discord.ui.ActionRow()
+        painel.add_item(discord.ui.TextDisplay(
+            "🔒 **Consultas privadas**" +
+            (f" · {discord.utils.escape_markdown(rodape)}" if rodape else "")))
+        originais = PainelEquipasView()
+        linha = discord.ui.ActionRow()
         for original in originais.children:
-            if not isinstance(original,discord.ui.Button): continue
-            botao=discord.ui.Button(label=original.label,emoji=original.emoji,
-                style=original.style,custom_id=original.custom_id)
-            async def encaminhar(interaction,callback=original.callback):
+            if not isinstance(original, discord.ui.Button):
+                continue
+            botao = discord.ui.Button(label=original.label, emoji=original.emoji,
+                style=original.style, custom_id=original.custom_id)
+            async def encaminhar(interaction, callback=original.callback):
                 await callback(interaction)
-            botao.callback=encaminhar
+            botao.callback = encaminhar
             linha.add_item(botao)
         painel.add_item(linha)
         self.add_item(painel)
@@ -6026,7 +6095,7 @@ async def comando_painel_equipas(ctx, tipo: str = "equipas"):
         await garantir_painel_equipas_no_fundo(force_repost=True)
     except Exception as exc:
         return await ctx.send(
-            f"❌ Não foi possível gerar o painel gráfico de Status. "
+            f"❌ Não foi possível publicar o painel de Status. "
             f"O painel anterior foi preservado.\n`{str(exc)[:450]}`",
             delete_after=40
         )
@@ -6046,8 +6115,7 @@ async def comando_painel_equipas(ctx, tipo: str = "equipas"):
 
 async def criar_painel_hall_view(guild):
     jogadores,equipas=await asyncio.to_thread(obter_rankings_hall_of_fame_sync)
-    files=await criar_cartoes_status(guild,jogadores,equipas)
-    return PainelEquipasHallV2View(jogadores,equipas,guild,cartoes=bool(files)),files
+    return PainelEquipasHallV2View(jogadores,equipas,guild),[]
 
 
 async def garantir_painel_equipas_no_fundo(force_repost: bool = False):
@@ -6061,10 +6129,8 @@ async def garantir_painel_equipas_no_fundo(force_repost: bool = False):
         if message_id:
             try: mensagem_antiga=await canal.fetch_message(message_id)
             except (discord.NotFound,discord.Forbidden,discord.HTTPException): pass
-        # Gerar primeiro. Nunca apagar o painel existente se Pillow, imagens ou BD falharem.
+        # Preparar primeiro; preservar o painel existente se a publicação falhar.
         view,files=await criar_painel_hall_view(canal.guild)
-        if not files:
-            raise RuntimeError("Não foram gerados cartões gráficos para o ranking.")
         if mensagem_antiga is not None and not force_repost:
             try:
                 ultima=[m async for m in canal.history(limit=1)]
