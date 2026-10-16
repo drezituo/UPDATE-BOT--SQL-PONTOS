@@ -1671,9 +1671,12 @@ async def on_message(message):
     if message.channel.id == EQUIPAS_PANEL_CHANNEL_ID:
         await garantir_painel_equipas_no_fundo(force_repost=True)
 
-    if (CARTEIRA_PANEL_CHANNEL_ID and message.channel.id == CARTEIRA_PANEL_CHANNEL_ID) or \
-       (not CARTEIRA_PANEL_CHANNEL_ID and getattr(message.channel, "name", "") == CARTEIRA_PANEL_CHANNEL_NAME):
-        await garantir_painel_carteira_no_fundo(force_repost=True)
+    if ((CARTEIRA_PANEL_CHANNEL_ID and message.channel.id == CARTEIRA_PANEL_CHANNEL_ID) or
+        (not CARTEIRA_PANEL_CHANNEL_ID and getattr(message.channel, "name", "") == CARTEIRA_PANEL_CHANNEL_NAME)) and not message.content.startswith("!"):
+        try:
+            await garantir_painel_carteira_no_fundo(force_repost=True)
+        except Exception as exc:
+            print(f"[CARTEIRA] Erro ao atualizar painel automaticamente: {exc!r}")
 
 
 @bot.event
@@ -14922,9 +14925,15 @@ async def garantir_painel_carteira_no_fundo(force_repost=False):
 @bot.group(name="painel_carteira", aliases=["painelcarteira"], invoke_without_command=True)
 @commands.has_permissions(administrator=True)
 async def painel_carteira_cmd(ctx):
-    msg=await garantir_painel_carteira_no_fundo(force_repost=True)
-    if msg: await ctx.send(f"✅ Painel da carteira criado em {msg.channel.mention}.",delete_after=10)
-    else: await ctx.send(f"⚠️ Não encontrei a sala **#{CARTEIRA_PANEL_CHANNEL_NAME}**. Define CARTEIRA_PANEL_CHANNEL_ID ou confirma o nome.")
+    try:
+        msg = await garantir_painel_carteira_no_fundo(force_repost=True)
+        if msg:
+            await ctx.send(f"✅ Painel da carteira atualizado em {msg.channel.mention}.", delete_after=30)
+        else:
+            await ctx.send(f"⚠️ Não encontrei a sala **#{CARTEIRA_PANEL_CHANNEL_NAME}**. Define CARTEIRA_PANEL_CHANNEL_ID ou confirma o nome.")
+    except Exception as exc:
+        print(f"[CARTEIRA] Erro no comando !painel_carteira: {exc!r}")
+        await ctx.send(f"❌ Não consegui atualizar o painel da carteira: `{type(exc).__name__}: {str(exc)[:150]}`")
 
 
 @bot.command(name="adicionaritem")
