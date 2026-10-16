@@ -11,7 +11,9 @@ import re
 from html import escape
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
-from aiohttp import web
+from aiohttp import web, ClientSession, ClientTimeout
+from io import BytesIO
+
 
 # ---------- CONFIG ----------
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -5725,82 +5727,140 @@ async def editar_status(interaction: discord.Interaction):
     await interaction.response.send_modal(EditarStatusVisualModal())
 
 
+# Cartões gerados a partir dos dados reais; Pillow é opcional (fallback nativo).
+def _gerar_cartao_status_sync(tipo, registos, imagens, detalhes):
+    from PIL import Image, ImageDraw, ImageFont, ImageOps
+    W, H = 1000, 486
+    im = Image.new("RGB", (W, H), "#14171e")
+    draw = ImageDraw.Draw(im)
+    font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    bold_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+    def font(size, bold=False):
+        try: return ImageFont.truetype(bold_path if bold else font_path, size)
+        except OSError: return ImageFont.load_default()
+    medals = ["01", "02", "03"]
+    for pos, row in enumerate(registos[:3]):
+        y = 18 + pos * 155
+        draw.rounded_rectangle((15, y, W-15, y+144), radius=19, fill="#202630", outline="#384150", width=2)
+        colors = ["#F3C95A", "#C7D3E0", "#DDA66C"]
+        draw.rounded_rectangle((29,y+18,95,y+70),radius=13,fill=colors[pos])
+        draw.text((42,y+27),medals[pos],font=font(24,True),fill="#151923")
+        avatar = imagens[pos] if pos < len(imagens) else None
+        if avatar:
+            try:
+                avatar = Image.open(BytesIO(avatar)).convert("RGB")
+                avatar = ImageOps.fit(avatar, (108,108), method=Image.Resampling.LANCZOS)
+                im.paste(avatar,(W-142,y+18))
+            except Exception: avatar = None
+        if not avatar:
+            draw.rounded_rectangle((W-142,y+18,W-34,y+126),radius=15,fill="#353e4c")
+            draw.text((W-110,y+52),"?",font=font(39,True),fill="#cbd5e1")
+        nome,pontos,extra = row
+        nome = str(nome)
+        while draw.textbbox((0,0),nome,font=font(29,True))[2] > 670 and len(nome)>8:
+            nome=nome[:-2].rstrip()+"…"
+        draw.text((111,y+15),nome,font=font(29,True),fill="#f3f6fb")
+        draw.text((111,y+58),f"{pontos} PONTOS",font=font(25,True),fill=colors[pos])
+        draw.text((111,y+104),extra,font=font(19),fill="#aebccc")
+    out=BytesIO(); im.save(out,format="PNG",optimize=True); out.seek(0)
+    return out
+
+
+async def _obter_imagem_status(session, url):
+    if not url or not str(url).startswith(("https://", "http://")):
+        return None
+    try:
+        async with session.get(str(url),timeout=ClientTimeout(total=8)) as response:
+            if response.status != 200 or int(response.headers.get("Content-Length", "0")) > 4_000_000:
+                return None
+            raw=await response.read()
+            return raw if len(raw)<=4_000_000 else None
+    except Exception:
+        return None
+
+
+async def criar_cartoes_status(guild, jogadores, equipas):
+    """Dois cartões compactos (Top 3), com fallback se faltar Pillow ou rede."""
+    try:
+        import PIL  # noqa: F401
+        detalhes_j, detalhes_e = await asyncio.to_thread(obter_detalhes_ranking_status_sync,jogadores,equipas)
+        urls_j=[]; rows_j=[]
+        for uid,pts in jogadores[:3]:
+            membro=guild.get_member(uid) if guild else None
+            if membro is None and guild:
+                try: membro=await guild.fetch_member(uid)
+                except (discord.NotFound,discord.Forbidden,discord.HTTPException): pass
+            urls_j.append(membro.display_avatar.url if membro else None)
+            solo,team,pres=detalhes_j.get(uid,(0,0,0))
+            rows_j.append((membro.display_name if membro else f"Jogador {uid}",pts,
+                f"Solo Wins: {solo}    •    Team Wins: {team}    •    Presenças: {pres}"))
+        urls_e=[]; rows_e=[]
+        for nome,pts,logo in equipas[:3]:
+            urls_e.append(logo)
+            d=detalhes_e.get(nome,{})
+            rows_e.append((nome,pts,f"Membros: {d.get('membros',0)}    •    Solo Wins: {d.get('solo',0)}    •    Team Wins: {d.get('team',0)}"))
+        async with ClientSession() as session:
+            imagens=await asyncio.gather(*[_obter_imagem_status(session,u) for u in urls_j+urls_e])
+        files=[]
+        if rows_j:
+            data=await asyncio.to_thread(_gerar_cartao_status_sync,"jogadores",rows_j,imagens[:len(urls_j)],detalhes_j)
+            files.append(discord.File(data,filename="status_jogadores.png"))
+        if rows_e:
+            data=await asyncio.to_thread(_gerar_cartao_status_sync,"equipas",rows_e,imagens[len(urls_j):],detalhes_e)
+            files.append(discord.File(data,filename="status_equipas.png"))
+        return files
+    except Exception as exc:
+        print(f"[STATUS] Falha ao gerar cartões; usar layout nativo: {exc}")
+        return []
+
+
 class PainelEquipasHallV2View(discord.ui.LayoutView):
-    """Painel público V2, com pódio e ações originais preservadas."""
-    def __init__(self, jogadores=None, equipas=None, guild=None):
+    """Status com cartões automáticos; botões originais preservados."""
+    def __init__(self, jogadores=None, equipas=None, guild=None, cartoes=False):
         super().__init__(timeout=None)
         if jogadores is None or equipas is None:
-            jogadores, equipas = obter_rankings_hall_of_fame_sync()
-        detalhes_j, detalhes_e = obter_detalhes_ranking_status_sync(jogadores, equipas)
-        capa, subtitulo, rodape = obter_visual_status_sync()
-        painel = discord.ui.Container(accent_colour=discord.Color.gold())
+            jogadores,equipas=obter_rankings_hall_of_fame_sync()
+        capa,subtitulo,rodape=obter_visual_status_sync()
+        painel=discord.ui.Container(accent_colour=discord.Color.gold())
         painel.add_item(discord.ui.TextDisplay("## 👤 STATUS" + (f"\n*{discord.utils.escape_markdown(subtitulo)}*" if subtitulo else "")))
-        if capa and str(capa).startswith(("https://", "http://")):
+        if capa and str(capa).startswith(("https://","http://")):
             painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=str(capa))))
         painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
-        painel.add_item(discord.ui.TextDisplay("### 🏅 TOP 5 · JOGADORES"))
-        for pos, (uid, pontos) in enumerate(jogadores[:3]):
-            membro = guild.get_member(uid) if guild else None
-            nome = membro.display_name if membro else f"Jogador {uid}"
-            nome = discord.utils.escape_markdown(nome).replace("`", "'")[:48]
-            medalha = ("🥇", "🥈", "🥉")[pos]
-            detalhes = detalhes_j.get(uid)
-            texto = f"{medalha} **{nome}**\n` {pontos:,} PTS `  ·  ` #{pos+1:02d} `".replace(",", " ")
-            if detalhes:
-                texto += (f"\n` 🎯 Solo {detalhes[0]} `  ` 🤝 Team {detalhes[1]} `"
-                          f"\n` 🎮 Presenças {detalhes[2]} `")
-            legenda = discord.ui.TextDisplay(texto)
-            if membro:
-                painel.add_item(discord.ui.Section(legenda, accessory=discord.ui.Thumbnail(membro.display_avatar.url)))
-            else:
-                painel.add_item(legenda)
-            if pos < min(len(jogadores), 3)-1:
-                painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small, visible=False))
-        if len(jogadores) > 3:
-            linhas = []
-            for pos, (uid, pts) in enumerate(jogadores[3:5], start=4):
-                membro = guild.get_member(uid) if guild else None
-                nome = discord.utils.escape_markdown(membro.display_name if membro else f"Jogador {uid}").replace("`", "'")[:42]
-                linhas.append(f"` {pos:02d} ` **{nome}**  ·  `{pts} pts`")
+        painel.add_item(discord.ui.TextDisplay("### 🏆 TOP 5 JOGADORES"))
+        if cartoes and jogadores:
+            painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media="attachment://status_jogadores.png")))
+        else:
+            linhas,_=formatar_hall_of_fame(guild,jogadores[:3],[])
+            painel.add_item(discord.ui.TextDisplay(linhas))
+        if len(jogadores)>3:
+            linhas=[]
+            for pos,(uid,pts) in enumerate(jogadores[3:5],start=4):
+                m=guild.get_member(uid) if guild else None
+                nome=discord.utils.escape_markdown(m.display_name if m else f"Jogador {uid}")
+                linhas.append(f"**{pos:02d}**  {nome}  ·  **{pts} pontos**")
             painel.add_item(discord.ui.TextDisplay("\n".join(linhas)))
-        elif not jogadores:
-            painel.add_item(discord.ui.TextDisplay("*Ainda não existem jogadores classificados.*"))
         painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
-        painel.add_item(discord.ui.TextDisplay("### 🛡️ TOP 5 · EQUIPAS"))
-        for pos, (nome, pontos, logo_url) in enumerate(equipas[:3]):
-            nome_seguro = discord.utils.escape_markdown(nome).replace("`", "'")[:48]
-            medalha = ("🥇", "🥈", "🥉")[pos]
-            detalhes = detalhes_e.get(nome)
-            texto = f"{medalha} **{nome_seguro}**\n` {pontos:,} PTS `  ·  ` #{pos+1:02d} `".replace(",", " ")
-            if detalhes:
-                texto += (f"\n` 👥 Membros {detalhes.get('membros', 0)} `"
-                          f"  ` 🎯 Solo {detalhes.get('solo', 0)} `"
-                          f"\n` 🤝 Team {detalhes.get('team', 0)} `")
-            legenda = discord.ui.TextDisplay(texto)
-            if logo_url and str(logo_url).startswith(("https://", "http://")):
-                painel.add_item(discord.ui.Section(legenda, accessory=discord.ui.Thumbnail(str(logo_url))))
-            else:
-                painel.add_item(legenda)
-            if pos < min(len(equipas), 3)-1:
-                painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small, visible=False))
-        if len(equipas) > 3:
-            linhas = [f"` {pos:02d} ` **{discord.utils.escape_markdown(nome).replace(chr(96), chr(39))[:42]}**  ·  `{pts} pts`"
-                      for pos, (nome, pts, _) in enumerate(equipas[3:5], start=4)]
+        painel.add_item(discord.ui.TextDisplay("### 🛡️ TOP 5 EQUIPAS"))
+        if cartoes and equipas:
+            painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media="attachment://status_equipas.png")))
+        else:
+            _,linhas=formatar_hall_of_fame(guild,[],equipas[:3])
+            painel.add_item(discord.ui.TextDisplay(linhas))
+        if len(equipas)>3:
+            linhas=[f"**{pos:02d}**  {discord.utils.escape_markdown(nome)}  ·  **{pts} pontos**"
+                for pos,(nome,pts,_) in enumerate(equipas[3:5],start=4)]
             painel.add_item(discord.ui.TextDisplay("\n".join(linhas)))
-        elif not equipas:
-            painel.add_item(discord.ui.TextDisplay("*Ainda não existem equipas classificadas.*"))
         painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
         painel.add_item(discord.ui.TextDisplay("🔒 **Consultas privadas**" + (f" · {discord.utils.escape_markdown(rodape)}" if rodape else "")))
-        originais = PainelEquipasView()
-        linha = discord.ui.ActionRow()
-        for botao_antigo in originais.children:
-            if not isinstance(botao_antigo, discord.ui.Button):
-                continue
-            botao = discord.ui.Button(label=botao_antigo.label, emoji=botao_antigo.emoji,
-                                      style=botao_antigo.style, custom_id=botao_antigo.custom_id)
-            async def encaminhar(interaction, callback=botao_antigo.callback):
+        originais=PainelEquipasView()
+        linha=discord.ui.ActionRow()
+        for original in originais.children:
+            if not isinstance(original,discord.ui.Button): continue
+            botao=discord.ui.Button(label=original.label,emoji=original.emoji,
+                style=original.style,custom_id=original.custom_id)
+            async def encaminhar(interaction,callback=original.callback):
                 await callback(interaction)
-            botao.callback = encaminhar
+            botao.callback=encaminhar
             linha.add_item(botao)
         painel.add_item(linha)
         self.add_item(painel)
@@ -5921,45 +5981,40 @@ async def comando_painel_equipas(ctx, tipo: str = "equipas"):
 
 
 async def criar_painel_hall_view(guild):
-    jogadores, equipas = await asyncio.to_thread(obter_rankings_hall_of_fame_sync)
-    return PainelEquipasHallV2View(jogadores, equipas, guild)
+    jogadores,equipas=await asyncio.to_thread(obter_rankings_hall_of_fame_sync)
+    files=await criar_cartoes_status(guild,jogadores,equipas)
+    return PainelEquipasHallV2View(jogadores,equipas,guild,cartoes=bool(files)),files
 
 
 async def garantir_painel_equipas_no_fundo(force_repost: bool = False):
     async with equipas_panel_lock:
-        canal = await obter_canal_painel_equipas()
+        canal=await obter_canal_painel_equipas()
         if canal is None:
             print(f"⚠️ Canal do painel de equipas não encontrado: {EQUIPAS_PANEL_CHANNEL_ID}")
             return
-
-        message_id = obter_mensagem_painel_equipas_sync()
-        mensagem_antiga = None
+        message_id=obter_mensagem_painel_equipas_sync()
+        mensagem_antiga=None
         if message_id:
-            try:
-                mensagem_antiga = await canal.fetch_message(message_id)
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                mensagem_antiga = None
-
+            try: mensagem_antiga=await canal.fetch_message(message_id)
+            except (discord.NotFound,discord.Forbidden,discord.HTTPException): pass
         if mensagem_antiga is not None and not force_repost:
             try:
-                ultima = [m async for m in canal.history(limit=1)]
-                if ultima and ultima[0].id == mensagem_antiga.id:
-                    await mensagem_antiga.edit(embed=None, view=await criar_painel_hall_view(canal.guild))
+                ultima=[m async for m in canal.history(limit=1)]
+                if ultima and ultima[0].id==mensagem_antiga.id:
+                    view,files=await criar_painel_hall_view(canal.guild)
+                    await mensagem_antiga.edit(embed=None,view=view,attachments=files)
                     return
-            except (discord.Forbidden, discord.HTTPException):
-                pass
-
+            except (discord.Forbidden,discord.HTTPException) as exc:
+                print(f"[STATUS] Falha a editar painel: {exc}")
         if mensagem_antiga is not None:
-            try:
-                await mensagem_antiga.delete()
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                pass
-
+            try: await mensagem_antiga.delete()
+            except (discord.NotFound,discord.Forbidden,discord.HTTPException): pass
         try:
-            nova = await canal.send(view=await criar_painel_hall_view(canal.guild))
+            view,files=await criar_painel_hall_view(canal.guild)
+            nova=await canal.send(view=view,files=files)
             guardar_mensagem_painel_equipas_sync(nova.id)
-        except (discord.Forbidden, discord.HTTPException) as e:
-            print(f"Erro ao publicar painel de equipas: {e}")
+        except (discord.Forbidden,discord.HTTPException) as exc:
+            print(f"Erro ao publicar painel de equipas: {exc}")
 
 
 async def criar_embed_equipa(guild: discord.Guild, equipa_row):
