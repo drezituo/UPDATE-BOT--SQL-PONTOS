@@ -1625,7 +1625,7 @@ async def on_ready():
     bot.add_view(InscricoesV2View(inscricoes_fechadas=True))  # Botões após o fecho
     bot.add_view(CreditoInscricaoView())
     bot.add_view(ComprovativoPagamentoView())
-    bot.add_view(PainelEquipasView())
+    bot.add_view(PainelEquipasHallV2View())
     bot.add_view(PainelCarteiraV2View())
     bot.add_view(PedidoLojaStaffView())
     bot.add_view(DevolucaoStaffView())
@@ -5557,9 +5557,109 @@ def utilizador_pertence_equipa_sync(user_id: int, equipa_id: int) -> bool:
         conn.close()
 
 
+def obter_rankings_hall_of_fame_sync():
+    """Classificações gerais com a mesma pontuação usada nos rankings existentes."""
+    conn = get_connection()
+    if not conn:
+        return [], []
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            SELECT uid, SUM(pontos) AS total FROM (
+                SELECT user_id AS uid, COALESCE(pontos, 0) AS pontos FROM pontos_solo
+                UNION ALL
+                SELECT user_id AS uid, COALESCE(pontos, 0) AS pontos FROM pontos_team
+            ) p GROUP BY uid ORDER BY total DESC, uid LIMIT 5
+        """)
+        jogadores = [(int(uid), int(total)) for uid, total in cursor.fetchall()]
+        cursor.execute("SELECT id, nome, logo_url FROM equipas")
+        equipas = cursor.fetchall()
+    except Exception as exc:
+        print(f"[HALL OF FAME] Erro a obter rankings: {exc}")
+        conn.rollback()
+        return [], []
+    finally:
+        cursor.close()
+        conn.close()
+    equipas_ranking = []
+    for equipa_id, nome, logo_url in equipas:
+        try:
+            pontos = calcular_pontos_equipa_sync(equipa_id)
+            equipas_ranking.append((str(nome), int((pontos or {}).get("total", 0)), logo_url))
+        except Exception as exc:
+            print(f"[HALL OF FAME] Equipa {equipa_id}: {exc}")
+    equipas_ranking.sort(key=lambda item: (-item[1], item[0].casefold()))
+    return jogadores, equipas_ranking[:5]
+
+
+def formatar_hall_of_fame(guild, jogadores, equipas):
+    medalhas = ("🥇", "🥈", "🥉", "04", "05")
+    linhas_jogadores = []
+    for i, (uid, pontos) in enumerate(jogadores):
+        membro = guild.get_member(uid) if guild else None
+        nome = membro.display_name if membro else f"Jogador {uid}"
+        nome = discord.utils.escape_markdown(nome).replace("`", "'")[:48]
+        linhas_jogadores.append(f"{medalhas[i]} **{nome}**  ·  `{pontos:,} pts`".replace(",", " "))
+    linhas_equipas = []
+    for i, (nome, pontos, _logo_url) in enumerate(equipas):
+        nome = discord.utils.escape_markdown(nome).replace("`", "'")[:48]
+        linhas_equipas.append(f"{medalhas[i]} **{nome}**  ·  `{pontos:,} pts`".replace(",", " "))
+    return ("\n".join(linhas_jogadores) or "Ainda não existem jogadores classificados.",
+            "\n".join(linhas_equipas) or "Ainda não existem equipas classificadas.")
+
+
+class PainelEquipasHallV2View(discord.ui.LayoutView):
+    """Painel público V2; delega nos callbacks antigos para preservar funcionalidades."""
+    def __init__(self, jogadores=None, equipas=None, guild=None):
+        super().__init__(timeout=None)
+        if jogadores is None or equipas is None:
+            jogadores, equipas = obter_rankings_hall_of_fame_sync()
+        top_jogadores, top_equipas = formatar_hall_of_fame(guild, jogadores, equipas)
+        painel = discord.ui.Container(accent_colour=discord.Color.gold())
+        painel.add_item(discord.ui.TextDisplay("```\n👤 STATUS\n```"))
+        painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+        painel.add_item(discord.ui.TextDisplay("### 👤 Top 5 Jogadores"))
+        # MediaGallery com duas imagens cria a apresentação lado a lado do Discord.
+        # Mantemos a ordem do ranking, sem deslocar os nomes se faltar um avatar.
+        imagens_jogadores = []
+        for uid, _pontos in jogadores[:2]:
+            membro = guild.get_member(uid) if guild else None
+            if membro:
+                imagens_jogadores.append(discord.MediaGalleryItem(media=membro.display_avatar.url))
+        if len(imagens_jogadores) == 2:
+            painel.add_item(discord.ui.MediaGallery(*imagens_jogadores))
+        elif len(imagens_jogadores) == 1:
+            painel.add_item(discord.ui.MediaGallery(*imagens_jogadores))
+        painel.add_item(discord.ui.TextDisplay(top_jogadores))
+        painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+        painel.add_item(discord.ui.TextDisplay("### 🛡️ Top 5 Equipas"))
+        imagens_equipas = []
+        for _nome, _pontos, logo_url in equipas[:2]:
+            if logo_url and str(logo_url).startswith(("https://", "http://")):
+                imagens_equipas.append(discord.MediaGalleryItem(media=logo_url))
+        if imagens_equipas:
+            painel.add_item(discord.ui.MediaGallery(*imagens_equipas))
+        painel.add_item(discord.ui.TextDisplay(top_equipas))
+        painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+        painel.add_item(discord.ui.TextDisplay("🔒 Os status pessoais e de equipa são consultados em privado."))
+        originais = PainelEquipasView()
+        linha = discord.ui.ActionRow()
+        for botao_antigo in originais.children:
+            if not isinstance(botao_antigo, discord.ui.Button):
+                continue
+            botao = discord.ui.Button(label=botao_antigo.label, emoji=botao_antigo.emoji,
+                                      style=botao_antigo.style, custom_id=botao_antigo.custom_id)
+            async def encaminhar(interaction, callback=botao_antigo.callback):
+                await callback(interaction)
+            botao.callback = encaminhar
+            linha.add_item(botao)
+        painel.add_item(linha)
+        self.add_item(painel)
+
+
 def criar_embed_painel_equipas():
     embed = discord.Embed(
-        title="🏆 Central de Jogadores e Equipas",
+        title="👤 Status",
         description=(
             "Consulta o teu perfil competitivo, vê o estado da tua equipa "
             "ou cria uma nova equipa através dos botões abaixo."
@@ -5671,6 +5771,11 @@ async def comando_painel_equipas(ctx, tipo: str = "equipas"):
     )
 
 
+async def criar_painel_hall_view(guild):
+    jogadores, equipas = await asyncio.to_thread(obter_rankings_hall_of_fame_sync)
+    return PainelEquipasHallV2View(jogadores, equipas, guild)
+
+
 async def garantir_painel_equipas_no_fundo(force_repost: bool = False):
     async with equipas_panel_lock:
         canal = await obter_canal_painel_equipas()
@@ -5690,7 +5795,7 @@ async def garantir_painel_equipas_no_fundo(force_repost: bool = False):
             try:
                 ultima = [m async for m in canal.history(limit=1)]
                 if ultima and ultima[0].id == mensagem_antiga.id:
-                    await mensagem_antiga.edit(embed=criar_embed_painel_equipas(), view=PainelEquipasView())
+                    await mensagem_antiga.edit(embed=None, view=await criar_painel_hall_view(canal.guild))
                     return
             except (discord.Forbidden, discord.HTTPException):
                 pass
@@ -5702,7 +5807,7 @@ async def garantir_painel_equipas_no_fundo(force_repost: bool = False):
                 pass
 
         try:
-            nova = await canal.send(embed=criar_embed_painel_equipas(), view=PainelEquipasView())
+            nova = await canal.send(view=await criar_painel_hall_view(canal.guild))
             guardar_mensagem_painel_equipas_sync(nova.id)
         except (discord.Forbidden, discord.HTTPException) as e:
             print(f"Erro ao publicar painel de equipas: {e}")
