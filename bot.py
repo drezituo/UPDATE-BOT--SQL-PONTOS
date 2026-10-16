@@ -14011,6 +14011,43 @@ def criar_embed_carteira_publico():
     return embed
 
 
+class CompraDestaqueCarteiraButton(discord.ui.Button):
+    """Abre o fluxo original de compra, sem descontar créditos no painel público."""
+    def __init__(self, tipo: str):
+        self.tipo_destaque = tipo
+        super().__init__(
+            label="🎟️ Participar no sorteio" if tipo == "sorteio" else "🛒 Comprar agora",
+            style=discord.ButtonStyle.success,
+            custom_id="carteira:destaque:comprar_sorteio" if tipo == "sorteio" else "carteira:destaque:comprar_produto",
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        destaque, _ = obter_produtos_montra_carteira()
+        if not destaque:
+            return await interaction.response.send_message("⚠️ O conteúdo destacado já não está disponível.", ephemeral=True)
+        item_id = int(destaque[0])
+        tipo_atual = "sorteio" if destaque[3] == "sorteio" else "produto"
+        if tipo_atual != self.tipo_destaque:
+            return await interaction.response.send_message(
+                "🔄 O destaque foi alterado. Consulta o painel atualizado antes de comprar.", ephemeral=True
+            )
+        if tipo_atual == "sorteio":
+            sorteio = next((r for r in listar_sorteios_loja_sync() if int(r[0]) == item_id), None)
+            if not sorteio or sorteio[6] != "ativo" or sorteio[5] <= utc_now():
+                return await interaction.response.send_message("🔒 Este sorteio já não está disponível.", ephemeral=True)
+            return await interaction.response.send_message(
+                embed=criar_embed_sorteio(sorteio, interaction.user.id),
+                view=SorteioJogadorView(item_id, interaction.user.id), ephemeral=True
+            )
+        produto = next((p for p in listar_produtos_loja_sync() if int(p[0]) == item_id), None)
+        if not produto:
+            return await interaction.response.send_message("⚠️ Este produto já não está disponível.", ephemeral=True)
+        await interaction.response.send_message(
+            embed=criar_embed_produto(produto),
+            view=ComprarProdutoView(item_id, interaction.user.id), ephemeral=True
+        )
+
+
 class PainelCarteiraV2View(discord.ui.LayoutView):
     """Painel público V2; mantém os mesmos IDs e callbacks das ações existentes."""
     def __init__(self):
@@ -14058,6 +14095,12 @@ class PainelCarteiraV2View(discord.ui.LayoutView):
             f"**10 vitórias +{BONUS_TEAMWINS_DIARIO[10]}**"
         ))
         self.add_item(painel)
+        if destaque:
+            linha_compra = discord.ui.ActionRow()
+            linha_compra.add_item(CompraDestaqueCarteiraButton(
+                "sorteio" if destaque[3] == "sorteio" else "produto"
+            ))
+            self.add_item(linha_compra)
         # Reutiliza as ações originais, sem alterar a lógica de compras ou movimentos.
         originais = PainelCarteiraView()
         botoes = discord.ui.ActionRow()
