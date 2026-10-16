@@ -13954,12 +13954,15 @@ def obter_produtos_montra_carteira():
     try:
         cur.execute("""CREATE TABLE IF NOT EXISTS carteira_montra_config (
             id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-            produto_destaque_id BIGINT
+            produto_destaque_id BIGINT,
+            sorteio_destaque_id BIGINT
         )""")
+        cur.execute("ALTER TABLE carteira_montra_config ADD COLUMN IF NOT EXISTS sorteio_destaque_id BIGINT")
         conn.commit()
-        cur.execute("SELECT produto_destaque_id FROM carteira_montra_config WHERE id=1")
+        cur.execute("SELECT produto_destaque_id, sorteio_destaque_id FROM carteira_montra_config WHERE id=1")
         config = cur.fetchone()
         escolhido = config[0] if config else None
+        sorteio_escolhido = config[1] if config else None
         cur.execute("""SELECT id, nome, preco, categoria, imagem_url FROM loja_produtos
             WHERE ativo=TRUE AND (stock IS NULL OR stock>0)
             ORDER BY criado_em DESC, id DESC LIMIT 4""")
@@ -13969,9 +13972,17 @@ def obter_produtos_montra_carteira():
             cur.execute("""SELECT id, nome, preco, categoria, imagem_url FROM loja_produtos
                 WHERE id=%s AND ativo=TRUE AND (stock IS NULL OR stock>0)""", (escolhido,))
             destaque = cur.fetchone()
+        if sorteio_escolhido:
+            cur.execute("""SELECT id, nome, preco_entrada, descricao FROM sorteios
+                WHERE id=%s AND estado='ativo' AND encerra_em>NOW()""", (sorteio_escolhido,))
+            sorteio = cur.fetchone()
+            if sorteio:
+                sid, nome, preco, descricao = sorteio
+                imagem = re.search(r'(?im)^\s*Imagem:\s*(https?://\S+)', descricao or '')
+                destaque = (sid, '🎟️ ' + nome, preco, 'sorteio', imagem.group(1) if imagem else None)
         if destaque is None:
             destaque = recentes[0] if recentes else None
-        novidades = [r for r in recentes if not destaque or r[0] != destaque[0]][:3]
+        novidades = [r for r in recentes if not destaque or destaque[3] == 'sorteio' or r[0] != destaque[0]][:3]
         return destaque, novidades
     except Exception as exc:
         conn.rollback()
@@ -15084,16 +15095,20 @@ class EscolherDestaqueCarteira(discord.ui.Select):
     def __init__(self, produtos):
         options = [discord.SelectOption(label="Automático (produto mais recente)", value="auto", emoji="🔄")]
         for produto in produtos[:24]:
-            pid, nome, preco, _categoria, _imagem = produto
+            tipo, pid, nome, preco = produto
             options.append(discord.SelectOption(
-                label=str(nome)[:100], value=str(pid),
-                description=f"{int(preco):,} créditos".replace(",", "."), emoji="📦"))
+                label=str(nome)[:100], value=f"{tipo}:{pid}",
+                description=f"{int(preco):,} créditos".replace(",", "."),
+                emoji="🎟️" if tipo == "sorteio" else "📦"))
         super().__init__(placeholder="Escolhe o produto em destaque", options=options)
 
     async def callback(self, interaction: discord.Interaction):
         if not interaction.user.guild_permissions.administrator:
             return await interaction.response.send_message("❌ Apenas administradores.", ephemeral=True)
-        escolhido = None if self.values[0] == "auto" else int(self.values[0])
+        valor = self.values[0]
+        tipo, identificador = valor.split(":", 1) if valor != "auto" else ("auto", "0")
+        escolhido = int(identificador) if tipo == "produto" else None
+        sorteio_escolhido = int(identificador) if tipo == "sorteio" else None
         await interaction.response.defer(ephemeral=True, thinking=True)
         conn = get_connection()
         if not conn:
@@ -15102,9 +15117,12 @@ class EscolherDestaqueCarteira(discord.ui.Select):
         try:
             cur.execute("""CREATE TABLE IF NOT EXISTS carteira_montra_config (
                 id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1), produto_destaque_id BIGINT)""")
-            cur.execute("""INSERT INTO carteira_montra_config (id, produto_destaque_id)
-                VALUES (1, %s) ON CONFLICT (id) DO UPDATE
-                SET produto_destaque_id=EXCLUDED.produto_destaque_id""", (escolhido,))
+            cur.execute("ALTER TABLE carteira_montra_config ADD COLUMN IF NOT EXISTS sorteio_destaque_id BIGINT")
+            cur.execute("""INSERT INTO carteira_montra_config (id, produto_destaque_id, sorteio_destaque_id)
+                VALUES (1, %s, %s) ON CONFLICT (id) DO UPDATE
+                SET produto_destaque_id=EXCLUDED.produto_destaque_id,
+                    sorteio_destaque_id=EXCLUDED.sorteio_destaque_id""",
+                (escolhido, sorteio_escolhido))
             conn.commit()
         except Exception as exc:
             conn.rollback()
@@ -15136,10 +15154,15 @@ async def gerir_montra_slash(interaction: discord.Interaction):
         return await interaction.response.send_message("❌ Base de dados indisponível.", ephemeral=True)
     cur = conn.cursor()
     try:
-        cur.execute("""SELECT id, nome, preco, categoria, imagem_url FROM loja_produtos
+        cur.execute("""SELECT id, nome, preco FROM loja_produtos
             WHERE ativo=TRUE AND (stock IS NULL OR stock>0)
             ORDER BY criado_em DESC, id DESC LIMIT 24""")
-        produtos = cur.fetchall()
+        produtos = [("produto", *r) for r in cur.fetchall()]
+        cur.execute("""SELECT id, nome, preco_entrada FROM sorteios
+            WHERE estado='ativo' AND encerra_em>NOW()
+            ORDER BY criado_em DESC, id DESC LIMIT 24""")
+        produtos += [("sorteio", *r) for r in cur.fetchall()]
+        produtos = produtos[:24]
     except Exception as exc:
         print(f"[CARTEIRA] Erro ao listar produtos: {exc!r}")
         return await interaction.response.send_message("❌ Não foi possível listar os produtos.", ephemeral=True)
@@ -15151,7 +15174,7 @@ async def gerir_montra_slash(interaction: discord.Interaction):
         "Seleciona o produto para **🌟 Conteúdo destacado**. "
         "A secção **🆕 Novos produtos** mostra automaticamente até 3 produtos recentes da loja.\n"
         "A imagem de capa continua a ser editada em `/editar_carteira`.\n"
-        "*O menu apresenta os 24 produtos disponíveis mais recentes.*",
+        "*O menu apresenta até 24 opções entre produtos e sorteios ativos.*",
         view=GerirMontraCarteiraView(produtos), ephemeral=True)
 
 
