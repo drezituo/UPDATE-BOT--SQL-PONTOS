@@ -1000,7 +1000,7 @@ async def atualizar_embed_estado(channel: discord.Thread):
         f"👥 **{total}/{limite}** inscritos  ·  🎟️ **{vagas}** vagas\n"
         f"{barra}  `{percentagem}%`"
     )
-    detalhes = cancelamento_texto
+    detalhes = cancelamento_texto if abertas else "👥 Consulta as equipas no botão abaixo."
 
     if estado_msg_id:
         try:
@@ -1010,7 +1010,7 @@ async def atualizar_embed_estado(channel: discord.Thread):
             pass
 
     try:
-        new_msg = await channel.send(view=InscricoesV2View(cabecalho, ocupacao, detalhes, banner_url))
+        new_msg = await channel.send(view=InscricoesV2View(cabecalho, ocupacao, detalhes, banner_url, inscricoes_fechadas=not abertas))
     except (discord.Forbidden, discord.HTTPException):
         cursor.close()
         conn.close()
@@ -1612,7 +1612,8 @@ async def on_ready():
 
     # Regista os botões persistentes das inscrições e dos termos pendentes.
     bot.add_view(InscricoesView())
-    bot.add_view(InscricoesV2View())  # Componentes V2: persistência após reinício
+    bot.add_view(InscricoesV2View())  # Botões das inscrições abertas
+    bot.add_view(InscricoesV2View(inscricoes_fechadas=True))  # Botões após o fecho
     bot.add_view(CreditoInscricaoView())
     bot.add_view(ComprovativoPagamentoView())
     bot.add_view(PainelEquipasView())
@@ -1888,7 +1889,7 @@ class InscricoesView(discord.ui.View):
 # Requer discord.py >= 2.6. A vista tradicional acima continua registada para
 # que os botões de mensagens antigas não deixem de funcionar.
 class InscricoesV2View(discord.ui.LayoutView):
-    def __init__(self, cabecalho=None, ocupacao=None, detalhes=None, banner_url=None):
+    def __init__(self, cabecalho=None, ocupacao=None, detalhes=None, banner_url=None, inscricoes_fechadas=False):
         super().__init__(timeout=None)
         cabecalho = cabecalho or "## 🎯 STUNHOUSE CQB\n🎟️ Inscrições"
         ocupacao = ocupacao or "👥 Consulta as vagas disponíveis no painel do jogo."
@@ -1902,9 +1903,12 @@ class InscricoesV2View(discord.ui.LayoutView):
         painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
         painel.add_item(discord.ui.TextDisplay(detalhes))
         botoes = discord.ui.ActionRow()
-        botoes.add_item(BotaoInscreverV2())
-        botoes.add_item(BotaoCancelarV2())
-        botoes.add_item(BotaoTermoV2())
+        if inscricoes_fechadas:
+            botoes.add_item(BotaoVerEquipasJogoV2())
+        else:
+            botoes.add_item(BotaoInscreverV2())
+            botoes.add_item(BotaoCancelarV2())
+            botoes.add_item(BotaoTermoV2())
         botoes.add_item(BotaoInfoJogoV2())
         painel.add_item(botoes)
         self.add_item(painel)
@@ -1991,6 +1995,86 @@ class BotaoInfoJogoV2(discord.ui.Button):
         except Exception as exc:
             print(f"[INFO JOGO] {exc}")
             await interaction.followup.send("⚠️ Não foi possível consultar as informações do jogo.", ephemeral=True)
+
+
+def obter_equipas_jogo_publico_sync(thread_id: int):
+    """Consulta apenas inscrições pagas, sem misturar equipas permanentes."""
+    conn = get_connection()
+    if not conn:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT nome_jogador, equipa_jogo
+                FROM inscricoes_jogos
+                WHERE thread_id = %s AND estado = 'pago'
+                ORDER BY id ASC
+            """, (thread_id,))
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+class BotaoVerEquipasJogoV2(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Ver Equipas", emoji="👥", style=discord.ButtonStyle.primary,
+                         custom_id="inscricoes_v2:ver_equipas_jogo")
+
+    async def callback(self, interaction: discord.Interaction):
+        if not isinstance(interaction.channel, discord.Thread):
+            return await interaction.response.send_message("⚠️ Usa este botão na thread do jogo.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        try:
+            rows = await asyncio.to_thread(obter_equipas_jogo_publico_sync, interaction.channel.id)
+            if rows is None:
+                return await interaction.followup.send(DB_ERROR_MSG, ephemeral=True)
+            grupos = {"A": [], "B": []}
+            por_atribuir = []
+            for nome, equipa in rows:
+                nome_seguro = discord.utils.escape_markdown(str(nome))[:100]
+                if equipa in grupos:
+                    grupos[equipa].append(nome_seguro)
+                else:
+                    por_atribuir.append(nome_seguro)
+
+            embed = discord.Embed(title="👥 Equipas do Jogo", color=discord.Color.blurple())
+            for codigo, simbolo in (("A", "🔵"), ("B", "🔴")):
+                nomes = grupos[codigo]
+                texto = "\n".join(f"• {nome}" for nome in nomes) or "Ainda sem jogadores."
+                if len(texto) > 1024:
+                    texto = texto[:1020] + "..."
+                embed.add_field(name=f"{simbolo} Equipa {codigo} — {len(nomes)} jogadores",
+                                value=texto, inline=False)
+
+            if por_atribuir:
+                texto_pendentes = "\n".join(f"• {nome}" for nome in por_atribuir)
+                if len(texto_pendentes) <= 1024:
+                    embed.add_field(name=f"⚪ Por atribuir — {len(por_atribuir)} jogadores",
+                                    value=texto_pendentes, inline=False)
+                else:
+                    # O Discord limita cada campo a 1024 caracteres.
+                    partes = []
+                    atual = ""
+                    for nome in por_atribuir:
+                        linha = f"• {nome}\n"
+                        if len(atual) + len(linha) > 1024:
+                            partes.append(atual.rstrip())
+                            atual = ""
+                        atual += linha
+                    if atual:
+                        partes.append(atual.rstrip())
+                    for indice, parte in enumerate(partes[:23]):
+                        titulo = (f"⚪ Por atribuir — {len(por_atribuir)} jogadores"
+                                  if indice == 0 else "⚪ Por atribuir (continuação)")
+                        embed.add_field(name=titulo, value=parte, inline=False)
+                    if len(partes) > 23:
+                        embed.set_footer(text="Lista demasiado extensa para apresentar todos os nomes.")
+            elif not grupos["A"] and not grupos["B"]:
+                embed.description = "⏳ Ainda não existem jogadores pagos para distribuir."
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        except Exception as exc:
+            print(f"[EQUIPAS JOGO] {exc}")
+            await interaction.followup.send("⚠️ Não foi possível consultar as equipas.", ephemeral=True)
 
 
 class BotaoInscreverV2(discord.ui.Button):
