@@ -1672,7 +1672,7 @@ async def on_message(message):
         await garantir_painel_equipas_no_fundo(force_repost=True)
 
     if ((CARTEIRA_PANEL_CHANNEL_ID and message.channel.id == CARTEIRA_PANEL_CHANNEL_ID) or
-        (not CARTEIRA_PANEL_CHANNEL_ID and getattr(message.channel, "name", "") == CARTEIRA_PANEL_CHANNEL_NAME)) and not message.content.startswith("!"):
+        (not CARTEIRA_PANEL_CHANNEL_ID and nome_corresponde_carteira(getattr(message.channel, "name", "")))) and not message.content.startswith("!"):
         try:
             await garantir_painel_carteira_no_fundo(force_repost=True)
         except Exception as exc:
@@ -14882,6 +14882,13 @@ class PedidoLojaStaffView(discord.ui.View):
     def __init__(self): super().__init__(timeout=None)
 
 
+def nome_corresponde_carteira(nome):
+    """Aceita carteira-jogador e prefixos decorativos como 🪙│carteira-jogador."""
+    nome = (nome or "").strip().lower()
+    esperado = CARTEIRA_PANEL_CHANNEL_NAME.strip().lower()
+    return nome == esperado or nome.endswith("│" + esperado) or nome.endswith("|" + esperado)
+
+
 async def obter_canal_carteira():
     if CARTEIRA_PANEL_CHANNEL_ID:
         canal=bot.get_channel(CARTEIRA_PANEL_CHANNEL_ID)
@@ -14890,7 +14897,7 @@ async def obter_canal_carteira():
             except Exception: canal=None
         return canal
     for guild in bot.guilds:
-        canal=discord.utils.get(guild.text_channels,name=CARTEIRA_PANEL_CHANNEL_NAME)
+        canal=discord.utils.find(lambda c: nome_corresponde_carteira(c.name), guild.text_channels)
         if canal: return canal
     return None
 
@@ -14934,6 +14941,30 @@ async def painel_carteira_cmd(ctx):
     except Exception as exc:
         print(f"[CARTEIRA] Erro no comando !painel_carteira: {exc!r}")
         await ctx.send(f"❌ Não consegui atualizar o painel da carteira: `{type(exc).__name__}: {str(exc)[:150]}`")
+
+
+@bot.tree.command(name="painel_carteira", description="Atualizar o painel público da Carteira do Jogador")
+@app_commands.default_permissions(administrator=True)
+@app_commands.checks.has_permissions(administrator=True)
+async def painel_carteira_slash(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        msg = await garantir_painel_carteira_no_fundo(force_repost=True)
+        if msg:
+            await interaction.followup.send(
+                f"✅ Painel da carteira atualizado em {msg.channel.mention}.", ephemeral=True
+            )
+        else:
+            await interaction.followup.send(
+                f"⚠️ Canal da carteira não encontrado: **#{CARTEIRA_PANEL_CHANNEL_NAME}**. "
+                "Confirma o nome ou configura CARTEIRA_PANEL_CHANNEL_ID.", ephemeral=True
+            )
+    except Exception as exc:
+        print(f"[CARTEIRA] Erro no comando /painel_carteira: {exc!r}")
+        await interaction.followup.send(
+            f"❌ Erro ao atualizar o painel: `{type(exc).__name__}: {str(exc)[:150]}`",
+            ephemeral=True,
+        )
 
 
 @bot.command(name="adicionaritem")
