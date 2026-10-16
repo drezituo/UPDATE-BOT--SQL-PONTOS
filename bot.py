@@ -1604,9 +1604,18 @@ async def on_ready():
     # Sincronização dos comandos slash apenas uma vez por arranque.
     if not getattr(bot, "_slash_sincronizados", False):
         try:
-            await bot.tree.sync()
+            globais = await bot.tree.sync()
+            # Disponibiliza os comandos slash imediatamente nos servidores onde o bot está.
+            # Mantém a sincronização global para os restantes servidores.
+            for guild in bot.guilds:
+                try:
+                    bot.tree.copy_global_to(guild=guild)
+                    locais = await bot.tree.sync(guild=guild)
+                    print(f"✅ Comandos slash sincronizados em {guild.name}: {len(locais)}")
+                except discord.HTTPException as exc:
+                    print(f"⚠️ Não foi possível sincronizar slash em {guild.name}: {exc!r}")
             bot._slash_sincronizados = True
-            print("✅ Comandos slash sincronizados.")
+            print(f"✅ Comandos slash globais sincronizados: {len(globais)}")
         except discord.HTTPException as exc:
             print(f"⚠️ Erro ao sincronizar comandos slash: {exc}")
 
@@ -15483,3 +15492,4 @@ async def abrir_loja_admin(ctx):
     await ctx.send(embed=embed, view=PainelUnificadoLojaView(), delete_after=300)
 
 bot.run(TOKEN)
+
