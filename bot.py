@@ -13946,48 +13946,66 @@ def obter_config_visual_carteira():
 
 
 def obter_produtos_montra_carteira():
-    """Produtos da loja disponíveis: um destaque escolhido e três novidades automáticas."""
+    """Até três destaques selecionados (produtos ou sorteios), com fallback legado."""
     conn = get_connection()
     if not conn:
-        return None, []
+        return [], []
     cur = conn.cursor()
     try:
         cur.execute("""CREATE TABLE IF NOT EXISTS carteira_montra_config (
             id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-            produto_destaque_id BIGINT,
-            sorteio_destaque_id BIGINT
+            produto_destaque_id BIGINT, sorteio_destaque_id BIGINT
         )""")
         cur.execute("ALTER TABLE carteira_montra_config ADD COLUMN IF NOT EXISTS sorteio_destaque_id BIGINT")
+        cur.execute("ALTER TABLE carteira_montra_config ADD COLUMN IF NOT EXISTS destaques_selecionados TEXT")
         conn.commit()
-        cur.execute("SELECT produto_destaque_id, sorteio_destaque_id FROM carteira_montra_config WHERE id=1")
+        cur.execute("SELECT produto_destaque_id, sorteio_destaque_id, destaques_selecionados FROM carteira_montra_config WHERE id=1")
         config = cur.fetchone()
-        escolhido = config[0] if config else None
-        sorteio_escolhido = config[1] if config else None
         cur.execute("""SELECT id, nome, preco, categoria, imagem_url FROM loja_produtos
             WHERE ativo=TRUE AND (stock IS NULL OR stock>0)
-            ORDER BY criado_em DESC, id DESC LIMIT 4""")
+            ORDER BY criado_em DESC, id DESC LIMIT 6""")
         recentes = cur.fetchall()
-        destaque = None
-        if escolhido:
-            cur.execute("""SELECT id, nome, preco, categoria, imagem_url FROM loja_produtos
-                WHERE id=%s AND ativo=TRUE AND (stock IS NULL OR stock>0)""", (escolhido,))
-            destaque = cur.fetchone()
-        if sorteio_escolhido:
-            cur.execute("""SELECT id, nome, preco_entrada, descricao FROM sorteios
-                WHERE id=%s AND estado='ativo' AND encerra_em>NOW()""", (sorteio_escolhido,))
-            sorteio = cur.fetchone()
-            if sorteio:
-                sid, nome, preco, descricao = sorteio
-                imagem = re.search(r'(?im)^\s*Imagem:\s*(https?://\S+)', descricao or '')
-                destaque = (sid, '🎟️ ' + nome, preco, 'sorteio', imagem.group(1) if imagem else None)
-        if destaque is None:
-            destaque = recentes[0] if recentes else None
-        novidades = [r for r in recentes if not destaque or destaque[3] == 'sorteio' or r[0] != destaque[0]][:3]
-        return destaque, novidades
+        selecionados = []
+        if config:
+            if config[2] is not None:
+                selecionados = [x for x in config[2].split(',') if x][:3]
+            elif config[1]:
+                selecionados = [f"sorteio:{config[1]}"]
+            elif config[0]:
+                selecionados = [f"produto:{config[0]}"]
+        if not selecionados:
+            selecionados = [f"produto:{recentes[0][0]}"] if recentes else []
+        destaques = []
+        for entrada in selecionados:
+            try:
+                tipo, raw_id = entrada.split(':', 1)
+                item_id = int(raw_id)
+            except (ValueError, TypeError):
+                continue
+            if tipo == 'produto':
+                cur.execute("""SELECT id, nome, preco, categoria, imagem_url FROM loja_produtos
+                    WHERE id=%s AND ativo=TRUE AND (stock IS NULL OR stock>0)""", (item_id,))
+                item = cur.fetchone()
+            elif tipo == 'sorteio':
+                cur.execute("""SELECT id, nome, preco_entrada, descricao FROM sorteios
+                    WHERE id=%s AND estado='ativo' AND encerra_em>NOW()""", (item_id,))
+                r = cur.fetchone()
+                if r:
+                    imagem = re.search(r'(?im)^\s*Imagem:\s*(https?://\S+)', r[3] or '')
+                    item = (r[0], '🎟️ ' + r[1], r[2], 'sorteio', imagem.group(1) if imagem else None)
+                else:
+                    item = None
+            else:
+                item = None
+            if item and not any((x[0], x[3]) == (item[0], item[3]) for x in destaques):
+                destaques.append(item)
+        ids_destacados = {p[0] for p in destaques if p[3] != 'sorteio'}
+        novidades = [r for r in recentes if r[0] not in ids_destacados][:3]
+        return destaques, novidades
     except Exception as exc:
         conn.rollback()
         print(f"[CARTEIRA] Erro ao obter montra da loja: {exc!r}")
-        return None, []
+        return [], []
     finally:
         cur.close()
         conn.close()
@@ -14012,40 +14030,35 @@ def criar_embed_carteira_publico():
 
 
 class CompraDestaqueCarteiraButton(discord.ui.Button):
-    """Abre o fluxo original de compra, sem descontar créditos no painel público."""
-    def __init__(self, tipo: str):
-        self.tipo_destaque = tipo
+    """Botão persistente por posição; resolve sempre o artigo atual na base de dados."""
+    def __init__(self, posicao: int, tipo: str):
+        self.posicao = posicao
         super().__init__(
             label="🎟️ Participar no sorteio" if tipo == "sorteio" else "🛒 Comprar agora",
             style=discord.ButtonStyle.success,
-            custom_id="carteira:destaque:comprar_sorteio" if tipo == "sorteio" else "carteira:destaque:comprar_produto",
+            custom_id=f"carteira:destaque:comprar:{posicao}",
         )
 
     async def callback(self, interaction: discord.Interaction):
-        destaque, _ = obter_produtos_montra_carteira()
-        if not destaque:
-            return await interaction.response.send_message("⚠️ O conteúdo destacado já não está disponível.", ephemeral=True)
-        item_id = int(destaque[0])
-        tipo_atual = "sorteio" if destaque[3] == "sorteio" else "produto"
-        if tipo_atual != self.tipo_destaque:
+        destaques, _ = obter_produtos_montra_carteira()
+        if self.posicao >= len(destaques):
             return await interaction.response.send_message(
-                "🔄 O destaque foi alterado. Consulta o painel atualizado antes de comprar.", ephemeral=True
-            )
-        if tipo_atual == "sorteio":
+                "🔄 Este destaque já não está disponível. Consulta o painel atualizado.", ephemeral=True)
+        destaque = destaques[self.posicao]
+        item_id = int(destaque[0])
+        if destaque[3] == "sorteio":
             sorteio = next((r for r in listar_sorteios_loja_sync() if int(r[0]) == item_id), None)
             if not sorteio or sorteio[6] != "ativo" or sorteio[5] <= utc_now():
                 return await interaction.response.send_message("🔒 Este sorteio já não está disponível.", ephemeral=True)
             return await interaction.response.send_message(
                 embed=criar_embed_sorteio(sorteio, interaction.user.id),
-                view=SorteioJogadorView(item_id, interaction.user.id), ephemeral=True
-            )
+                view=SorteioJogadorView(item_id, interaction.user.id), ephemeral=True)
         produto = next((p for p in listar_produtos_loja_sync() if int(p[0]) == item_id), None)
         if not produto:
             return await interaction.response.send_message("⚠️ Este produto já não está disponível.", ephemeral=True)
         await interaction.response.send_message(
             embed=criar_embed_produto(produto),
-            view=ComprarProdutoView(item_id, interaction.user.id), ephemeral=True
-        )
+            view=ComprarProdutoView(item_id, interaction.user.id), ephemeral=True)
 
 
 class PainelCarteiraV2View(discord.ui.LayoutView):
@@ -14054,18 +14067,24 @@ class PainelCarteiraV2View(discord.ui.LayoutView):
         super().__init__(timeout=None)
         painel = discord.ui.Container(accent_colour=discord.Color.from_rgb(67, 120, 110))
         capa_url, destaque_texto, novidades_texto, novidades_imagem_url = obter_config_visual_carteira()
-        destaque, novidades_loja = obter_produtos_montra_carteira()
+        destaques, novidades_loja = obter_produtos_montra_carteira()
         imagem_capa = url_imagem_carteira(capa_url)
         if imagem_capa:
             painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=imagem_capa)))
-        elif destaque and url_imagem_carteira(destaque[4]):
-            painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=destaque[4])))
+        elif destaques and url_imagem_carteira(destaques[0][4]):
+            painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=destaques[0][4])))
         painel.add_item(discord.ui.TextDisplay("🌟 **Conteúdo destacado**"))
-        if destaque:
-            painel.add_item(discord.ui.TextDisplay(formatar_produto_montra(destaque)))
-            # A capa é editorial; a fotografia do produto é independente.
-            if url_imagem_carteira(destaque[4]) and imagem_capa:
-                painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=destaque[4])))
+        if destaques:
+            for posicao, destaque in enumerate(destaques):
+                if posicao:
+                    painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+                painel.add_item(discord.ui.TextDisplay(formatar_produto_montra(destaque)))
+                if url_imagem_carteira(destaque[4]) and (imagem_capa or posicao > 0):
+                    painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=destaque[4])))
+                linha_compra = discord.ui.ActionRow()
+                linha_compra.add_item(CompraDestaqueCarteiraButton(
+                    posicao, "sorteio" if destaque[3] == "sorteio" else "produto"))
+                painel.add_item(linha_compra)
         elif destaque_texto and destaque_texto.strip():
             painel.add_item(discord.ui.TextDisplay(destaque_texto.strip()[:1800]))
         else:
@@ -14095,12 +14114,6 @@ class PainelCarteiraV2View(discord.ui.LayoutView):
             f"**10 vitórias +{BONUS_TEAMWINS_DIARIO[10]}**"
         ))
         self.add_item(painel)
-        if destaque:
-            linha_compra = discord.ui.ActionRow()
-            linha_compra.add_item(CompraDestaqueCarteiraButton(
-                "sorteio" if destaque[3] == "sorteio" else "produto"
-            ))
-            self.add_item(linha_compra)
         # Reutiliza as ações originais, sem alterar a lógica de compras ou movimentos.
         originais = PainelCarteiraView()
         botoes = discord.ui.ActionRow()
@@ -15137,21 +15150,22 @@ class EditarVisualCarteiraModal(discord.ui.Modal, title="Editar painel da Cartei
 class EscolherDestaqueCarteira(discord.ui.Select):
     def __init__(self, produtos):
         options = [discord.SelectOption(label="Automático (produto mais recente)", value="auto", emoji="🔄")]
-        for produto in produtos[:24]:
-            tipo, pid, nome, preco = produto
+        for tipo, pid, nome, preco in produtos[:24]:
             options.append(discord.SelectOption(
                 label=str(nome)[:100], value=f"{tipo}:{pid}",
                 description=f"{int(preco):,} créditos".replace(",", "."),
                 emoji="🎟️" if tipo == "sorteio" else "📦"))
-        super().__init__(placeholder="Escolhe o produto em destaque", options=options)
+        super().__init__(placeholder="Seleciona até 3 destaques", options=options,
+                         min_values=1, max_values=min(3, len(options)))
 
     async def callback(self, interaction: discord.Interaction):
         if not interaction.user.guild_permissions.administrator:
             return await interaction.response.send_message("❌ Apenas administradores.", ephemeral=True)
-        valor = self.values[0]
-        tipo, identificador = valor.split(":", 1) if valor != "auto" else ("auto", "0")
-        escolhido = int(identificador) if tipo == "produto" else None
-        sorteio_escolhido = int(identificador) if tipo == "sorteio" else None
+        valores = list(self.values)
+        if "auto" in valores and len(valores) > 1:
+            return await interaction.response.send_message(
+                "⚠️ Seleciona Automático sozinho ou escolhe até três artigos.", ephemeral=True)
+        escolhidos = None if valores == ["auto"] else ",".join(valores)
         await interaction.response.defer(ephemeral=True, thinking=True)
         conn = get_connection()
         if not conn:
@@ -15159,24 +15173,25 @@ class EscolherDestaqueCarteira(discord.ui.Select):
         cur = conn.cursor()
         try:
             cur.execute("""CREATE TABLE IF NOT EXISTS carteira_montra_config (
-                id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1), produto_destaque_id BIGINT)""")
-            cur.execute("ALTER TABLE carteira_montra_config ADD COLUMN IF NOT EXISTS sorteio_destaque_id BIGINT")
-            cur.execute("""INSERT INTO carteira_montra_config (id, produto_destaque_id, sorteio_destaque_id)
-                VALUES (1, %s, %s) ON CONFLICT (id) DO UPDATE
-                SET produto_destaque_id=EXCLUDED.produto_destaque_id,
-                    sorteio_destaque_id=EXCLUDED.sorteio_destaque_id""",
-                (escolhido, sorteio_escolhido))
+                id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+                produto_destaque_id BIGINT, sorteio_destaque_id BIGINT)""")
+            cur.execute("ALTER TABLE carteira_montra_config ADD COLUMN IF NOT EXISTS destaques_selecionados TEXT")
+            cur.execute("""INSERT INTO carteira_montra_config
+                (id, produto_destaque_id, sorteio_destaque_id, destaques_selecionados)
+                VALUES (1, NULL, NULL, %s) ON CONFLICT (id) DO UPDATE
+                SET produto_destaque_id=NULL, sorteio_destaque_id=NULL,
+                    destaques_selecionados=EXCLUDED.destaques_selecionados""", (escolhidos,))
             conn.commit()
         except Exception as exc:
             conn.rollback()
-            print(f"[CARTEIRA] Erro ao selecionar destaque: {exc!r}")
-            return await interaction.followup.send("❌ Não foi possível guardar o destaque.", ephemeral=True)
+            print(f"[CARTEIRA] Erro ao selecionar destaques: {exc!r}")
+            return await interaction.followup.send("❌ Não foi possível guardar os destaques.", ephemeral=True)
         finally:
             cur.close()
             conn.close()
         try:
             await garantir_painel_carteira_no_fundo()
-            await interaction.followup.send("✅ Destaque guardado. A montra foi atualizada.", ephemeral=True)
+            await interaction.followup.send("✅ Destaques guardados. A montra foi atualizada.", ephemeral=True)
         except Exception as exc:
             print(f"[CARTEIRA] Erro ao atualizar montra: {exc!r}")
             await interaction.followup.send("✅ Guardado. Atualiza o painel com /painel_carteira.", ephemeral=True)
@@ -15214,10 +15229,10 @@ async def gerir_montra_slash(interaction: discord.Interaction):
         conn.close()
     await interaction.response.send_message(
         "🛍️ **Gerir montra da Carteira**\n"
-        "Seleciona o produto para **🌟 Conteúdo destacado**. "
+        "Seleciona até **3 produtos ou sorteios** para **🌟 Conteúdo destacado**. "
         "A secção **🆕 Novos produtos** mostra automaticamente até 3 produtos recentes da loja.\n"
         "A imagem de capa continua a ser editada em `/editar_carteira`.\n"
-        "*O menu apresenta até 24 opções entre produtos e sorteios ativos.*",
+        "*Seleciona vários itens no menu (até 3). Automático deve ser selecionado sozinho.*",
         view=GerirMontraCarteiraView(produtos), ephemeral=True)
 
 
