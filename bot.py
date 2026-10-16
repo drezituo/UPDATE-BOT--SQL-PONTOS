@@ -961,29 +961,44 @@ async def atualizar_embed_estado(channel: discord.Thread):
     """, (channel.id,))
     total = cursor.fetchone()[0]
 
-    # Painel Components V2: mantém os mesmos valores e ações da versão anterior.
-    linhas = [
-        "# 🎯 STUNHOUSE CQB | INSCRIÇÕES",
-        "Consulta o estado do jogo e garante a tua vaga através dos botões abaixo.",
-        "",
-        f"{'🟢 **INSCRIÇÕES ABERTAS**' if abertas else '🔴 **INSCRIÇÕES FECHADAS**'}",
-        f"👥 **Inscrições ativas:** {total} / {limite}",
-        f"🎟️ **Vagas restantes:** {max(limite - total, 0)}",
-    ]
+    # Apresentação compacta para telemóvel, com progresso atualizado pela BD.
+    total = int(total)
+    limite = max(int(limite or 0), 0)
+    vagas = max(limite - total, 0)
+    percentagem = min(round(total * 100 / limite), 100) if limite else 0
+    preenchidos = min(round(percentagem / 10), 10)
+    barra = "🟩" * preenchidos + "⬛" * (10 - preenchidos)
+    estado_aberto = bool(abertas and vagas > 0)
+    estado = "🟢 **INSCRIÇÕES ABERTAS**" if estado_aberto else (
+        "🔴 **VAGAS ESGOTADAS**" if abertas else "🔒 **INSCRIÇÕES FECHADAS**")
+    data_texto = "📅 **Data a anunciar**"
+    cancelamento_texto = "⏳ **Cancelamento:** data por definir"
     if inicio_jogo:
         if inicio_jogo.tzinfo is None:
             inicio_jogo = inicio_jogo.replace(tzinfo=timezone.utc)
-        limite_cancelamento = inicio_jogo - timedelta(hours=HORAS_LIMITE_CANCELAMENTO)
-        linhas.extend([
-            "",
-            f"📅 **Início do jogo:** <t:{int(inicio_jogo.timestamp())}:F>",
-            f"⏳ **Começa:** <t:{int(inicio_jogo.timestamp())}:R>",
-            "",
-            f"🚫 **Cancelamentos até:** <t:{int(limite_cancelamento.timestamp())}:F>",
-            f"🕒 **Prazo:** <t:{int(limite_cancelamento.timestamp())}:R>",
-        ])
-    else:
-        linhas.extend(["", "📅 **Início do jogo:** Ainda não definido pela staff."])
+        local = inicio_jogo.astimezone(FUSO_JOGO)
+        data_texto = f"📅 **{local:%d/%m/%Y}**  ·  🕘 **{local:%H:%M}**"
+        limite_cancelamento = (inicio_jogo - timedelta(hours=HORAS_LIMITE_CANCELAMENTO)).astimezone(FUSO_JOGO)
+        cancelamento_texto = f"⏳ **Cancelar até:** {limite_cancelamento:%d/%m às %H:%M}"
+
+    banner_url = None
+    try:
+        cursor.execute("SELECT banner_url FROM jogos_info_publica WHERE thread_id = %s", (channel.id,))
+        banner_row = cursor.fetchone()
+        banner_url = banner_row[0] if banner_row else None
+    except psycopg2.Error as exc:
+        # Evita impedir as inscrições caso a migração ainda não tenha sido aplicada.
+        print(f"[PAINEL INSCRIÇÕES] Não foi possível obter o banner: {exc}")
+        conn.rollback()
+
+    titulo_jogo = discord.utils.escape_markdown(channel.name or "Jogo CQB")
+    cabecalho = f"## 🎯 {titulo_jogo[:85]}\n{estado}\n{data_texto}"
+    ocupacao = (
+        f"### 👥 {total} inscritos  ·  🎟️ {vagas} vagas\n"
+        f"{barra}  **{percentagem}%**\n"
+        f"-# Limite: {limite} jogadores"
+    )
+    detalhes = f"{cancelamento_texto}\n💳 **Pagamento MB WAY:** instruções por mensagem privada"
 
     if estado_msg_id:
         try:
@@ -993,7 +1008,7 @@ async def atualizar_embed_estado(channel: discord.Thread):
             pass
 
     try:
-        new_msg = await channel.send(view=InscricoesV2View("\n".join(linhas)))
+        new_msg = await channel.send(view=InscricoesV2View(cabecalho, ocupacao, detalhes, banner_url))
     except (discord.Forbidden, discord.HTTPException):
         cursor.close()
         conn.close()
@@ -1086,6 +1101,12 @@ if conn:
             instrucoes TEXT
         )
         
+        """)
+
+        # Banner individual por jogo; migração compatível com instalações existentes.
+        cursor.execute("""
+        ALTER TABLE jogos_info_publica
+        ADD COLUMN IF NOT EXISTS banner_url TEXT
         """)
 
         cursor.execute("""
@@ -1852,17 +1873,19 @@ class InscricoesView(discord.ui.View):
 # Requer discord.py >= 2.6. A vista tradicional acima continua registada para
 # que os botões de mensagens antigas não deixem de funcionar.
 class InscricoesV2View(discord.ui.LayoutView):
-    def __init__(self, texto=None):
+    def __init__(self, cabecalho=None, ocupacao=None, detalhes=None, banner_url=None):
         super().__init__(timeout=None)
-        if texto is None:
-            texto = "# 🎯 STUNHOUSE CQB | INSCRIÇÕES\nUsa os botões para gerir a tua inscrição."
-
-        painel = discord.ui.Container(accent_colour=discord.Color.blurple())
-        painel.add_item(discord.ui.TextDisplay(texto))
-        painel.add_item(discord.ui.Separator())
-        painel.add_item(discord.ui.TextDisplay(
-            "💳 **Pagamento:** após a inscrição, segue as instruções enviadas por mensagem privada."
-        ))
+        cabecalho = cabecalho or "## 🎯 STUNHOUSE CQB\n🎟️ Inscrições"
+        ocupacao = ocupacao or "👥 Consulta as vagas disponíveis no painel do jogo."
+        detalhes = detalhes or "💳 Pagamento: instruções enviadas por mensagem privada."
+        painel = discord.ui.Container(accent_colour=discord.Color.green())
+        if banner_url and banner_url.startswith(("https://", "http://")):
+            painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=banner_url)))
+        painel.add_item(discord.ui.TextDisplay(cabecalho))
+        painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+        painel.add_item(discord.ui.TextDisplay(ocupacao))
+        painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+        painel.add_item(discord.ui.TextDisplay(detalhes))
         botoes = discord.ui.ActionRow()
         botoes.add_item(BotaoInscreverV2())
         botoes.add_item(BotaoCancelarV2())
@@ -4581,6 +4604,56 @@ class AlterarLimiteJogoModal(discord.ui.Modal, title="Alterar limite de inscriç
         await atualizar_mensagem_painel_jogo(interaction, self.thread_id, self.panel_message_id)
 
 
+class DefinirBannerJogoModal(discord.ui.Modal, title="🖼️ Imagem de capa do jogo"):
+    imagem = discord.ui.TextInput(
+        label="URL da imagem (HTTPS)",
+        placeholder="https://exemplo.pt/banner.jpg — ou LIMPAR",
+        required=True, max_length=1000
+    )
+
+    def __init__(self, thread_id: int):
+        super().__init__()
+        self.thread_id = thread_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("❌ Apenas administradores.", ephemeral=True)
+        valor = str(self.imagem.value).strip()
+        if valor.upper() == "LIMPAR":
+            valor = None
+        elif not valor.startswith("https://"):
+            return await interaction.response.send_message("⚠️ Usa um URL HTTPS direto da imagem ou escreve LIMPAR.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+
+        def guardar():
+            conn = get_connection()
+            if conn is None:
+                return False
+            try:
+                with conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            INSERT INTO jogos_info_publica (thread_id, banner_url)
+                            VALUES (%s, %s)
+                            ON CONFLICT (thread_id)
+                            DO UPDATE SET banner_url = EXCLUDED.banner_url
+                        """, (self.thread_id, valor))
+                return True
+            finally:
+                conn.close()
+
+        try:
+            sucesso = await asyncio.to_thread(guardar)
+            if not sucesso:
+                return await interaction.followup.send("⚠️ Não foi possível ligar à base de dados.", ephemeral=True)
+            if isinstance(interaction.channel, discord.Thread):
+                await atualizar_embed_estado(interaction.channel)
+            await interaction.followup.send("✅ Imagem do jogo atualizada." if valor else "✅ Imagem removida.", ephemeral=True)
+        except Exception as exc:
+            print(f"[BANNER JOGO] {exc}")
+            await interaction.followup.send("⚠️ Não foi possível atualizar a imagem. Verifica o URL e os logs.", ephemeral=True)
+
+
 class PainelJogoView(discord.ui.View):
     def __init__(self, thread_id: int):
         super().__init__(timeout=None)
@@ -4591,6 +4664,12 @@ class PainelJogoView(discord.ui.View):
             await interaction.response.send_message("❌ Apenas staff/admin pode usar este painel.", ephemeral=True)
             return False
         return True
+
+    @discord.ui.button(label="Imagem do jogo", emoji="🖼️", style=discord.ButtonStyle.secondary, row=4)
+    async def definir_imagem_jogo(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction):
+            return
+        await interaction.response.send_modal(DefinirBannerJogoModal(self.thread_id))
 
     @discord.ui.button(label="Número pagamento", emoji="📱", style=discord.ButtonStyle.secondary, row=4)
     async def definir_numero_pagamento(self, interaction: discord.Interaction, button: discord.ui.Button):
