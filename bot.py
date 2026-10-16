@@ -1617,7 +1617,7 @@ async def on_ready():
     bot.add_view(CreditoInscricaoView())
     bot.add_view(ComprovativoPagamentoView())
     bot.add_view(PainelEquipasView())
-    bot.add_view(PainelCarteiraView())
+    bot.add_view(PainelCarteiraV2View())
     bot.add_view(PedidoLojaStaffView())
     bot.add_view(DevolucaoStaffView())
     await carregar_views_termos_pendentes()
@@ -13886,28 +13886,72 @@ def remover_teamwins_economia_cursor(cursor, user_id: int, quantidade: int, moti
                     cursor.execute("DELETE FROM economia_bonus_diarios WHERE user_id=%s AND dia=%s AND marco=%s", (user_id, dia, marco))
 
 
+def obter_destaque_loja_carteira():
+    """Escolhe um produto real, ativo e com stock, dando preferência aos que têm imagem."""
+    conn = get_connection()
+    if not conn:
+        return None
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT id, nome, preco, categoria, imagem_url
+            FROM loja_produtos
+            WHERE ativo=TRUE AND (stock IS NULL OR stock>0)
+            ORDER BY CASE WHEN imagem_url LIKE 'https://%' OR imagem_url LIKE 'http://%'
+                          THEN 0 ELSE 1 END, atualizado_em DESC, id DESC
+            LIMIT 1
+        """)
+        return cur.fetchone()
+    except Exception as exc:
+        print(f"[CARTEIRA] Erro ao obter produto em destaque: {exc}")
+        return None
+    finally:
+        cur.close()
+        conn.close()
+
+
 def criar_embed_carteira_publico():
-    """Painel público mais expressivo; mantém os valores e ações."""
-    embed = discord.Embed(
-        title="🛍️  LOJA  •  🎟️ SORTEIOS",
-        description=(
-            "✨ **Bem-vindo à loja da comunidade!**\n"
-            "Troca os teus créditos por recompensas e participa nos sorteios.\n\n"
-            "🎮 **GANHA CRÉDITOS A JOGAR**\n"
-            f"🎯 **+{CREDITOS_POR_PRESENCA}** · Presença em jogo\n"
-            f"🏆 **+{CREDITOS_POR_TEAMWIN}** · Team Win\n"
-            f"⚡ **+{CREDITOS_POR_SHL_WIN}** · SHL Mode Win\n\n"
-            f"🎁 **Entrada gratuita:** {PRECO_ENTRADA_GRATUITA:,} créditos".replace(',', '.') +
-            "\n\n👇 **Usa os botões abaixo para explorar!**"
-        ),
-        color=discord.Color.from_rgb(67, 120, 110),
-        timestamp=discord.utils.utcnow()
-    )
-    capa = os.getenv("LOJA_CAPA_URL", "").strip()
-    if capa.startswith(("https://", "http://")):
-        embed.set_image(url=capa)
-    embed.set_footer(text="🔐 Consultas, compras e participações privadas")
+    """Compatibilidade com chamadas antigas; o painel principal usa Components V2."""
+    embed = discord.Embed(title="💰 Carteira de Jogador", color=discord.Color.green())
+    embed.description = "Consulta os teus créditos, visita a loja e acompanha os teus pedidos."
     return embed
+
+
+class PainelCarteiraV2View(discord.ui.LayoutView):
+    """Painel público V2; mantém os mesmos IDs e callbacks das ações existentes."""
+    def __init__(self):
+        super().__init__(timeout=None)
+        painel = discord.ui.Container(accent_colour=discord.Color.from_rgb(67, 120, 110))
+        destaque = obter_destaque_loja_carteira()
+        if destaque:
+            _id, nome, preco, categoria, imagem_url = destaque
+            if imagem_url and str(imagem_url).startswith(("https://", "http://")):
+                painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=imagem_url)))
+        painel.add_item(discord.ui.TextDisplay("```\n💰 CARTEIRA DE JOGADOR\n```\n🛍️ Loja · 🎟️ Sorteios · 🪙 Créditos"))
+        painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+        if destaque:
+            painel.add_item(discord.ui.TextDisplay(
+                f"📦 **Produto em destaque**\n**{discord.utils.escape_markdown(str(nome))}** · "
+                f"🪙 **{int(preco):,} créditos** · {discord.utils.escape_markdown(str(categoria))}".replace(",", ".")
+            ))
+        else:
+            painel.add_item(discord.ui.TextDisplay("🛍️ **Loja**\nOs próximos produtos estarão disponíveis aqui."))
+        painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+        painel.add_item(discord.ui.TextDisplay(
+            f"🎯 **+{CREDITOS_POR_PRESENCA}** Presença  ·  🏆 **+{CREDITOS_POR_TEAMWIN}** Team Win\n"
+            f"⚡ **+{CREDITOS_POR_SHL_WIN}** SHL Win  ·  🎁 Entrada gratuita: **{PRECO_ENTRADA_GRATUITA:,}** créditos".replace(",", ".")
+        ))
+        painel.add_item(discord.ui.TextDisplay("🔐 Saldo, compras e histórico são apresentados apenas a ti."))
+        self.add_item(painel)
+        # Reutiliza as ações originais, sem alterar a lógica de compras ou movimentos.
+        originais = PainelCarteiraView()
+        botoes = discord.ui.ActionRow()
+        for original in originais.children:
+            botao = discord.ui.Button(label=original.label, emoji=original.emoji,
+                                      style=original.style, custom_id=original.custom_id)
+            botao.callback = original.callback
+            botoes.add_item(botao)
+        self.add_item(botoes)
 
 
 def criar_embed_saldo_jogador(user_id: int):
@@ -14864,10 +14908,10 @@ async def garantir_painel_carteira_no_fundo(force_repost=False):
         if old_id:
             try:
                 msg=await canal.fetch_message(old_id)
-                await msg.edit(embed=criar_embed_carteira_publico(),view=PainelCarteiraView())
+                await msg.edit(embed=None, view=PainelCarteiraV2View())
                 return msg
             except Exception: pass
-        msg=await canal.send(embed=criar_embed_carteira_publico(),view=PainelCarteiraView())
+        msg=await canal.send(view=PainelCarteiraV2View())
         conn=get_connection(); cur=conn.cursor()
         try:
             cur.execute("INSERT INTO painel_carteira_config (id,channel_id,message_id) VALUES (1,%s,%s) ON CONFLICT(id) DO UPDATE SET channel_id=EXCLUDED.channel_id,message_id=EXCLUDED.message_id",(canal.id,msg.id)); conn.commit()
