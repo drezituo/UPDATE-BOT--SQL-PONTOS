@@ -5596,7 +5596,7 @@ def obter_rankings_hall_of_fame_sync():
 
 
 def formatar_hall_of_fame(guild, jogadores, equipas):
-    medalhas = ("🥇", "🥈", "🥉", "04", "05")
+    medalhas = ("**01**", "**02**", "**03**", "**04**", "**05**")
     linhas_jogadores = []
     for i, (uid, pontos) in enumerate(jogadores):
         membro = guild.get_member(uid) if guild else None
@@ -5912,7 +5912,7 @@ class PainelEquipasHallV2View(discord.ui.LayoutView):
             painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=capa_j)))
 
         detalhes_j, detalhes_e = obter_detalhes_ranking_status_sync(jogadores, equipas)
-        medalhas = ("🥇", "🥈", "🥉")
+        medalhas = ("**01**", "**02**", "**03**")
         for i, (uid, pontos) in enumerate(jogadores[:3]):
             membro = guild.get_member(uid) if guild else None
             utilizador = membro or bot.get_user(uid)
