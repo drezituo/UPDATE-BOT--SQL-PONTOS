@@ -5646,53 +5646,58 @@ class PainelEquipasHallV2View(discord.ui.LayoutView):
         top_jogadores, top_equipas = formatar_hall_of_fame(guild, jogadores, equipas)
         detalhes_j, detalhes_e = obter_detalhes_ranking_status_sync(jogadores, equipas)
         painel = discord.ui.Container(accent_colour=discord.Color.gold())
-        painel.add_item(discord.ui.TextDisplay("```\n👤 STATUS\n```"))
+        painel.add_item(discord.ui.TextDisplay("## 👤 STATUS\n*Classificação competitiva · Stunhouse CQB*"))
         painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
-        painel.add_item(discord.ui.TextDisplay("### 👤 Top 5 Jogadores"))
-        # Sections V2 usam thumbnails compactas, sem ampliar os avatares.
+        painel.add_item(discord.ui.TextDisplay("### 🏅 Jogadores · Top 5"))
         for pos, (uid, pontos) in enumerate(jogadores[:3]):
             membro = guild.get_member(uid) if guild else None
             nome = membro.display_name if membro else f"Jogador {uid}"
             nome = discord.utils.escape_markdown(nome).replace("`", "'")[:48]
             medalha = ("🥇", "🥈", "🥉")[pos]
-            legenda = discord.ui.TextDisplay(
-                (f"{medalha} **{nome}**\n**{pontos:,} pts** · #{pos + 1} no ranking\n"
-                 + (f"🎯 Solo: **{detalhes_j[uid][0]}**  ·  🤝 Team: **{detalhes_j[uid][1]}**\n"
-                    f"🎮 Presenças: **{detalhes_j[uid][2]}**" if uid in detalhes_j else "" )).replace(",", " ")
-            )
+            detalhes = detalhes_j.get(uid)
+            texto = f"{medalha} **{nome}**  ·  `{pontos:,} pts`".replace(",", " ")
+            if detalhes:
+                texto += (f"\n🎯 Solo **{detalhes[0]}**   ·   🤝 Team **{detalhes[1]}**"
+                          f"   ·   🎮 Presenças **{detalhes[2]}**")
+            legenda = discord.ui.TextDisplay(texto)
             if membro:
                 painel.add_item(discord.ui.Section(
                     legenda, accessory=discord.ui.Thumbnail(membro.display_avatar.url)
                 ))
             else:
                 painel.add_item(legenda)
+            if pos < min(len(jogadores), 3) - 1:
+                painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small, visible=False))
         if len(jogadores) > 3:
             painel.add_item(discord.ui.TextDisplay("\n".join(top_jogadores.splitlines()[3:])))
         elif not jogadores:
             painel.add_item(discord.ui.TextDisplay(top_jogadores))
         painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
-        painel.add_item(discord.ui.TextDisplay("### 🛡️ Top 5 Equipas"))
+        painel.add_item(discord.ui.TextDisplay("### 🛡️ Equipas · Top 5"))
         for pos, (nome, pontos, logo_url) in enumerate(equipas[:3]):
             nome_seguro = discord.utils.escape_markdown(nome).replace("`", "'")[:48]
             medalha = ("🥇", "🥈", "🥉")[pos]
-            legenda = discord.ui.TextDisplay(
-                (f"{medalha} **{nome_seguro}**\n**{pontos:,} pts** · #{pos + 1} no ranking\n"
-                 + (f"👥 Membros: **{detalhes_e[nome].get('membros', 0)}**  ·  "
-                    f"🎯 Solo: **{detalhes_e[nome].get('solo', 0)}**  ·  "
-                    f"🤝 Team: **{detalhes_e[nome].get('team', 0)}**" if nome in detalhes_e else "")).replace(",", " ")
-            )
+            detalhes = detalhes_e.get(nome)
+            texto = f"{medalha} **{nome_seguro}**  ·  `{pontos:,} pts`".replace(",", " ")
+            if detalhes:
+                texto += (f"\n👥 Membros **{detalhes.get('membros', 0)}**"
+                          f"   ·   🎯 Solo **{detalhes.get('solo', 0)}**"
+                          f"   ·   🤝 Team **{detalhes.get('team', 0)}**")
+            legenda = discord.ui.TextDisplay(texto)
             if logo_url and str(logo_url).startswith(("https://", "http://")):
                 painel.add_item(discord.ui.Section(
                     legenda, accessory=discord.ui.Thumbnail(str(logo_url))
                 ))
             else:
                 painel.add_item(legenda)
+            if pos < min(len(equipas), 3) - 1:
+                painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small, visible=False))
         if len(equipas) > 3:
             painel.add_item(discord.ui.TextDisplay("\n".join(top_equipas.splitlines()[3:])))
         elif not equipas:
             painel.add_item(discord.ui.TextDisplay(top_equipas))
         painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
-        painel.add_item(discord.ui.TextDisplay("🔒 Os status pessoais e de equipa são consultados em privado."))
+        painel.add_item(discord.ui.TextDisplay("🔒 **Consultas privadas** · Usa os botões para veres o teu status ou gerires a tua equipa."))
         originais = PainelEquipasView()
         linha = discord.ui.ActionRow()
         for botao_antigo in originais.children:
@@ -5704,17 +5709,6 @@ class PainelEquipasHallV2View(discord.ui.LayoutView):
                 await callback(interaction)
             botao.callback = encaminhar
             linha.add_item(botao)
-        ranking_btn = discord.ui.Button(label="Ranking completo", emoji="📊", style=discord.ButtonStyle.secondary, custom_id="equipas:ranking_detalhado")
-        async def mostrar_ranking(interaction: discord.Interaction):
-            js, es = await asyncio.to_thread(obter_rankings_hall_of_fame_sync)
-            lj, le = formatar_hall_of_fame(interaction.guild, js, es)
-            resposta = discord.Embed(title="📊 Classificação geral", color=discord.Color.gold())
-            resposta.add_field(name="👤 Top 5 Jogadores", value=lj, inline=False)
-            resposta.add_field(name="🛡️ Top 5 Equipas", value=le, inline=False)
-            resposta.set_footer(text="Consulta privada · Classificação atualizada no momento")
-            await interaction.response.send_message(embed=resposta, ephemeral=True)
-        ranking_btn.callback = mostrar_ranking
-        linha.add_item(ranking_btn)
         painel.add_item(linha)
         self.add_item(painel)
 
