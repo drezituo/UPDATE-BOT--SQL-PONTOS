@@ -5311,16 +5311,16 @@ async def garantir_painel_equipas_no_fundo(force_repost: bool = False):
 
 async def criar_embed_equipa(guild: discord.Guild, equipa_row):
     equipa_id, nome, logo_url, capitao_id, descricao, redes_sociais = equipa_row
-    pontos = calcular_pontos_equipa_sync(equipa_id) or {"solo": 0, "team": 0, "total": 0, "membros": 0}
-    membros_ids = obter_membros_equipa_sync(equipa_id)
+    pontos = await asyncio.to_thread(calcular_pontos_equipa_sync, equipa_id) or {"solo": 0, "team": 0, "total": 0, "membros": 0}
+    membros_ids = await asyncio.to_thread(obter_membros_equipa_sync, equipa_id)
 
     linhas = []
     for uid in membros_ids:
         membro = guild.get_member(uid) if guild else None
-        numero = obter_numero_jogador_sync(uid)
+        numero = await asyncio.to_thread(obter_numero_jogador_sync, uid)
         referencia = membro.mention if membro else f"<@{uid}>"
         prefixo = f"#{numero:02d} — " if numero else ""
-        dados = calcular_pontos_jogador_sync(uid) or {"total": 0}
+        dados = await asyncio.to_thread(calcular_pontos_jogador_sync, uid) or {"total": 0}
         coroa = " 👑" if uid == capitao_id else ""
         linhas.append(f"• {prefixo}{referencia}{coroa} — **{dados['total']} pts**")
 
@@ -5391,9 +5391,10 @@ class CriarEquipaModal(discord.ui.Modal, title="Criar equipa"):
         if len(nome) < 2:
             return await interaction.response.send_message("⚠️ Nome de equipa inválido.", ephemeral=True)
 
-        conn = get_connection()
+        await interaction.response.defer(ephemeral=True)
+        conn = await asyncio.to_thread(get_connection)
         if not conn:
-            return await interaction.response.send_message(DB_ERROR_MSG, ephemeral=True)
+            return await interaction.followup.send(DB_ERROR_MSG, ephemeral=True)
         cursor = conn.cursor()
         try:
             cursor.execute("""
@@ -5405,14 +5406,14 @@ class CriarEquipaModal(discord.ui.Modal, title="Criar equipa"):
             """, (interaction.user.id, interaction.user.id))
             existente = cursor.fetchone()
             if existente:
-                return await interaction.response.send_message(
+                return await interaction.followup.send(
                     f"❌ Já pertences à equipa **{existente[0]}** e não podes criar outra.",
                     ephemeral=True
                 )
 
             cursor.execute("SELECT 1 FROM equipas WHERE LOWER(nome) = LOWER(%s)", (nome,))
             if cursor.fetchone():
-                return await interaction.response.send_message(
+                return await interaction.followup.send(
                     "❌ Já existe uma equipa com esse nome.", ephemeral=True
                 )
 
@@ -5436,7 +5437,7 @@ class CriarEquipaModal(discord.ui.Modal, title="Criar equipa"):
         except Exception as e:
             conn.rollback()
             print(f"Erro ao criar equipa pelo painel: {e}")
-            return await interaction.response.send_message(
+            return await interaction.followup.send(
                 "⚠️ Não foi possível criar a equipa. Confirma se o nome já existe ou se já pertences a uma equipa.",
                 ephemeral=True
             )
@@ -5444,7 +5445,7 @@ class CriarEquipaModal(discord.ui.Modal, title="Criar equipa"):
             cursor.close()
             conn.close()
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"✅ A equipa **{nome}** foi criada. Tu és o capitão.", ephemeral=True
         )
 
@@ -5831,17 +5832,18 @@ class SelecionarEquipa(discord.ui.Select):
                 ephemeral=True
             )
 
+        await interaction.response.defer(ephemeral=True)
         equipa_id = int(self.values[0])
-        equipa_row = obter_equipa_por_id_sync(equipa_id)
+        equipa_row = await asyncio.to_thread(obter_equipa_por_id_sync, equipa_id)
         if not equipa_row:
-            return await interaction.response.send_message("⚠️ Esta equipa já não existe.", ephemeral=True)
+            return await interaction.followup.send("⚠️ Esta equipa já não existe.", ephemeral=True)
 
         embed = await criar_embed_equipa(interaction.guild, equipa_row)
         detalhe_view = None
-        if utilizador_pertence_equipa_sync(interaction.user.id, equipa_id):
+        if await asyncio.to_thread(utilizador_pertence_equipa_sync, interaction.user.id, equipa_id):
             detalhe_view = PartilharEquipaConsultadaView(equipa_id, interaction.user.id)
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             embed=embed,
             view=detalhe_view,
             ephemeral=True
@@ -5909,16 +5911,20 @@ class VerEquipasView(discord.ui.View):
     async def _pagina_anterior(self, interaction: discord.Interaction):
         if not await self._validar_dono(interaction):
             return
+        await interaction.response.defer()
         self.pagina -= 1
-        self._montar_componentes()
-        await interaction.response.edit_message(embed=self.criar_embed(), view=self)
+        await asyncio.to_thread(self._montar_componentes)
+        embed = await asyncio.to_thread(self.criar_embed)
+        await interaction.edit_original_response(embed=embed, view=self)
 
     async def _pagina_seguinte(self, interaction: discord.Interaction):
         if not await self._validar_dono(interaction):
             return
+        await interaction.response.defer()
         self.pagina += 1
-        self._montar_componentes()
-        await interaction.response.edit_message(embed=self.criar_embed(), view=self)
+        await asyncio.to_thread(self._montar_componentes)
+        embed = await asyncio.to_thread(self.criar_embed)
+        await interaction.edit_original_response(embed=embed, view=self)
 
 
 class PainelEquipasView(discord.ui.View):
@@ -5930,7 +5936,7 @@ class PainelEquipasView(discord.ui.View):
         # Resposta privada para evitar spam; o jogador decide se quer partilhar.
         await interaction.response.defer(ephemeral=True)
 
-        embed = criar_embed_status_jogador(interaction.user)
+        embed = await asyncio.to_thread(criar_embed_status_jogador, interaction.user)
         if embed is None:
             await interaction.followup.send(DB_ERROR_MSG, ephemeral=True)
             return
@@ -5946,7 +5952,7 @@ class PainelEquipasView(discord.ui.View):
         # Resposta privada para evitar spam; o jogador decide se quer partilhar.
         await interaction.response.defer(ephemeral=True)
 
-        equipa_row = obter_equipa_do_utilizador_sync(interaction.user.id)
+        equipa_row = await asyncio.to_thread(obter_equipa_do_utilizador_sync, interaction.user.id)
         if not equipa_row:
             await interaction.followup.send("ℹ️ Não pertences a nenhuma equipa.", ephemeral=True)
             return
@@ -5958,20 +5964,19 @@ class PainelEquipasView(discord.ui.View):
 
     @discord.ui.button(label="Ver Equipas", emoji="🏆", style=discord.ButtonStyle.secondary, custom_id="equipas:ver_equipas")
     async def ver_equipas(self, interaction: discord.Interaction, button: discord.ui.Button):
-        view = VerEquipasView(interaction.user.id)
-        await interaction.response.send_message(
-            embed=view.criar_embed(),
+        await interaction.response.defer(ephemeral=True)
+        view = await asyncio.to_thread(VerEquipasView, interaction.user.id)
+        embed = await asyncio.to_thread(view.criar_embed)
+        await interaction.followup.send(
+            embed=embed,
             view=view,
             ephemeral=True
         )
 
     @discord.ui.button(label="Criar Equipa", emoji="➕", style=discord.ButtonStyle.success, custom_id="equipas:criar")
     async def criar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        equipa_row = obter_equipa_do_utilizador_sync(interaction.user.id)
-        if equipa_row:
-            return await interaction.response.send_message(
-                f"❌ Já pertences à equipa **{equipa_row[1]}** e não podes criar outra.", ephemeral=True
-            )
+        # O modal tem de ser a primeira resposta: a validação de pertença
+        # já é efetuada no on_submit do próprio modal.
         await interaction.response.send_modal(CriarEquipaModal())
 
 
