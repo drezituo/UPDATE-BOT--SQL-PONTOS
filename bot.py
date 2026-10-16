@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands, tasks
+from discord import app_commands
 import asyncio
 import asyncio
 import psycopg2
@@ -1104,6 +1105,10 @@ if conn:
         
         """)
 
+        # Informações adicionais de cada jogo (sem alterar inscrições existentes).
+        cursor.execute("ALTER TABLE jogos_info_publica ADD COLUMN IF NOT EXISTS regras TEXT")
+        cursor.execute("ALTER TABLE jogos_info_publica ADD COLUMN IF NOT EXISTS equipamento TEXT")
+
         # Banner individual por jogo; migração compatível com instalações existentes.
         cursor.execute("""
         ALTER TABLE jogos_info_publica
@@ -1596,6 +1601,15 @@ async def on_ready():
     print(f"guilds: {bot.intents.guilds}")
     print("===============================")
 
+    # Sincronização dos comandos slash apenas uma vez por arranque.
+    if not getattr(bot, "_slash_sincronizados", False):
+        try:
+            await bot.tree.sync()
+            bot._slash_sincronizados = True
+            print("✅ Comandos slash sincronizados.")
+        except discord.HTTPException as exc:
+            print(f"⚠️ Erro ao sincronizar comandos slash: {exc}")
+
     # Regista os botões persistentes das inscrições e dos termos pendentes.
     bot.add_view(InscricoesView())
     bot.add_view(InscricoesV2View())  # Componentes V2: persistência após reinício
@@ -1891,8 +1905,65 @@ class InscricoesV2View(discord.ui.LayoutView):
         botoes.add_item(BotaoInscreverV2())
         botoes.add_item(BotaoCancelarV2())
         botoes.add_item(BotaoTermoV2())
+        botoes.add_item(BotaoInfoJogoV2())
         painel.add_item(botoes)
         self.add_item(painel)
+
+
+def obter_info_jogo_sync(thread_id: int):
+    conn = get_connection()
+    if not conn:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT j.thread_name, j.inicio_jogo, i.local_jogo, i.valor_inscricao,
+                       i.numero_pagamento, i.instrucoes, i.regras, i.equipamento
+                FROM jogos_threads j
+                LEFT JOIN jogos_info_publica i ON i.thread_id = j.thread_id
+                WHERE j.thread_id = %s
+            """, (thread_id,))
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def criar_embed_info_jogo(dados):
+    nome, inicio, local, valor, numero, instrucoes, regras, equipamento = dados
+    embed = discord.Embed(title="ℹ️ Informações do jogo", description=nome,
+                          colour=discord.Color.blurple())
+    if inicio:
+        if inicio.tzinfo is None:
+            inicio = inicio.replace(tzinfo=timezone.utc)
+        embed.add_field(name="📅 Data e hora", value=f"<t:{int(inicio.timestamp())}:F>", inline=False)
+    for titulo, conteudo in (("📍 Local", local), ("💶 Valor da inscrição", valor),
+                            ("🎒 Equipamento", equipamento), ("📋 Regras", regras),
+                            ("📝 Informações adicionais", instrucoes)):
+        if conteudo and str(conteudo).strip():
+            embed.add_field(name=titulo, value=str(conteudo)[:1024], inline=False)
+    if numero and str(numero).strip():
+        embed.add_field(name="💳 Pagamento MB WAY", value=f"Número: `{str(numero).strip()}`", inline=False)
+    embed.set_footer(text="Informação exclusiva para quem abriu este painel")
+    return embed
+
+
+class BotaoInfoJogoV2(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="+Info", emoji="ℹ️", style=discord.ButtonStyle.secondary,
+                         custom_id="inscricoes_v2:info_jogo")
+
+    async def callback(self, interaction: discord.Interaction):
+        if not isinstance(interaction.channel, discord.Thread):
+            return await interaction.response.send_message("⚠️ Usa este botão na thread do jogo.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        try:
+            dados = await asyncio.to_thread(obter_info_jogo_sync, interaction.channel.id)
+            if dados is None:
+                return await interaction.followup.send("⚠️ Ainda não existem informações para este jogo.", ephemeral=True)
+            await interaction.followup.send(embed=criar_embed_info_jogo(dados), ephemeral=True)
+        except Exception as exc:
+            print(f"[INFO JOGO] {exc}")
+            await interaction.followup.send("⚠️ Não foi possível consultar as informações do jogo.", ephemeral=True)
 
 
 class BotaoInscreverV2(discord.ui.Button):
@@ -4655,6 +4726,61 @@ class DefinirBannerJogoModal(discord.ui.Modal, title="🖼️ Imagem de capa do 
             await interaction.followup.send("⚠️ Não foi possível atualizar a imagem. Verifica o URL e os logs.", ephemeral=True)
 
 
+class EditarInfoJogoModal(discord.ui.Modal, title="ℹ️ Informações do jogo"):
+    local = discord.ui.TextInput(label="Local", required=False, max_length=200)
+    valor = discord.ui.TextInput(label="Valor da inscrição", required=False, max_length=100)
+    equipamento = discord.ui.TextInput(label="Equipamento necessário", required=False,
+                                        style=discord.TextStyle.paragraph, max_length=900)
+    regras = discord.ui.TextInput(label="Regras", required=False,
+                                  style=discord.TextStyle.paragraph, max_length=900)
+    instrucoes = discord.ui.TextInput(label="Outras informações", required=False,
+                                      style=discord.TextStyle.paragraph, max_length=900)
+
+    def __init__(self, thread_id: int, valores=None):
+        super().__init__()
+        self.thread_id = thread_id
+        if valores:
+            for campo, valor in zip((self.local, self.valor, self.equipamento,
+                                     self.regras, self.instrucoes), valores):
+                campo.default = str(valor or "")[:campo.max_length]
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("❌ Apenas administradores.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        valores = tuple(str(c.value).strip() or None for c in
+                        (self.local, self.valor, self.equipamento, self.regras, self.instrucoes))
+
+        def guardar():
+            conn = get_connection()
+            if not conn:
+                return False
+            try:
+                with conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            INSERT INTO jogos_info_publica
+                                (thread_id, local_jogo, valor_inscricao, equipamento, regras, instrucoes)
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (thread_id) DO UPDATE SET
+                                local_jogo=EXCLUDED.local_jogo,
+                                valor_inscricao=EXCLUDED.valor_inscricao,
+                                equipamento=EXCLUDED.equipamento,
+                                regras=EXCLUDED.regras,
+                                instrucoes=EXCLUDED.instrucoes
+                        """, (self.thread_id, *valores))
+                return True
+            finally:
+                conn.close()
+        try:
+            sucesso = await asyncio.to_thread(guardar)
+            await interaction.followup.send("✅ Informações atualizadas." if sucesso else DB_ERROR_MSG,
+                                            ephemeral=True)
+        except Exception as exc:
+            print(f"[EDITAR INFO JOGO] {exc}")
+            await interaction.followup.send("⚠️ Erro ao guardar as informações.", ephemeral=True)
+
+
 class PainelJogoView(discord.ui.View):
     def __init__(self, thread_id: int):
         super().__init__(timeout=None)
@@ -4677,6 +4803,30 @@ class PainelJogoView(discord.ui.View):
         if not await self._staff_only(interaction):
             return
         await interaction.response.send_modal(DefinirNumeroPagamentoModal(self.thread_id))
+
+    @discord.ui.button(label="Editar +Info", emoji="ℹ️", style=discord.ButtonStyle.secondary, row=4)
+    async def editar_info_jogo(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._staff_only(interaction):
+            return
+        def carregar():
+            conn = get_connection()
+            if not conn:
+                return None
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT local_jogo, valor_inscricao, equipamento, regras, instrucoes
+                        FROM jogos_info_publica WHERE thread_id=%s
+                    """, (self.thread_id,))
+                    return cur.fetchone()
+            finally:
+                conn.close()
+        try:
+            valores = await asyncio.to_thread(carregar)
+        except Exception as exc:
+            print(f"[EDITAR INFO JOGO] {exc}")
+            return await interaction.response.send_message("⚠️ Não foi possível carregar as informações.", ephemeral=True)
+        await interaction.response.send_modal(EditarInfoJogoModal(self.thread_id, valores))
 
     @discord.ui.button(label="Definir data/hora", emoji="📅", style=discord.ButtonStyle.primary, row=2)
     async def definir_data_hora(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -4850,63 +5000,52 @@ class PainelJogoView(discord.ui.View):
             return
         await interaction.response.send_message(embed=criar_embed_escolher_modo(), view=EscolherModoJogoView(self.thread_id))
 
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def painel_jogo(ctx):
-    if not is_thread_channel(ctx.channel):
-        return await ctx.send("⚠️ Este comando só pode ser usado dentro da thread do jogo.", delete_after=10)
+@bot.tree.command(name="painel_jogo", description="Abre o painel privado de gestão do jogo")
+@app_commands.guild_only()
+@app_commands.default_permissions(administrator=True)
+async def painel_jogo(interaction: discord.Interaction):
+    if not isinstance(interaction.channel, discord.Thread):
+        return await interaction.response.send_message(
+            "⚠️ Este comando só pode ser usado dentro da thread do jogo.", ephemeral=True)
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("❌ Apenas administradores.", ephemeral=True)
 
-    conn = get_connection()
-    if not conn:
-        return await ctx.send(DB_ERROR_MSG)
+    await interaction.response.defer(ephemeral=True)
+    thread_id = interaction.channel.id
 
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT id
-        FROM inscricoes_jogos
-        WHERE thread_id = %s
-          AND estado = 'pago'
-        ORDER BY id ASC
-    """, (ctx.channel.id,))
-    inscricoes = [r[0] for r in cursor.fetchall()]
-    cursor.close()
-    conn.close()
+    def preparar():
+        conn = get_connection()
+        if not conn:
+            return None
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO jogos_threads (thread_id, thread_name, inscricoes_abertas, limite, criado_por)
+                        VALUES (%s, %s, FALSE, %s, %s)
+                        ON CONFLICT (thread_id) DO UPDATE SET thread_name=EXCLUDED.thread_name
+                    """, (thread_id, interaction.channel.name, LIMITE_PADRAO_INSCRICOES, interaction.user.id))
+                    cur.execute("""
+                        SELECT equipa_jogo, COUNT(*) FROM inscricoes_jogos
+                        WHERE thread_id=%s AND estado='pago' GROUP BY equipa_jogo
+                    """, (thread_id,))
+                    contagens = {equipa: total for equipa, total in cur.fetchall()}
+            return contagens
+        finally:
+            conn.close()
 
-    equipa_a = 0
-    equipa_b = 0
-
-    conn = get_connection()
-    if conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT equipa_jogo, COUNT(*)
-            FROM inscricoes_jogos
-            WHERE thread_id = %s
-              AND estado = 'pago'
-            GROUP BY equipa_jogo
-        """, (ctx.channel.id,))
-        for equipa, total in cursor.fetchall():
-            if equipa == "A":
-                equipa_a = total
-            elif equipa == "B":
-                equipa_b = total
-        cursor.close()
-        conn.close()
-
-    # Garante que existe configuração para a thread, mesmo antes de abrir inscrições.
-    conn = get_connection()
-    if conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO jogos_threads (thread_id, thread_name, inscricoes_abertas, limite, criado_por)
-            VALUES (%s, %s, FALSE, %s, %s)
-            ON CONFLICT (thread_id) DO UPDATE SET thread_name = EXCLUDED.thread_name
-        """, (ctx.channel.id, ctx.channel.name, LIMITE_PADRAO_INSCRICOES, ctx.author.id))
-        conn.commit(); cursor.close(); conn.close()
-
-    resumo = criar_embed_painel_gestao_jogo(ctx.channel.id, len(inscricoes), equipa_a, equipa_b)
-    PAINEL_JOGADORES_MSGS.pop(ctx.channel.id, None)
-    await ctx.send(embed=resumo, view=PainelJogoView(ctx.channel.id))
+    try:
+        contagens = await asyncio.to_thread(preparar)
+        if contagens is None:
+            return await interaction.followup.send(DB_ERROR_MSG, ephemeral=True)
+        resumo = await asyncio.to_thread(
+            criar_embed_painel_gestao_jogo, thread_id,
+            sum(contagens.values()), contagens.get('A', 0), contagens.get('B', 0))
+        PAINEL_JOGADORES_MSGS.pop(thread_id, None)
+        await interaction.followup.send(embed=resumo, view=PainelJogoView(thread_id), ephemeral=True)
+    except Exception as exc:
+        print(f"[PAINEL JOGO] {exc}")
+        await interaction.followup.send("⚠️ Não foi possível abrir o painel de gestão.", ephemeral=True)
 
 
 # =========================
