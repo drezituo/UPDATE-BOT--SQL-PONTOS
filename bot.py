@@ -2241,7 +2241,7 @@ async def enviar_instrucoes_pagamento_dm(jogador, thread_name: str, inscrito_por
                 conn.close()
     dados_pagamento = (
         f"\n📱 **Número para pagamento:** `{numero}`\n"
-        f"💳 **Método:** {metodo or 'Confirma com a staff'}\n"
+        f"💳 **Método:** {metodo or 'MB WAY'}\n"
         if numero else "\n⚠️ **Número de pagamento ainda não configurado. Contacta a staff antes de pagar.**\n"
     )
 
