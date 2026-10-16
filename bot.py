@@ -7,6 +7,7 @@ import psycopg2
 import os
 import random
 import secrets
+import traceback
 import re
 from html import escape
 from datetime import datetime, timezone, timedelta
@@ -5810,8 +5811,12 @@ async def criar_cartoes_status(guild, jogadores, equipas):
             files.append(discord.File(data,filename="status_equipas.png"))
         return files
     except Exception as exc:
-        print(f"[STATUS] Falha ao gerar cartões; usar layout nativo: {exc}")
-        return []
+        print(f"[STATUS] ERRO AO GERAR CARTÕES: {type(exc).__name__}: {exc}")
+        traceback.print_exc()
+        raise RuntimeError(
+            f"Não foi possível gerar os cartões do Status ({type(exc).__name__}: {exc}). "
+            "Confirma que Pillow está instalado no ambiente do bot: pip install Pillow"
+        ) from exc
 
 
 class PainelEquipasHallV2View(discord.ui.LayoutView):
@@ -5965,7 +5970,14 @@ async def comando_painel_equipas(ctx, tipo: str = "equipas"):
     except (discord.Forbidden, discord.NotFound, discord.HTTPException):
         pass
 
-    await garantir_painel_equipas_no_fundo(force_repost=True)
+    try:
+        await garantir_painel_equipas_no_fundo(force_repost=True)
+    except Exception as exc:
+        return await ctx.send(
+            f"❌ Não foi possível gerar o painel gráfico de Status. "
+            f"O painel anterior foi preservado.\n`{str(exc)[:450]}`",
+            delete_after=40
+        )
 
     canal = await obter_canal_painel_equipas()
     if canal is None:
@@ -5997,24 +6009,30 @@ async def garantir_painel_equipas_no_fundo(force_repost: bool = False):
         if message_id:
             try: mensagem_antiga=await canal.fetch_message(message_id)
             except (discord.NotFound,discord.Forbidden,discord.HTTPException): pass
+        # Gerar primeiro. Nunca apagar o painel existente se Pillow, imagens ou BD falharem.
+        view,files=await criar_painel_hall_view(canal.guild)
+        if not files:
+            raise RuntimeError("Não foram gerados cartões gráficos para o ranking.")
         if mensagem_antiga is not None and not force_repost:
             try:
                 ultima=[m async for m in canal.history(limit=1)]
                 if ultima and ultima[0].id==mensagem_antiga.id:
-                    view,files=await criar_painel_hall_view(canal.guild)
                     await mensagem_antiga.edit(embed=None,view=view,attachments=files)
                     return
             except (discord.Forbidden,discord.HTTPException) as exc:
                 print(f"[STATUS] Falha a editar painel: {exc}")
-        if mensagem_antiga is not None:
-            try: await mensagem_antiga.delete()
-            except (discord.NotFound,discord.Forbidden,discord.HTTPException): pass
+                traceback.print_exc()
+        # Publicar antes de eliminar a versão anterior para evitar perda do painel.
         try:
-            view,files=await criar_painel_hall_view(canal.guild)
             nova=await canal.send(view=view,files=files)
             guardar_mensagem_painel_equipas_sync(nova.id)
         except (discord.Forbidden,discord.HTTPException) as exc:
-            print(f"Erro ao publicar painel de equipas: {exc}")
+            print(f"[STATUS] Erro ao publicar painel gráfico: {exc}")
+            traceback.print_exc()
+            raise
+        if mensagem_antiga is not None:
+            try: await mensagem_antiga.delete()
+            except (discord.NotFound,discord.Forbidden,discord.HTTPException): pass
 
 
 async def criar_embed_equipa(guild: discord.Guild, equipa_row):
