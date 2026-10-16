@@ -14051,7 +14051,7 @@ class CompraDestaqueCarteiraButton(discord.ui.Button):
     def __init__(self, posicao: int, tipo: str):
         self.posicao = posicao
         super().__init__(
-            label=f"🎟️ Sorteio {posicao + 1}" if tipo == "sorteio" else f"🛒 Comprar {posicao + 1}",
+            label="Participar" if tipo == "sorteio" else "Comprar",
             style=discord.ButtonStyle.success,
             custom_id=f"carteira:destaque:comprar:{posicao}",
         )
