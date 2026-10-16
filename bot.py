@@ -1928,28 +1928,55 @@ def obter_info_jogo_sync(thread_id: int):
         conn.close()
 
 
-def criar_embed_info_jogo(dados):
+def criar_painel_info_jogo(dados):
+    """Painel privado de informações, organizado em cartões Components V2."""
     nome, inicio, local, valor, numero, instrucoes, regras, equipamento = dados
-    embed = discord.Embed(title="ℹ️ Informações do jogo", description=nome,
-                          colour=discord.Color.blurple())
+    vista = discord.ui.LayoutView(timeout=180)
+
+    def texto(valor, vazio="Por definir"):
+        valor = str(valor).strip() if valor is not None else ""
+        # Evita que texto introduzido pela administração altere a estrutura Markdown.
+        return discord.utils.escape_markdown(valor)[:1800] if valor else vazio
+
+    def cartao(titulo, linhas, cor=discord.Color.blurple()):
+        painel = discord.ui.Container(accent_colour=cor)
+        painel.add_item(discord.ui.TextDisplay(f"**{titulo}**"))
+        for linha in linhas:
+            painel.add_item(discord.ui.TextDisplay(linha))
+        vista.add_item(painel)
+
     if inicio:
         if inicio.tzinfo is None:
             inicio = inicio.replace(tzinfo=timezone.utc)
-        embed.add_field(name="📅 Data e hora", value=f"<t:{int(inicio.timestamp())}:F>", inline=False)
-    for titulo, conteudo in (("📍 Local", local), ("💶 Valor da inscrição", valor),
-                            ("🎒 Equipamento", equipamento), ("📋 Regras", regras),
-                            ("📝 Informações adicionais", instrucoes)):
-        if conteudo and str(conteudo).strip():
-            embed.add_field(name=titulo, value=str(conteudo)[:1024], inline=False)
+        data = f"<t:{int(inicio.timestamp())}:F>"
+    else:
+        data = "Por definir"
+
+    cartao("🎯 INFORMAÇÕES DO JOGO", [
+        f"**{texto(nome, 'Jogo CQB')}**",
+        f"📅 **Data e hora:** {data}",
+    ])
+    cartao("📍 LOCAL E INSCRIÇÃO", [
+        f"**Local:** {texto(local)}",
+        f"**Valor:** {texto(valor)}",
+    ])
+    cartao("🎒 PREPARAÇÃO E REGRAS", [
+        f"**Equipamento necessário**\n{texto(equipamento)}",
+        f"**Regras do jogo**\n{texto(regras)}",
+    ])
+    if instrucoes and str(instrucoes).strip():
+        cartao("📝 INFORMAÇÕES ADICIONAIS", [texto(instrucoes)])
     if numero and str(numero).strip():
-        embed.add_field(name="💳 Pagamento MB WAY", value=f"Número: `{str(numero).strip()}`", inline=False)
-    embed.set_footer(text="Informação exclusiva para quem abriu este painel")
-    return embed
+        cartao("💳 PAGAMENTO MB WAY", [
+            f"**Número:** `{str(numero).strip().replace('`', '')[:60]}`",
+        ], discord.Color.green())
+    vista.add_item(discord.ui.TextDisplay("-# 🔒 Estas informações são visíveis apenas para ti."))
+    return vista
 
 
 class BotaoInfoJogoV2(discord.ui.Button):
     def __init__(self):
-        super().__init__(label="+Info", emoji="ℹ️", style=discord.ButtonStyle.secondary,
+        super().__init__(label="Informações", emoji="📄", style=discord.ButtonStyle.secondary,
                          custom_id="inscricoes_v2:info_jogo")
 
     async def callback(self, interaction: discord.Interaction):
@@ -1960,7 +1987,7 @@ class BotaoInfoJogoV2(discord.ui.Button):
             dados = await asyncio.to_thread(obter_info_jogo_sync, interaction.channel.id)
             if dados is None:
                 return await interaction.followup.send("⚠️ Ainda não existem informações para este jogo.", ephemeral=True)
-            await interaction.followup.send(embed=criar_embed_info_jogo(dados), ephemeral=True)
+            await interaction.followup.send(view=criar_painel_info_jogo(dados), ephemeral=True)
         except Exception as exc:
             print(f"[INFO JOGO] {exc}")
             await interaction.followup.send("⚠️ Não foi possível consultar as informações do jogo.", ephemeral=True)
@@ -4804,7 +4831,7 @@ class PainelJogoView(discord.ui.View):
             return
         await interaction.response.send_modal(DefinirNumeroPagamentoModal(self.thread_id))
 
-    @discord.ui.button(label="Editar +Info", emoji="ℹ️", style=discord.ButtonStyle.secondary, row=4)
+    @discord.ui.button(label="Editar Informações", emoji="📄", style=discord.ButtonStyle.secondary, row=4)
     async def editar_info_jogo(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._staff_only(interaction):
             return
