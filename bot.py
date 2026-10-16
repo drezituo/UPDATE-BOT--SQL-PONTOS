@@ -5730,53 +5730,104 @@ async def editar_status(interaction: discord.Interaction):
 
 # Cartões gerados a partir dos dados reais; Pillow é opcional (fallback nativo).
 def _gerar_cartao_status_sync(tipo, registos, imagens, detalhes):
+    """Cartão legível em telemóvel, com 3 entradas e imagens reais quando disponíveis."""
     from PIL import Image, ImageDraw, ImageFont, ImageOps
-    W, H = 1000, 486
-    im = Image.new("RGB", (W, H), "#14171e")
-    draw = ImageDraw.Draw(im)
-    font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-    bold_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+
+    W, CARD_H, GAP, MARGIN = 1200, 256, 14, 22
+    H = MARGIN * 2 + CARD_H * len(registos[:3]) + GAP * max(0, len(registos[:3])-1)
+    canvas = Image.new("RGB", (W, max(H, 320)), "#11151c")
+    d = ImageDraw.Draw(canvas)
+    fonts = [
+        ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", True),
+        ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", False),
+    ]
     def font(size, bold=False):
-        try: return ImageFont.truetype(bold_path if bold else font_path, size)
-        except OSError: return ImageFont.load_default()
-    medals = ["01", "02", "03"]
-    for pos, row in enumerate(registos[:3]):
-        y = 18 + pos * 155
-        draw.rounded_rectangle((15, y, W-15, y+144), radius=19, fill="#202630", outline="#384150", width=2)
-        colors = ["#F3C95A", "#C7D3E0", "#DDA66C"]
-        draw.rounded_rectangle((29,y+18,95,y+70),radius=13,fill=colors[pos])
-        draw.text((42,y+27),medals[pos],font=font(24,True),fill="#151923")
+        for path, is_bold in (fonts if bold else fonts[::-1]):
+            try:
+                return ImageFont.truetype(path, size)
+            except OSError:
+                continue
+        return ImageFont.load_default()
+
+    golds = ("#f7ce56", "#cbd5e1", "#e8ae7d")
+    for pos, (name, points, stats) in enumerate(registos[:3]):
+        top = MARGIN + pos * (CARD_H + GAP)
+        left, right = 34, W - 34
+        d.rounded_rectangle((left, top, right, top+CARD_H), radius=24,
+                            fill="#202733", outline="#3a4556", width=3)
+        # Faixa de classificação; sem caixinhas com texto minúsculo.
+        d.rounded_rectangle((left+18, top+18, left+95, top+70), radius=13, fill=golds[pos])
+        d.text((left+35, top+24), f"{pos+1:02d}", font=font(32, True), fill="#161c25")
+        text_x = left + 117
+        image_size = 182
+        image_x, image_y = right-image_size-20, top+22
+        # Reserva espaço ao avatar/logótipo, sem cortar os nomes.
+        name = str(name).replace("\n", " ")
+        max_name_width = image_x - text_x - 24
+        while d.textbbox((0,0), name, font=font(37, True))[2] > max_name_width and len(name)>5:
+            name = name[:-2].rstrip("… ") + "…"
+        d.text((text_x, top+17), name, font=font(37, True), fill="#f6f8fb")
+        d.text((text_x, top+74), f"{points} PONTOS", font=font(32, True), fill=golds[pos])
+        # Três estatísticas em colunas, com valores grandes e rótulos por extenso.
+        stats_x = text_x
+        labels = ("Solo Wins", "Team Wins", "Presenças") if tipo == "jogadores" else ("Membros", "Solo Wins", "Team Wins")
+        col_width = (image_x - stats_x - 24) // 3
+        for idx, (label, value) in enumerate(zip(labels, stats)):
+            x = stats_x + idx * col_width
+            d.rounded_rectangle((x, top+146, x+col_width-12, top+230), radius=12, fill="#2b3544")
+            d.text((x+14, top+151), str(value), font=font(34, True), fill="#ffffff")
+            d.text((x+14, top+196), label, font=font(20), fill="#c4d0df")
         avatar = imagens[pos] if pos < len(imagens) else None
+        rendered = False
         if avatar:
             try:
-                avatar = Image.open(BytesIO(avatar)).convert("RGB")
-                avatar = ImageOps.fit(avatar, (108,108), method=Image.Resampling.LANCZOS)
-                im.paste(avatar,(W-142,y+18))
-            except Exception: avatar = None
-        if not avatar:
-            draw.rounded_rectangle((W-142,y+18,W-34,y+126),radius=15,fill="#353e4c")
-            draw.text((W-110,y+52),"?",font=font(39,True),fill="#cbd5e1")
-        nome,pontos,extra = row
-        nome = str(nome)
-        while draw.textbbox((0,0),nome,font=font(29,True))[2] > 670 and len(nome)>8:
-            nome=nome[:-2].rstrip()+"…"
-        draw.text((111,y+15),nome,font=font(29,True),fill="#f3f6fb")
-        draw.text((111,y+58),f"{pontos} PONTOS",font=font(25,True),fill=colors[pos])
-        draw.text((111,y+104),extra,font=font(19),fill="#aebccc")
-    out=BytesIO(); im.save(out,format="PNG",optimize=True); out.seek(0)
+                with Image.open(BytesIO(avatar)) as original:
+                    thumb = ImageOps.fit(original.convert("RGB"), (image_size, image_size),
+                                         method=Image.Resampling.LANCZOS)
+                mask = Image.new("L", (image_size, image_size), 0)
+                ImageDraw.Draw(mask).rounded_rectangle((0,0,image_size-1,image_size-1), radius=22, fill=255)
+                canvas.paste(thumb, (image_x, image_y), mask)
+                rendered = True
+            except Exception as exc:
+                print(f"[STATUS] Imagem inválida ({tipo}, {name}): {exc}")
+        if not rendered:
+            d.rounded_rectangle((image_x,image_y,image_x+image_size,image_y+image_size),
+                                radius=22,fill="#344050")
+            # Fallback digno quando a equipa não tem logo ou a URL expirou.
+            parts = [p for p in str(name).split() if p]
+            initials = ("".join(p[0] for p in parts[:2]) or "?").upper()
+            fallback_font = font(55, True)
+            bb = d.textbbox((0,0), initials, font=fallback_font)
+            d.text((image_x+(image_size-(bb[2]-bb[0]))/2,
+                    image_y+(image_size-(bb[3]-bb[1]))/2-8),
+                   initials, font=fallback_font, fill="#e7edf5")
+    out=BytesIO()
+    canvas.save(out, format="PNG", optimize=True)
+    out.seek(0)
     return out
 
 
 async def _obter_imagem_status(session, url):
-    if not url or not str(url).startswith(("https://", "http://")):
+    """Lê imagens de Discord/CDN/URL pública; diagnostica links inválidos de equipas."""
+    if not url or not str(url).strip().startswith(("https://", "http://")):
+        if url:
+            print(f"[STATUS] URL de logótipo não é http(s): {str(url)[:120]}")
         return None
+    url = str(url).strip()
     try:
-        async with session.get(str(url),timeout=ClientTimeout(total=8)) as response:
-            if response.status != 200 or int(response.headers.get("Content-Length", "0")) > 4_000_000:
+        async with session.get(url, timeout=ClientTimeout(total=12), allow_redirects=True) as response:
+            if response.status != 200:
+                print(f"[STATUS] Imagem HTTP {response.status}: {url[:160]}")
                 return None
-            raw=await response.read()
-            return raw if len(raw)<=4_000_000 else None
-    except Exception:
+            if int(response.headers.get("Content-Length", "0")) > 6_000_000:
+                print("[STATUS] Imagem excede 6 MB")
+                return None
+            raw = await response.read()
+            if len(raw) > 6_000_000:
+                return None
+            return raw
+    except Exception as exc:
+        print(f"[STATUS] Não foi possível obter imagem {url[:120]}: {type(exc).__name__}: {exc}")
         return None
 
 
@@ -5793,13 +5844,14 @@ async def criar_cartoes_status(guild, jogadores, equipas):
                 except (discord.NotFound,discord.Forbidden,discord.HTTPException): pass
             urls_j.append(membro.display_avatar.url if membro else None)
             solo,team,pres=detalhes_j.get(uid,(0,0,0))
-            rows_j.append((membro.display_name if membro else f"Jogador {uid}",pts,
-                f"Solo Wins: {solo}    •    Team Wins: {team}    •    Presenças: {pres}"))
+            rows_j.append((membro.display_name if membro else f"Jogador {uid}",pts,(solo,team,pres)))
         urls_e=[]; rows_e=[]
         for nome,pts,logo in equipas[:3]:
             urls_e.append(logo)
+            if not logo:
+                print(f"[STATUS] Equipa sem logo_url configurado: {nome}")
             d=detalhes_e.get(nome,{})
-            rows_e.append((nome,pts,f"Membros: {d.get('membros',0)}    •    Solo Wins: {d.get('solo',0)}    •    Team Wins: {d.get('team',0)}"))
+            rows_e.append((nome,pts,(d.get("membros",0),d.get("solo",0),d.get("team",0))))
         async with ClientSession() as session:
             imagens=await asyncio.gather(*[_obter_imagem_status(session,u) for u in urls_j+urls_e])
         files=[]
