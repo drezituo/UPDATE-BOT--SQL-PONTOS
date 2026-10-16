@@ -77,6 +77,10 @@ intents.message_content = True
 intents.reactions = True
 intents.guilds = True
 
+# LayoutView / Container / TextDisplay são disponibilizados pelo discord.py 2.6+.
+if not all(hasattr(discord.ui, name) for name in ("LayoutView", "Container", "TextDisplay", "Separator")):
+    raise RuntimeError("O painel Components V2 requer discord.py >= 2.6. Atualiza com: pip install -U discord.py")
+
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 
@@ -957,27 +961,29 @@ async def atualizar_embed_estado(channel: discord.Thread):
     """, (channel.id,))
     total = cursor.fetchone()[0]
 
-    embed = discord.Embed(
-        title="📋 Estado das Inscrições",
-        color=discord.Color.blurple(),
-        timestamp=discord.utils.utcnow()
-    )
-    embed.add_field(name="🔓 Estado", value="Abertas" if abertas else "Fechadas", inline=True)
-    embed.add_field(name="✅ Inscrições ativas", value=str(total), inline=True)
-    embed.add_field(name="📉 Vagas restantes", value=str(max(limite - total, 0)), inline=True)
-
+    # Painel Components V2: mantém os mesmos valores e ações da versão anterior.
+    linhas = [
+        "# 🎯 STUNHOUSE CQB | INSCRIÇÕES",
+        "Consulta o estado do jogo e garante a tua vaga através dos botões abaixo.",
+        "",
+        f"{'🟢 **INSCRIÇÕES ABERTAS**' if abertas else '🔴 **INSCRIÇÕES FECHADAS**'}",
+        f"👥 **Inscrições ativas:** {total} / {limite}",
+        f"🎟️ **Vagas restantes:** {max(limite - total, 0)}",
+    ]
     if inicio_jogo:
         if inicio_jogo.tzinfo is None:
             inicio_jogo = inicio_jogo.replace(tzinfo=timezone.utc)
         limite_cancelamento = inicio_jogo - timedelta(hours=HORAS_LIMITE_CANCELAMENTO)
-        embed.add_field(name="📅 Início do jogo", value=f"<t:{int(inicio_jogo.timestamp())}:F>", inline=False)
-        embed.add_field(
-            name="🚫 Cancelamentos",
-            value=f"Permitidos até <t:{int(limite_cancelamento.timestamp())}:F> (<t:{int(limite_cancelamento.timestamp())}:R>)",
-            inline=False
-        )
+        linhas.extend([
+            "",
+            f"📅 **Início do jogo:** <t:{int(inicio_jogo.timestamp())}:F>",
+            f"⏳ **Começa:** <t:{int(inicio_jogo.timestamp())}:R>",
+            "",
+            f"🚫 **Cancelamentos até:** <t:{int(limite_cancelamento.timestamp())}:F>",
+            f"🕒 **Prazo:** <t:{int(limite_cancelamento.timestamp())}:R>",
+        ])
     else:
-        embed.add_field(name="📅 Início do jogo", value="Ainda não definido pela staff.", inline=False)
+        linhas.extend(["", "📅 **Início do jogo:** Ainda não definido pela staff."])
 
     if estado_msg_id:
         try:
@@ -987,7 +993,7 @@ async def atualizar_embed_estado(channel: discord.Thread):
             pass
 
     try:
-        new_msg = await channel.send(embed=embed, view=InscricoesView())
+        new_msg = await channel.send(view=InscricoesV2View("\n".join(linhas)))
     except (discord.Forbidden, discord.HTTPException):
         cursor.close()
         conn.close()
@@ -1570,6 +1576,7 @@ async def on_ready():
 
     # Regista os botões persistentes das inscrições e dos termos pendentes.
     bot.add_view(InscricoesView())
+    bot.add_view(InscricoesV2View())  # Componentes V2: persistência após reinício
     bot.add_view(CreditoInscricaoView())
     bot.add_view(ComprovativoPagamentoView())
     bot.add_view(PainelEquipasView())
@@ -1839,6 +1846,56 @@ class InscricoesView(discord.ui.View):
     async def botao_enviar_termo(self, interaction: discord.Interaction, button: discord.ui.Button):
         await enviar_termo_interaction(interaction)
 
+
+
+# ---------- PAINEL DE INSCRIÇÕES: DISCORD COMPONENTS V2 ----------
+# Requer discord.py >= 2.6. A vista tradicional acima continua registada para
+# que os botões de mensagens antigas não deixem de funcionar.
+class InscricoesV2View(discord.ui.LayoutView):
+    def __init__(self, texto=None):
+        super().__init__(timeout=None)
+        if texto is None:
+            texto = "# 🎯 STUNHOUSE CQB | INSCRIÇÕES\nUsa os botões para gerir a tua inscrição."
+
+        painel = discord.ui.Container(accent_colour=discord.Color.blurple())
+        painel.add_item(discord.ui.TextDisplay(texto))
+        painel.add_item(discord.ui.Separator())
+        painel.add_item(discord.ui.TextDisplay(
+            "💳 **Pagamento:** após a inscrição, segue as instruções enviadas por mensagem privada."
+        ))
+        botoes = discord.ui.ActionRow()
+        botoes.add_item(BotaoInscreverV2())
+        botoes.add_item(BotaoCancelarV2())
+        botoes.add_item(BotaoTermoV2())
+        painel.add_item(botoes)
+        self.add_item(painel)
+
+
+class BotaoInscreverV2(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Inscrever", emoji="🎟️", style=discord.ButtonStyle.green,
+                         custom_id="inscricoes_v2:inscrever")
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(InscricaoModal())
+
+
+class BotaoCancelarV2(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Cancelar inscrição", emoji="❌", style=discord.ButtonStyle.red,
+                         custom_id="inscricoes_v2:cancelar")
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(CancelarInscricaoModal())
+
+
+class BotaoTermoV2(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Enviar termo", emoji="📄", style=discord.ButtonStyle.secondary,
+                         custom_id="inscricoes_v2:enviar_termo")
+
+    async def callback(self, interaction: discord.Interaction):
+        await enviar_termo_interaction(interaction)
 
 
 class TermoAprovacaoView(discord.ui.View):
