@@ -14539,8 +14539,9 @@ def obter_flyers_carteira():
             botao_url TEXT,
             ativo BOOLEAN NOT NULL DEFAULT TRUE
         )""")
+        cur.execute("ALTER TABLE carteira_flyers ADD COLUMN IF NOT EXISTS thread_id BIGINT")
         conn.commit()
-        cur.execute("SELECT slot,titulo,descricao,imagem_url,botao_texto,botao_url FROM carteira_flyers WHERE ativo=TRUE ORDER BY slot")
+        cur.execute("SELECT slot,titulo,descricao,imagem_url,botao_texto,botao_url,thread_id FROM carteira_flyers WHERE ativo=TRUE ORDER BY slot")
         return cur.fetchall()
     except Exception as exc:
         conn.rollback()
@@ -14598,6 +14599,7 @@ class EditarFlyerCarteiraModal(discord.ui.Modal):
                 imagem_url=EXCLUDED.imagem_url,botao_texto=EXCLUDED.botao_texto,
                 botao_url=EXCLUDED.botao_url,ativo=TRUE""",
                 (self.slot,str(self.titulo).strip(),str(self.descricao).strip(),imagem,botao or None,link or None))
+            cur.execute("UPDATE carteira_flyers SET thread_id=NULL WHERE slot=%s", (self.slot,))
             conn.commit()
         except Exception as exc:
             conn.rollback()
@@ -14611,6 +14613,98 @@ class EditarFlyerCarteiraModal(discord.ui.Modal):
         except Exception as exc:
             print(f"[CARTEIRA] Erro ao atualizar painel após flyer: {exc!r}")
             await interaction.followup.send("✅ Flyer guardado. Atualiza a Carteira com /painel_carteira.", ephemeral=True)
+
+
+# Jogos destacados: seleção de threads existentes, sem inscrições automáticas.
+def listar_jogos_para_destaque():
+    conn = get_connection()
+    if not conn:
+        return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT thread_id, thread_name, inicio_jogo FROM jogos_threads
+                WHERE inicio_jogo IS NULL OR inicio_jogo >= NOW()
+                ORDER BY inicio_jogo ASC NULLS LAST LIMIT 25""")
+            return cur.fetchall()
+    except Exception as exc:
+        print(f"[CARTEIRA] Erro a listar jogos: {exc!r}")
+        return []
+    finally:
+        conn.close()
+
+
+class ConfigurarJogoDestaqueModal(discord.ui.Modal):
+    imagem = discord.ui.TextInput(label="URL do flyer/imagem do jogo", max_length=1000)
+    descricao = discord.ui.TextInput(label="Descrição (opcional)", required=False, max_length=500)
+    botao = discord.ui.TextInput(label="Texto do botão", default="Inscrever-me", max_length=80)
+
+    def __init__(self, slot, thread_id, nome):
+        super().__init__(title=f"Destacar jogo na posição {slot}")
+        self.slot, self.thread_id, self.nome = slot, thread_id, nome
+
+    async def on_submit(self, interaction: discord.Interaction):
+        from urllib.parse import urlsplit
+        imagem = str(self.imagem).strip()
+        parsed = urlsplit(imagem)
+        if parsed.scheme not in ("https", "http") or not parsed.netloc:
+            return await interaction.response.send_message("Indica um URL de imagem válido.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        conn = get_connection()
+        if not conn:
+            return await interaction.followup.send("Sem ligação à base de dados.", ephemeral=True)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT thread_name, inicio_jogo FROM jogos_threads WHERE thread_id=%s", (self.thread_id,))
+                jogo = cur.fetchone()
+                if not jogo:
+                    return await interaction.followup.send("Este jogo já não existe.", ephemeral=True)
+                nome, inicio = jogo
+                desc = str(self.descricao).strip()
+                if inicio:
+                    desc = f"<t:{int(inicio.timestamp())}:F>" + (f" — {desc}" if desc else "")
+                url = f"https://discord.com/channels/{interaction.guild_id}/{self.thread_id}"
+                cur.execute("""INSERT INTO carteira_flyers
+                    (slot,titulo,descricao,imagem_url,botao_texto,botao_url,ativo,thread_id)
+                    VALUES (%s,%s,%s,%s,%s,%s,TRUE,%s)
+                    ON CONFLICT(slot) DO UPDATE SET titulo=EXCLUDED.titulo,
+                    descricao=EXCLUDED.descricao, imagem_url=EXCLUDED.imagem_url,
+                    botao_texto=EXCLUDED.botao_texto,botao_url=EXCLUDED.botao_url,
+                    ativo=TRUE,thread_id=EXCLUDED.thread_id""",
+                    (self.slot,nome,desc,imagem,str(self.botao).strip() or "Inscrever-me",url,self.thread_id))
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            print(f"[CARTEIRA] Erro a destacar jogo: {exc!r}")
+            return await interaction.followup.send("Não foi possível destacar o jogo.", ephemeral=True)
+        finally:
+            conn.close()
+        try:
+            await garantir_painel_carteira_no_fundo()
+            await interaction.followup.send("Jogo destacado e Carteira atualizada.", ephemeral=True)
+        except Exception:
+            await interaction.followup.send("Jogo guardado. Atualiza a Carteira com /painel_carteira.", ephemeral=True)
+
+
+class EscolherJogoDestaqueSelect(discord.ui.Select):
+    def __init__(self, slot, jogos):
+        self.slot = slot
+        options = [discord.SelectOption(label=str(nome)[:100], value=str(tid),
+                   description=(inicio.strftime("%d/%m/%Y %H:%M") if inicio else "Data por definir"))
+                   for tid,nome,inicio in jogos]
+        super().__init__(placeholder="Escolhe um próximo jogo", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message("Apenas administradores.", ephemeral=True)
+        thread_id = int(self.values[0])
+        nome = next((o.label for o in self.options if o.value == self.values[0]), "Jogo")
+        await interaction.response.send_modal(ConfigurarJogoDestaqueModal(self.slot,thread_id,nome))
+
+
+class EscolherJogoDestaqueView(discord.ui.View):
+    def __init__(self, slot, jogos):
+        super().__init__(timeout=300)
+        self.add_item(EscolherJogoDestaqueSelect(slot,jogos))
 
 
 class GerirFlyersCarteiraView(discord.ui.View):
@@ -14627,6 +14721,24 @@ class GerirFlyersCarteiraView(discord.ui.View):
         if not _adm_autorizado(interaction):
             return await interaction.response.send_message("⛔ Apenas administradores.", ephemeral=True)
         await interaction.response.send_modal(EditarFlyerCarteiraModal(2))
+
+    @discord.ui.button(label="Adicionar jogo 1", style=discord.ButtonStyle.secondary, row=2)
+    async def jogo1(self, interaction, button):
+        await self.escolher_jogo(interaction, 1)
+
+    @discord.ui.button(label="Adicionar jogo 2", style=discord.ButtonStyle.secondary, row=2)
+    async def jogo2(self, interaction, button):
+        await self.escolher_jogo(interaction, 2)
+
+    async def escolher_jogo(self, interaction, slot):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message("Apenas administradores.", ephemeral=True)
+        jogos = listar_jogos_para_destaque()
+        if not jogos:
+            return await interaction.response.send_message("Não existem jogos futuros registados.", ephemeral=True)
+        await interaction.response.send_message(
+            f"Seleciona o jogo para o destaque {slot}:",
+            view=EscolherJogoDestaqueView(slot, jogos), ephemeral=True)
 
     @discord.ui.button(label="Remover flyer 1", style=discord.ButtonStyle.danger, row=1)
     async def remover1(self, interaction, button):
@@ -14681,7 +14793,7 @@ class PainelCarteiraV2View(discord.ui.LayoutView):
             for flyer in flyers:
                 if flyer[4] and flyer[5]:
                     linha_flyers.add_item(discord.ui.Button(
-                        label=f"{flyer[0]} · {flyer[4]}",
+                        label=flyer[4] if flyer[6] else f"{flyer[0]} · {flyer[4]}",
                         style=discord.ButtonStyle.link, url=flyer[5]))
             if linha_flyers.children:
                 painel.add_item(linha_flyers)
@@ -16579,8 +16691,8 @@ class CentralAdmCarteiraView(CentralAdmVoltarView):
         if not _adm_autorizado(interaction):
             return await interaction.response.send_message("⛔ Apenas administradores.", ephemeral=True)
         await interaction.response.send_message(
-            "📢 **Flyers promocionais** — máximo de 2, lado a lado. "
-            "Configura uma imagem, título, descrição e botão com ligação para cada flyer. "
+            "**Conteúdos destacados** — máximo de 2, lado a lado. "
+            "Podes escolher um flyer promocional ou um próximo jogo em cada posição. "
             "Os destaques antigos reaparecem se removeres ambos.",
             view=GerirFlyersCarteiraView(), ephemeral=True)
 
