@@ -14778,12 +14778,15 @@ class PainelCarteiraV2View(discord.ui.LayoutView):
         imagem_capa = url_imagem_carteira(capa_url)
         if imagem_capa:
             painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=imagem_capa)))
+        # Uma única secção para todos os tipos de destaques. Os flyers/jogos
+        # nunca ocultam os produtos ou sorteios escolhidos na montra.
         flyers = obter_flyers_carteira()
+        painel.add_item(discord.ui.TextDisplay("**Conteúdos destacados**"))
         if flyers:
-            painel.add_item(discord.ui.TextDisplay("📢 **Destaques**"))
-            painel.add_item(discord.ui.MediaGallery(*[
-                discord.MediaGalleryItem(media=flyer[3]) for flyer in flyers
-            ]))
+            imagens_flyers = [discord.MediaGalleryItem(media=flyer[3])
+                              for flyer in flyers if url_imagem_carteira(flyer[3])]
+            if imagens_flyers:
+                painel.add_item(discord.ui.MediaGallery(*imagens_flyers))
             painel.add_item(discord.ui.TextDisplay("\n".join(
                 f"**{flyer[0]}. {discord.utils.escape_markdown(flyer[1])}**"
                 + (f" — {discord.utils.escape_markdown(flyer[2])}" if flyer[2] else "")
@@ -14797,11 +14800,7 @@ class PainelCarteiraV2View(discord.ui.LayoutView):
                         style=discord.ButtonStyle.link, url=flyer[5]))
             if linha_flyers.children:
                 painel.add_item(linha_flyers)
-        else:
-            painel.add_item(discord.ui.TextDisplay("🌟 **Conteúdo destacado**"))
-        if not flyers and destaques:
-            # Uma única galeria mostra até três fotografias lado a lado.
-            # A ordem das legendas e dos botões corresponde à ordem da galeria.
+        if destaques:
             imagens = [discord.MediaGalleryItem(media=d[4]) for d in destaques
                        if url_imagem_carteira(d[4])]
             if imagens:
@@ -14814,10 +14813,11 @@ class PainelCarteiraV2View(discord.ui.LayoutView):
                 linha_compra.add_item(CompraDestaqueCarteiraButton(
                     posicao, "sorteio" if destaque[3] == "sorteio" else "produto"))
             painel.add_item(linha_compra)
-        elif not flyers and destaque_texto and destaque_texto.strip():
-            painel.add_item(discord.ui.TextDisplay(destaque_texto.strip()[:1800]))
-        elif not flyers:
-            painel.add_item(discord.ui.TextDisplay("Em breve, novo conteúdo em destaque."))
+        if not flyers and not destaques:
+            if destaque_texto and destaque_texto.strip():
+                painel.add_item(discord.ui.TextDisplay(destaque_texto.strip()[:1800]))
+            else:
+                painel.add_item(discord.ui.TextDisplay("Em breve, novo conteúdo em destaque."))
         painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
         # A opção "ocultar novidades" não mostra sequer o título nem conteúdo antigo.
         novidades_ocultas = obter_novidades_ocultas_carteira()
@@ -16693,7 +16693,7 @@ class CentralAdmCarteiraView(CentralAdmVoltarView):
         await interaction.response.send_message(
             "**Conteúdos destacados** — máximo de 2, lado a lado. "
             "Podes escolher um flyer promocional ou um próximo jogo em cada posição. "
-            "Os destaques antigos reaparecem se removeres ambos.",
+            "Os jogos e flyers não substituem os sorteios nem os produtos destacados.",
             view=GerirFlyersCarteiraView(), ephemeral=True)
 
     @discord.ui.button(label="Editar Carteira", emoji="🖼️", style=discord.ButtonStyle.primary, row=0)
