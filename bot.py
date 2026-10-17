@@ -14797,7 +14797,7 @@ class PainelCarteiraV2View(discord.ui.LayoutView):
                 painel.add_item(discord.ui.MediaGallery(*imagens_destaques[inicio:inicio + 10]))
         if flyers:
             painel.add_item(discord.ui.TextDisplay("\n".join(
-                f"**{flyer[0]}. {discord.utils.escape_markdown(flyer[1])}**"
+                f"**{discord.utils.escape_markdown(flyer[1])}**"
                 + (f" — {discord.utils.escape_markdown(flyer[2])}" if flyer[2] else "")
                 for flyer in flyers
             )))
@@ -14805,13 +14805,12 @@ class PainelCarteiraV2View(discord.ui.LayoutView):
             for flyer in flyers:
                 if flyer[4] and flyer[5]:
                     linha_flyers.add_item(discord.ui.Button(
-                        label=flyer[4] if flyer[6] else f"{flyer[0]} · {flyer[4]}",
+                        label=flyer[4],
                         style=discord.ButtonStyle.link, url=flyer[5]))
             if linha_flyers.children:
                 painel.add_item(linha_flyers)
         if destaques:
-            descricoes = [f"**{posicao + 1}.** {formatar_produto_montra(destaque)}"
-                          for posicao, destaque in enumerate(destaques)]
+            descricoes = [formatar_produto_montra(destaque) for destaque in destaques]
             painel.add_item(discord.ui.TextDisplay("\n".join(descricoes)))
             linha_compra = discord.ui.ActionRow()
             for posicao, destaque in enumerate(destaques):
