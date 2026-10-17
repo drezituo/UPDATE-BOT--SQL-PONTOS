@@ -17081,7 +17081,7 @@ def _torneio_equipa_db_sync():
                 presenca_por BIGINT, presenca_em TIMESTAMPTZ,
                 PRIMARY KEY(thread_id, equipa_id),
                 CONSTRAINT torneio_estado_valido CHECK (estado IN ('pendente','aprovada','presente','rejeitada'))
-            """)
+            )""")
         conn.commit()
     finally:
         conn.close()
