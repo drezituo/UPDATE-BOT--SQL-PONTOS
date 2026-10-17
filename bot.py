@@ -1020,7 +1020,6 @@ async def atualizar_embed_estado(channel: discord.Thread):
     if modo_equipas:
         ocupacao = (
             f"**{total}/{limite}** equipas inscritas  ·  **{vagas}** vagas\n"
-            f"**{equipas_presentes}** equipas presentes\n"
             f"{barra}  `{percentagem}%`"
         )
     else:
