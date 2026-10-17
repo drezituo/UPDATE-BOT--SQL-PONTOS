@@ -14782,11 +14782,20 @@ class PainelCarteiraV2View(discord.ui.LayoutView):
         # nunca ocultam os produtos ou sorteios escolhidos na montra.
         flyers = obter_flyers_carteira()
         painel.add_item(discord.ui.TextDisplay("**Conteúdos destacados**"))
+        # Todas as imagens destacadas ficam na MESMA galeria, incluindo
+        # jogos, flyers, sorteios e produtos. Galerias separadas empilhavam-nas.
+        imagens_destaques = []
+        for flyer in flyers:
+            if url_imagem_carteira(flyer[3]):
+                imagens_destaques.append(discord.MediaGalleryItem(media=flyer[3]))
+        for destaque in destaques:
+            if url_imagem_carteira(destaque[4]):
+                imagens_destaques.append(discord.MediaGalleryItem(media=destaque[4]))
+        # O Discord aceita no máximo 10 itens por MediaGallery.
+        if imagens_destaques:
+            for inicio in range(0, len(imagens_destaques), 10):
+                painel.add_item(discord.ui.MediaGallery(*imagens_destaques[inicio:inicio + 10]))
         if flyers:
-            imagens_flyers = [discord.MediaGalleryItem(media=flyer[3])
-                              for flyer in flyers if url_imagem_carteira(flyer[3])]
-            if imagens_flyers:
-                painel.add_item(discord.ui.MediaGallery(*imagens_flyers))
             painel.add_item(discord.ui.TextDisplay("\n".join(
                 f"**{flyer[0]}. {discord.utils.escape_markdown(flyer[1])}**"
                 + (f" — {discord.utils.escape_markdown(flyer[2])}" if flyer[2] else "")
@@ -14801,10 +14810,6 @@ class PainelCarteiraV2View(discord.ui.LayoutView):
             if linha_flyers.children:
                 painel.add_item(linha_flyers)
         if destaques:
-            imagens = [discord.MediaGalleryItem(media=d[4]) for d in destaques
-                       if url_imagem_carteira(d[4])]
-            if imagens:
-                painel.add_item(discord.ui.MediaGallery(*imagens))
             descricoes = [f"**{posicao + 1}.** {formatar_produto_montra(destaque)}"
                           for posicao, destaque in enumerate(destaques)]
             painel.add_item(discord.ui.TextDisplay("\n".join(descricoes)))
