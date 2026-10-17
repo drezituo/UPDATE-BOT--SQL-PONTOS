@@ -965,6 +965,24 @@ async def atualizar_embed_estado(channel: discord.Thread):
     """, (channel.id,))
     total = cursor.fetchone()[0]
 
+    # Nos torneios por equipas, o contador representa equipas aprovadas/presentes.
+    modo_equipas = False
+    try:
+        cursor.execute("SELECT to_regclass('public.torneios_equipas_config')")
+        if cursor.fetchone()[0] is not None:
+            cursor.execute("SELECT limite FROM torneios_equipas_config WHERE thread_id=%s AND ativo=TRUE", (channel.id,))
+            configuracao = cursor.fetchone()
+            if configuracao:
+                modo_equipas = True
+                limite = configuracao[0]
+                cursor.execute("""SELECT COUNT(*) FILTER (WHERE estado IN ('aprovada','presente')),
+                                       COUNT(*) FILTER (WHERE estado='presente')
+                                FROM torneios_equipas_inscricoes WHERE thread_id=%s""", (channel.id,))
+                total, equipas_presentes = cursor.fetchone()
+    except psycopg2.Error as exc:
+        print(f"[TORNEIO EQUIPAS] Erro ao obter ocupação: {exc}")
+        conn.rollback()
+
     # Apresentação compacta para telemóvel, com progresso atualizado pela BD.
     total = int(total)
     limite = max(int(limite or 0), 0)
@@ -999,10 +1017,17 @@ async def atualizar_embed_estado(channel: discord.Thread):
     # Não incluir Markdown dentro do bloco: o Discord mostra-o literalmente.
     titulo_jogo = (channel.name or "Jogo CQB").replace("`", "'").replace("\n", " ").strip()
     cabecalho = f"```\n🎯 {titulo_jogo[:70]}\n```\n{estado}  ·  {data_texto}"
-    ocupacao = (
-        f"👥 **{total}/{limite}** inscritos  ·  🎟️ **{vagas}** vagas\n"
-        f"{barra}  `{percentagem}%`"
-    )
+    if modo_equipas:
+        ocupacao = (
+            f"**{total}/{limite}** equipas inscritas  ·  **{vagas}** vagas\n"
+            f"**{equipas_presentes}** equipas presentes\n"
+            f"{barra}  `{percentagem}%`"
+        )
+    else:
+        ocupacao = (
+            f"👥 **{total}/{limite}** inscritos  ·  🎟️ **{vagas}** vagas\n"
+            f"{barra}  `{percentagem}%`"
+        )
     detalhes = cancelamento_texto if abertas else "👥 Consulta as equipas no botão abaixo."
 
     if estado_msg_id:
@@ -2017,6 +2042,31 @@ class BotaoInfoJogoV2(discord.ui.Button):
             await interaction.followup.send("⚠️ Não foi possível consultar as informações do jogo.", ephemeral=True)
 
 
+def obter_equipas_torneio_publico_sync(thread_id: int):
+    """Devolve None se a thread não usa inscrições por equipas.
+    Apenas inscrições aprovadas ou com presença confirmada são públicas.
+    """
+    conn = get_connection()
+    if conn is None:
+        raise RuntimeError("Base de dados indisponível")
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.torneios_equipas_config')")
+            if cur.fetchone()[0] is None:
+                return None
+            cur.execute("SELECT limite FROM torneios_equipas_config WHERE thread_id=%s AND ativo=TRUE", (thread_id,))
+            config = cur.fetchone()
+            if not config:
+                return None
+            cur.execute("""SELECT e.nome, i.estado FROM torneios_equipas_inscricoes i
+                           JOIN equipas e ON e.id=i.equipa_id
+                           WHERE i.thread_id=%s AND i.estado IN ('aprovada','presente')
+                           ORDER BY CASE WHEN i.estado='presente' THEN 0 ELSE 1 END, e.nome""", (thread_id,))
+            return config[0], cur.fetchall()
+    finally:
+        conn.close()
+
+
 def obter_equipas_jogo_publico_sync(thread_id: int):
     """Consulta apenas inscrições pagas, sem misturar equipas permanentes."""
     conn = get_connection()
@@ -2045,6 +2095,26 @@ class BotaoVerEquipasJogoV2(discord.ui.Button):
             return await interaction.response.send_message("⚠️ Usa este botão na thread do jogo.", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
         try:
+            torneio = await asyncio.to_thread(obter_equipas_torneio_publico_sync, interaction.channel.id)
+            if torneio is not None:
+                limite, equipas = torneio
+                presentes = sum(estado == 'presente' for _, estado in equipas)
+                embed = discord.Embed(
+                    title="Equipas do Torneio",
+                    description=(f"**{len(equipas)}/{limite}** equipas inscritas · "
+                                 f"**{presentes}** presenças confirmadas"),
+                    color=discord.Color.green())
+                if equipas:
+                    embed.add_field(
+                        name="Equipas confirmadas",
+                        value="\n".join(
+                            f"**{discord.utils.escape_markdown(str(nome))[:90]}** — "
+                            f"{'Presença confirmada' if estado == 'presente' else 'Inscrita'}"
+                            for nome, estado in equipas)[:1024],
+                        inline=False)
+                else:
+                    embed.add_field(name="Equipas confirmadas", value="Ainda não existem equipas aprovadas.", inline=False)
+                return await interaction.followup.send(embed=embed, ephemeral=True)
             rows = await asyncio.to_thread(obter_equipas_jogo_publico_sync, interaction.channel.id)
             if rows is None:
                 return await interaction.followup.send(DB_ERROR_MSG, ephemeral=True)
@@ -17203,6 +17273,14 @@ class TorneioEquipaOperacoesView(discord.ui.View):
             msg=await asyncio.to_thread(_torneio_equipa_sync,operacao,self.thread_id,self.equipa_id,interaction.user.id)
             dados=await asyncio.to_thread(_torneio_equipa_sync,'listar',self.thread_id)
             await interaction.edit_original_response(content=msg,embed=_torneio_equipas_embed(self.thread_id,dados),view=TorneioEquipaView(self.thread_id,dados[1]))
+            try:
+                thread = interaction.guild.get_thread(self.thread_id)
+                if thread is None:
+                    thread = await interaction.guild.fetch_channel(self.thread_id)
+                if isinstance(thread, discord.Thread):
+                    await atualizar_embed_estado(thread)
+            except Exception as refresh_exc:
+                print(f"[TORNEIO EQUIPAS] Falha ao atualizar painel público: {refresh_exc!r}")
         except Exception as exc:
             await interaction.followup.send(f'Não foi possível concluir: {exc}',ephemeral=True)
 
@@ -17253,6 +17331,10 @@ class TorneioEquipaThreadModal(discord.ui.Modal,title='Gestão do torneio por eq
             await asyncio.to_thread(_torneio_equipa_sync,'configurar',tid)
             dados=await asyncio.to_thread(_torneio_equipa_sync,'listar',tid)
             await interaction.followup.send(embed=_torneio_equipas_embed(tid,dados),view=TorneioEquipaView(tid,dados[1]),ephemeral=True)
+            try:
+                await atualizar_embed_estado(thread)
+            except Exception as refresh_exc:
+                print(f"[TORNEIO EQUIPAS] Falha ao atualizar painel público: {refresh_exc!r}")
         except Exception as exc:
             await interaction.followup.send(f'Erro na gestão do torneio: {exc}',ephemeral=True)
 
