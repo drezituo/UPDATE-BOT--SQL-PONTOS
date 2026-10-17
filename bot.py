@@ -1659,6 +1659,17 @@ async def on_ready():
     await carregar_views_termos_pendentes()
     await garantir_painel_equipas_no_fundo()
     await garantir_painel_carteira_no_fundo()
+    # Botão persistente do perfil no painel de patrocínio.
+    _patro_persistente = discord.ui.View(timeout=None)
+    _patro_persistente.add_item(PatrocinioVerPontos())
+    bot.add_view(_patro_persistente)
+    try:
+        canal_patro = bot.get_channel(PATROCINIO_CHANNEL_ID)
+        if canal_patro is None:
+            canal_patro = await bot.fetch_channel(PATROCINIO_CHANNEL_ID)
+        await _patro_publicar(canal_patro.guild.id)
+    except Exception as exc:
+        print(f'[PATROCINIO] Não foi possível atualizar o painel no arranque: {exc!r}')
     bot.add_view(EstatisticasCanalView())
     await garantir_painel_estatisticas_canal()
 
@@ -17017,6 +17028,302 @@ async def garantir_painel_estatisticas_canal(force_repost=False):
             print(f"[ANALYTICS CANAL] Erro ao publicar painel: {exc!r}")
 
 
+
+
+# ============================================================
+# PARCERIA CONTRACTORHOUSE — MONTRA NO CANAL DE PATROCÍNIOS
+# Produtos externos: apenas ligações para a loja, sem créditos.
+# ============================================================
+PATROCINIO_CHANNEL_ID = 1458493634256306216
+PATROCINIO_ROLE_ID = 1469661594081562789
+PATROCINIO_PONTOS_CHANNEL_ID = 1457457766279942425
+PATROCINIO_LOCK = asyncio.Lock()
+
+
+def _patro_db_sync():
+    conn = get_connection()
+    if conn is None:
+        raise RuntimeError('Base de dados indisponível')
+    try:
+        with conn.cursor() as cur:
+            cur.execute('''CREATE TABLE IF NOT EXISTS patrocinio_config (
+                guild_id BIGINT PRIMARY KEY,
+                capa_url TEXT NOT NULL DEFAULT '',
+                loja_url TEXT NOT NULL DEFAULT '',
+                mensagem_id BIGINT,
+                atualizado_em TIMESTAMPTZ DEFAULT NOW()
+            )''')
+            cur.execute('''CREATE TABLE IF NOT EXISTS patrocinio_produtos (
+                guild_id BIGINT NOT NULL,
+                posicao SMALLINT NOT NULL CHECK (posicao BETWEEN 1 AND 4),
+                nome TEXT NOT NULL,
+                imagem_url TEXT NOT NULL DEFAULT '',
+                produto_url TEXT NOT NULL,
+                ativo BOOLEAN NOT NULL DEFAULT TRUE,
+                PRIMARY KEY (guild_id, posicao)
+            )''')
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _patro_ler_sync(guild_id):
+    _patro_db_sync()
+    conn = get_connection()
+    if conn is None:
+        raise RuntimeError('Base de dados indisponível')
+    try:
+        with conn.cursor() as cur:
+            cur.execute('SELECT capa_url, loja_url, mensagem_id FROM patrocinio_config WHERE guild_id=%s', (guild_id,))
+            conf = cur.fetchone() or ('', '', None)
+            cur.execute('SELECT posicao,nome,imagem_url,produto_url FROM patrocinio_produtos WHERE guild_id=%s AND ativo=TRUE ORDER BY posicao', (guild_id,))
+            produtos = cur.fetchall()
+        return conf, produtos
+    finally:
+        conn.close()
+
+
+def _patro_guardar_config_sync(guild_id, capa, loja):
+    _patro_db_sync()
+    conn = get_connection()
+    if conn is None:
+        raise RuntimeError('Base de dados indisponível')
+    try:
+        with conn.cursor() as cur:
+            cur.execute('''INSERT INTO patrocinio_config (guild_id,capa_url,loja_url)
+                VALUES (%s,%s,%s) ON CONFLICT (guild_id) DO UPDATE
+                SET capa_url=EXCLUDED.capa_url, loja_url=EXCLUDED.loja_url, atualizado_em=NOW()''', (guild_id,capa,loja))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _patro_guardar_produto_sync(guild_id, posicao, nome, imagem, url):
+    _patro_db_sync()
+    conn = get_connection()
+    if conn is None:
+        raise RuntimeError('Base de dados indisponível')
+    try:
+        with conn.cursor() as cur:
+            if not nome or not url:
+                cur.execute('DELETE FROM patrocinio_produtos WHERE guild_id=%s AND posicao=%s', (guild_id,posicao))
+            else:
+                cur.execute('''INSERT INTO patrocinio_produtos (guild_id,posicao,nome,imagem_url,produto_url)
+                    VALUES (%s,%s,%s,%s,%s) ON CONFLICT (guild_id,posicao) DO UPDATE
+                    SET nome=EXCLUDED.nome,imagem_url=EXCLUDED.imagem_url,
+                    produto_url=EXCLUDED.produto_url,ativo=TRUE''', (guild_id,posicao,nome,imagem,url))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _patro_guardar_mensagem_sync(guild_id, mensagem_id):
+    conn = get_connection()
+    if conn is None:
+        raise RuntimeError('Base de dados indisponível')
+    try:
+        with conn.cursor() as cur:
+            cur.execute('''INSERT INTO patrocinio_config(guild_id,mensagem_id) VALUES(%s,%s)
+                ON CONFLICT(guild_id) DO UPDATE SET mensagem_id=EXCLUDED.mensagem_id''', (guild_id,mensagem_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _patro_url(valor):
+    valor = str(valor or '').strip()
+    return valor if valor.startswith(('https://','http://')) and len(valor) < 1900 else ''
+
+
+class PatrocinioVerPontos(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label='Ver os meus pontos', style=discord.ButtonStyle.secondary,
+                         custom_id='patrocinio:ver_pontos:v1')
+
+    async def callback(self, interaction: discord.Interaction):
+        def ler():
+            conn = get_connection()
+            if conn is None:
+                raise RuntimeError('Base de dados indisponível')
+            try:
+                with conn.cursor() as cur:
+                    cur.execute('SELECT COALESCE((SELECT pontos FROM pontos_solo WHERE user_id=%s),0) + COALESCE((SELECT pontos FROM pontos_team WHERE user_id=%s),0)', (interaction.user.id,interaction.user.id))
+                    return int(cur.fetchone()[0] or 0)
+            finally:
+                conn.close()
+        await interaction.response.defer(ephemeral=True)
+        try:
+            pontos = await asyncio.to_thread(ler)
+            tem_tag = isinstance(interaction.user, discord.Member) and any(r.id == PATROCINIO_ROLE_ID for r in interaction.user.roles)
+            await interaction.followup.send(
+                f'**O teu perfil de jogador**\nPontos: **{pontos}**\n'
+                f'Tag de descontos: **{"Ativa" if tem_tag else "Não atribuída / inativa"}**\n\n'
+                f'Para usufruir do desconto apresenta o perfil original ao balcão. **Prints não são válidas.**\n'
+                f'Consulta os pontos em <#{PATROCINIO_PONTOS_CHANNEL_ID}>.\n'
+                'A elegibilidade depende também da presença e da validação da tag pela organização.', ephemeral=True)
+        except Exception as exc:
+            print(f'[PATROCINIO] Pontos: {exc!r}')
+            await interaction.followup.send('Não foi possível consultar os pontos neste momento.', ephemeral=True)
+
+
+class PatrocinioPainelView(discord.ui.LayoutView):
+    def __init__(self, conf=None, produtos=None):
+        super().__init__(timeout=None)
+        conf = conf or ('','','')
+        produtos = produtos or []
+        capa, loja_url, _ = conf
+        c = discord.ui.Container(accent_colour=discord.Color.dark_gold())
+        c.add_item(discord.ui.TextDisplay('## CONTRACTORHOUSE × STUNHOUSE CQB\n**Parceria oficial · Benefícios exclusivos para jogadores**'))
+        if _patro_url(capa):
+            c.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=_patro_url(capa))))
+        c.add_item(discord.ui.TextDisplay(
+            '### Descontos exclusivos\n'
+            '**10%** — Desconto base em artigos\n'
+            '**15%** — Consumíveis\n'
+            '**5%** — Réplicas\n\n'
+            '*Os descontos são aplicados individualmente por artigo e não são acumuláveis.*'))
+        c.add_item(discord.ui.Separator())
+        c.add_item(discord.ui.TextDisplay(
+            '### Como usufruir\n'
+            f'• Ter **mais de 3 pontos** por jogos realizados na Stunhouse CQB.\n'
+            f'• Ter a tag de jogador <@&{PATROCINIO_ROLE_ID}> ativa.\n'
+            '• Mostrar o **perfil de jogador original** ao balcão da ContractorHouse.\n\n'
+            '**Prints não são válidas.**\n'
+            'A ausência por mais de **3 meses** torna a tag inativa até nova inscrição.'))
+        c.add_item(discord.ui.TextDisplay(
+            '### Sorteios mensais\n'
+            'Sorteios mensais de artigos disponibilizados pela ContractorHouse para jogadores.\n\n'
+            '*Campanha válida a partir de março de 2026.*'))
+        validos = [(pos,nome,_patro_url(img),_patro_url(url)) for pos,nome,img,url in produtos if _patro_url(url)]
+        if validos:
+            c.add_item(discord.ui.Separator())
+            c.add_item(discord.ui.TextDisplay('### Produtos em destaque'))
+            imgs = [discord.MediaGalleryItem(media=img, description=nome[:100]) for _,nome,img,_ in validos if img]
+            if imgs:
+                c.add_item(discord.ui.MediaGallery(*imgs))
+            c.add_item(discord.ui.TextDisplay('\n'.join(f'**{nome[:95]}**' for _,nome,_,_ in validos)))
+            for grupo_inicio in range(0,len(validos),4):
+                row = discord.ui.ActionRow()
+                for _,nome,_,url in validos[grupo_inicio:grupo_inicio+4]:
+                    row.add_item(discord.ui.Button(label=('Ver: '+nome)[:80],url=url,style=discord.ButtonStyle.link))
+                c.add_item(row)
+        row = discord.ui.ActionRow()
+        row.add_item(PatrocinioVerPontos())
+        if _patro_url(loja_url):
+            row.add_item(discord.ui.Button(label='Visitar ContractorHouse',style=discord.ButtonStyle.link,url=_patro_url(loja_url)))
+        c.add_item(row)
+        self.add_item(c)
+
+
+async def _patro_publicar(guild_id):
+    async with PATROCINIO_LOCK:
+        conf, produtos = await asyncio.to_thread(_patro_ler_sync,guild_id)
+        canal = bot.get_channel(PATROCINIO_CHANNEL_ID)
+        if canal is None:
+            canal = await bot.fetch_channel(PATROCINIO_CHANNEL_ID)
+        if getattr(canal.guild,'id',None) != guild_id:
+            raise RuntimeError('Canal de patrocínio não pertence ao servidor')
+        view = PatrocinioPainelView(conf,produtos)
+        mensagem = None
+        if conf[2]:
+            try:
+                mensagem = await canal.fetch_message(int(conf[2]))
+                if mensagem.author.id != bot.user.id:
+                    mensagem = None
+            except (discord.NotFound,discord.Forbidden,discord.HTTPException):
+                mensagem = None
+        if mensagem:
+            await mensagem.edit(content=None,embed=None,view=view)
+        else:
+            mensagem = await canal.send(view=view)
+            await asyncio.to_thread(_patro_guardar_mensagem_sync,guild_id,mensagem.id)
+        return mensagem
+
+
+class PatrocinioConfigModal(discord.ui.Modal, title='Parceria ContractorHouse'):
+    capa = discord.ui.TextInput(label='URL da capa da parceria',required=False,max_length=1000)
+    loja = discord.ui.TextInput(label='URL do site ContractorHouse',required=False,max_length=1000)
+
+    async def on_submit(self,interaction: discord.Interaction):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message('Apenas administradores.',ephemeral=True)
+        for u in (self.capa.value.strip(),self.loja.value.strip()):
+            if u and not _patro_url(u):
+                return await interaction.response.send_message('Usa URLs http:// ou https:// válidos.',ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        try:
+            await asyncio.to_thread(_patro_guardar_config_sync,interaction.guild_id,self.capa.value.strip(),self.loja.value.strip())
+            await _patro_publicar(interaction.guild_id)
+            await interaction.followup.send('Capa e site guardados. Painel de patrocínio atualizado.',ephemeral=True)
+        except Exception as exc:
+            print(f'[PATROCINIO] Config: {exc!r}')
+            await interaction.followup.send('Erro ao guardar. Consulta os logs.',ephemeral=True)
+
+
+class PatrocinioProdutoModal(discord.ui.Modal):
+    nome = discord.ui.TextInput(label='Nome do produto (vazio para remover)',required=False,max_length=100)
+    imagem = discord.ui.TextInput(label='URL da imagem',required=False,max_length=1000)
+    url = discord.ui.TextInput(label='Link do produto na loja',required=False,max_length=1000)
+
+    def __init__(self,posicao):
+        super().__init__(title=f'Produto em destaque {posicao}')
+        self.posicao=posicao
+
+    async def on_submit(self,interaction: discord.Interaction):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message('Apenas administradores.',ephemeral=True)
+        nome=self.nome.value.strip()
+        img=self.imagem.value.strip()
+        url=self.url.value.strip()
+        if nome and not _patro_url(url):
+            return await interaction.response.send_message('Para adicionar um produto, indica um link http(s) da loja.',ephemeral=True)
+        if img and not _patro_url(img):
+            return await interaction.response.send_message('O link da imagem tem de começar por http(s).',ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        try:
+            await asyncio.to_thread(_patro_guardar_produto_sync,interaction.guild_id,self.posicao,nome,img,url)
+            await _patro_publicar(interaction.guild_id)
+            await interaction.followup.send(f'Produto {self.posicao} {"guardado" if nome else "removido"}. Montra atualizada.',ephemeral=True)
+        except Exception as exc:
+            print(f'[PATROCINIO] Produto: {exc!r}')
+            await interaction.followup.send('Erro ao guardar o produto. Consulta os logs.',ephemeral=True)
+
+
+class PatrocinioProdutoSelecionar(discord.ui.Select):
+    def __init__(self):
+        super().__init__(placeholder='Escolhe a posição do produto',min_values=1,max_values=1,
+            options=[discord.SelectOption(label=f'Produto {n}',value=str(n)) for n in range(1,5)])
+
+    async def callback(self,interaction: discord.Interaction):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message('Apenas administradores.',ephemeral=True)
+        await interaction.response.send_modal(PatrocinioProdutoModal(int(self.values[0])))
+
+
+class PatrocinioGerirView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=600)
+        self.add_item(PatrocinioProdutoSelecionar())
+
+    @discord.ui.button(label='Editar capa e site',style=discord.ButtonStyle.primary)
+    async def capa(self,interaction:discord.Interaction,button:discord.ui.Button):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message('Apenas administradores.',ephemeral=True)
+        await interaction.response.send_modal(PatrocinioConfigModal())
+
+    @discord.ui.button(label='Publicar / Atualizar',style=discord.ButtonStyle.success)
+    async def publicar(self,interaction:discord.Interaction,button:discord.ui.Button):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message('Apenas administradores.',ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        try:
+            mensagem=await _patro_publicar(interaction.guild_id)
+            await interaction.followup.send(f'Painel atualizado: {mensagem.jump_url}',ephemeral=True)
+        except Exception as exc:
+            print(f'[PATROCINIO] Publicar: {exc!r}')
+            await interaction.followup.send('Erro ao publicar. Verifica permissões e logs.',ephemeral=True)
+
+
 # ============================================================
 # CENTRAL DE ADMINISTRAÇÃO — /painel_adm
 # Acesso privado; atalhos reutilizam os fluxos administrativos.
@@ -17029,6 +17336,16 @@ def _adm_autorizado(interaction: discord.Interaction) -> bool:
 class CentralAdmView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=600)
+
+    @discord.ui.button(label="Gerir Patrocínios", style=discord.ButtonStyle.primary, row=2)
+    async def patrocinio(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message('Apenas administradores.', ephemeral=True)
+        await interaction.response.send_message(
+            '**ContractorHouse × Stunhouse CQB**\nEdita a capa, o site e até 4 produtos externos. '
+            'Escolhe uma posição para adicionar, substituir ou remover um produto. '
+            'As alterações são publicadas no canal de patrocínios.',
+            view=PatrocinioGerirView(), ephemeral=True)
 
     @discord.ui.button(label="Estatísticas", style=discord.ButtonStyle.success, row=2)
     async def estatisticas(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -17394,7 +17711,8 @@ async def painel_adm(interaction: discord.Interaction):
                          "🪙 **Carteira e Montra** — capa, destaques e publicação\n"
                          "🏆 **Status e Rankings** — três capas e publicação\n"
                          "🎮 **Gestão de Jogo** — operações na thread do jogo\n"
-                         "**Estatísticas** — cliques e jogadores únicos\n\n"
+                         "**Estatísticas** — cliques e jogadores únicos\n"
+                         "**Gerir Patrocínios** — ContractorHouse e produtos externos\n\n"
                          "🔒 *Acesso reservado à administração.*"),
             color=discord.Color.dark_gold()),
         view=CentralAdmView(), ephemeral=True)
