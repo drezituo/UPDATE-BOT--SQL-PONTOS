@@ -16344,4 +16344,147 @@ async def abrir_loja_admin(ctx):
     embed.set_footer(text="Este painel não altera a lógica de compras, créditos ou sorteios.")
     await ctx.send(embed=embed, view=PainelUnificadoLojaView(), delete_after=300)
 
+
+
+# ============================================================
+# CENTRAL DE ADMINISTRAÇÃO — /painel_adm
+# Acesso privado; atalhos reutilizam os fluxos administrativos.
+# ============================================================
+def _adm_autorizado(interaction: discord.Interaction) -> bool:
+    return bool(interaction.guild and isinstance(interaction.user, discord.Member)
+                and interaction.user.guild_permissions.administrator)
+
+
+class CentralAdmView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=600)
+
+    @discord.ui.button(label="Loja e Sorteios", emoji="🛍️", style=discord.ButtonStyle.primary)
+    async def loja(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message("⛔ Apenas administradores.", ephemeral=True)
+        await interaction.response.edit_message(
+            embed=discord.Embed(title="🛍️ Loja e Sorteios",
+                description="Adicionar, editar e gerir produtos e sorteios.", color=discord.Color.blurple()),
+            view=CentralAdmLojaView())
+
+    @discord.ui.button(label="Carteira e Montra", emoji="🪙", style=discord.ButtonStyle.primary)
+    async def carteira(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message("⛔ Apenas administradores.", ephemeral=True)
+        await interaction.response.edit_message(
+            embed=discord.Embed(title="🪙 Carteira e Montra",
+                description="Editar a capa, gerir destaques e publicar a Carteira.", color=discord.Color.blurple()),
+            view=CentralAdmCarteiraView())
+
+    @discord.ui.button(label="Status e Rankings", emoji="🏆", style=discord.ButtonStyle.secondary)
+    async def status(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message("⛔ Apenas administradores.", ephemeral=True)
+        await interaction.response.edit_message(
+            embed=discord.Embed(title="👤 Status e Rankings",
+                description="Editar as três capas e atualizar o painel de jogadores e equipas.", color=discord.Color.blurple()),
+            view=CentralAdmStatusView())
+
+    @discord.ui.button(label="Gestão de Jogo", emoji="🎮", style=discord.ButtonStyle.secondary)
+    async def jogo(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message("⛔ Apenas administradores.", ephemeral=True)
+        await interaction.response.edit_message(
+            embed=discord.Embed(title="🎮 Gestão de Jogo",
+                description="A gestão do jogo só pode ser aberta dentro da thread do jogo.", color=discord.Color.blurple()),
+            view=CentralAdmJogoView())
+
+
+class CentralAdmVoltarView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=600)
+
+    @discord.ui.button(label="Voltar ao menu", emoji="↩️", style=discord.ButtonStyle.secondary, row=4)
+    async def voltar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message("⛔ Apenas administradores.", ephemeral=True)
+        await interaction.response.edit_message(
+            embed=discord.Embed(title="⚙️ Central de Administração",
+                description="Seleciona a área que queres gerir.\n🔒 Painel privado — apenas administradores.",
+                color=discord.Color.dark_gold()), view=CentralAdmView())
+
+
+class CentralAdmLojaView(CentralAdmVoltarView):
+    @discord.ui.button(label="Abrir gestão da Loja", emoji="🛍️", style=discord.ButtonStyle.primary, row=0)
+    async def abrir(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message("⛔ Apenas administradores.", ephemeral=True)
+        await interaction.response.send_message(
+            "🛍️ **Gestão de Loja e Sorteios** — utiliza os botões abaixo.",
+            view=PainelUnificadoLojaView(), ephemeral=True)
+
+
+class CentralAdmCarteiraView(CentralAdmVoltarView):
+    @discord.ui.button(label="Editar Carteira", emoji="🖼️", style=discord.ButtonStyle.primary, row=0)
+    async def editar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message("⛔ Apenas administradores.", ephemeral=True)
+        await interaction.response.send_modal(EditarVisualCarteiraModal())
+
+    @discord.ui.button(label="Gerir Montra", emoji="🌟", style=discord.ButtonStyle.primary, row=0)
+    async def montra(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message("⛔ Apenas administradores.", ephemeral=True)
+        await gerir_montra_slash.callback(interaction)
+
+    @discord.ui.button(label="Publicar Carteira", emoji="🔄", style=discord.ButtonStyle.success, row=1)
+    async def publicar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message("⛔ Apenas administradores.", ephemeral=True)
+        await painel_carteira_slash.callback(interaction)
+
+
+class CentralAdmStatusView(CentralAdmVoltarView):
+    @discord.ui.button(label="Editar Capas e Textos", emoji="🖼️", style=discord.ButtonStyle.primary, row=0)
+    async def editar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message("⛔ Apenas administradores.", ephemeral=True)
+        await interaction.response.send_modal(EditarStatusVisualModal())
+
+    @discord.ui.button(label="Atualizar Status", emoji="🔄", style=discord.ButtonStyle.success, row=0)
+    async def publicar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message("⛔ Apenas administradores.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            msg = await garantir_painel_equipas_no_fundo(force_repost=True)
+            await interaction.followup.send(
+                f"✅ Painel Status atualizado{f' em {msg.channel.mention}' if msg else ''}.", ephemeral=True)
+        except Exception as exc:
+            print(f"[PAINEL ADM] Erro ao atualizar Status: {exc!r}")
+            await interaction.followup.send("❌ Não foi possível atualizar o Status. Consulta os logs.", ephemeral=True)
+
+
+class CentralAdmJogoView(CentralAdmVoltarView):
+    @discord.ui.button(label="Abrir Painel do Jogo", emoji="🎮", style=discord.ButtonStyle.primary, row=0)
+    async def abrir(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message("⛔ Apenas administradores.", ephemeral=True)
+        await painel_jogo.callback(interaction)
+
+
+@bot.tree.command(name="painel_adm", description="Central privada de administração do Stunhouse CQB")
+@app_commands.guild_only()
+@app_commands.default_permissions(administrator=True)
+@app_commands.checks.has_permissions(administrator=True)
+async def painel_adm(interaction: discord.Interaction):
+    if not _adm_autorizado(interaction):
+        return await interaction.response.send_message("⛔ Apenas administradores.", ephemeral=True)
+    await interaction.response.send_message(
+        embed=discord.Embed(title="⚙️ Central de Administração",
+            description=("Todos os painéis num único lugar.\n\n"
+                         "🛍️ **Loja e Sorteios** — produtos, sorteios e gestão de itens\n"
+                         "🪙 **Carteira e Montra** — capa, destaques e publicação\n"
+                         "🏆 **Status e Rankings** — três capas e publicação\n"
+                         "🎮 **Gestão de Jogo** — operações na thread do jogo\n\n"
+                         "🔒 *Acesso reservado à administração.*"),
+            color=discord.Color.dark_gold()),
+        view=CentralAdmView(), ephemeral=True)
+
 bot.run(TOKEN)
