@@ -17059,7 +17059,210 @@ class CentralAdmStatusView(CentralAdmVoltarView):
             await interaction.followup.send("❌ Não foi possível atualizar o Status. Consulta os logs.", ephemeral=True)
 
 
+
+# ============================================================
+# TORNEIOS POR EQUIPAS — inscrição exclusivamente administrativa
+# ============================================================
+def _torneio_equipa_db_sync():
+    conn = get_connection()
+    if conn is None:
+        raise RuntimeError("Base de dados indisponível")
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""CREATE TABLE IF NOT EXISTS torneios_equipas_config (
+                thread_id BIGINT PRIMARY KEY, limite INTEGER NOT NULL DEFAULT 6,
+                ativo BOOLEAN NOT NULL DEFAULT TRUE)""")
+            cur.execute("""CREATE TABLE IF NOT EXISTS torneios_equipas_inscricoes (
+                thread_id BIGINT NOT NULL REFERENCES torneios_equipas_config(thread_id) ON DELETE CASCADE,
+                equipa_id BIGINT NOT NULL REFERENCES equipas(id) ON DELETE CASCADE,
+                estado TEXT NOT NULL DEFAULT 'pendente',
+                inscrito_por BIGINT NOT NULL, inscrito_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                aprovado_por BIGINT, aprovado_em TIMESTAMPTZ,
+                presenca_por BIGINT, presenca_em TIMESTAMPTZ,
+                PRIMARY KEY(thread_id, equipa_id),
+                CONSTRAINT torneio_estado_valido CHECK (estado IN ('pendente','aprovada','presente','rejeitada'))
+            """)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _torneio_equipa_sync(operacao, thread_id, equipa_id=None, admin_id=None):
+    _torneio_equipa_db_sync()
+    conn = get_connection()
+    if conn is None:
+        raise RuntimeError("Base de dados indisponível")
+    try:
+        with conn.cursor() as cur:
+            if operacao == 'configurar':
+                cur.execute("""INSERT INTO torneios_equipas_config(thread_id,limite,ativo)
+                    VALUES (%s,6,TRUE) ON CONFLICT(thread_id)
+                    DO UPDATE SET ativo=TRUE""", (thread_id,))
+                resultado = 'Torneio configurado para inscrições por equipas (máximo de 6).'
+            elif operacao == 'listar':
+                cur.execute("SELECT limite,ativo FROM torneios_equipas_config WHERE thread_id=%s", (thread_id,))
+                config = cur.fetchone()
+                if not config or not config[1]:
+                    return None
+                cur.execute("""SELECT e.id,e.nome,COALESCE(i.estado,'nao_inscrita')
+                    FROM equipas e LEFT JOIN torneios_equipas_inscricoes i
+                    ON i.equipa_id=e.id AND i.thread_id=%s ORDER BY e.nome LIMIT 25""", (thread_id,))
+                return config[0], cur.fetchall()
+            else:
+                cur.execute("SELECT limite FROM torneios_equipas_config WHERE thread_id=%s AND ativo=TRUE FOR UPDATE", (thread_id,))
+                config = cur.fetchone()
+                if not config:
+                    raise ValueError('Configura primeiro o torneio por equipas.')
+                cur.execute("SELECT estado FROM torneios_equipas_inscricoes WHERE thread_id=%s AND equipa_id=%s FOR UPDATE", (thread_id,equipa_id))
+                atual = cur.fetchone()
+                estado = atual[0] if atual else None
+                if operacao == 'inscrever':
+                    if estado in ('pendente','aprovada','presente'):
+                        raise ValueError('Esta equipa já está inscrita.')
+                    cur.execute("""SELECT COUNT(*) FROM torneios_equipas_inscricoes
+                        WHERE thread_id=%s AND estado IN ('pendente','aprovada','presente')""", (thread_id,))
+                    if cur.fetchone()[0] >= config[0]:
+                        raise ValueError('O torneio já atingiu o limite de equipas.')
+                    cur.execute("""INSERT INTO torneios_equipas_inscricoes
+                        (thread_id,equipa_id,estado,inscrito_por) VALUES (%s,%s,'pendente',%s)
+                        ON CONFLICT(thread_id,equipa_id) DO UPDATE SET estado='pendente',
+                        inscrito_por=EXCLUDED.inscrito_por, inscrito_em=NOW(),
+                        aprovado_por=NULL,aprovado_em=NULL,presenca_por=NULL,presenca_em=NULL""",
+                        (thread_id,equipa_id,admin_id))
+                    resultado='Inscrição registada e pendente de aprovação.'
+                elif operacao == 'aprovar':
+                    if estado != 'pendente':
+                        raise ValueError('Só podes aprovar inscrições pendentes.')
+                    cur.execute("""UPDATE torneios_equipas_inscricoes SET estado='aprovada',
+                        aprovado_por=%s,aprovado_em=NOW() WHERE thread_id=%s AND equipa_id=%s""",
+                        (admin_id,thread_id,equipa_id))
+                    resultado='Equipa aprovada.'
+                elif operacao == 'presenca':
+                    if estado != 'aprovada':
+                        raise ValueError('Só podes confirmar presença de equipas aprovadas.')
+                    cur.execute("""UPDATE torneios_equipas_inscricoes SET estado='presente',
+                        presenca_por=%s,presenca_em=NOW() WHERE thread_id=%s AND equipa_id=%s""",
+                        (admin_id,thread_id,equipa_id))
+                    resultado='Presença da equipa confirmada.'
+                elif operacao == 'rejeitar':
+                    if estado not in ('pendente','aprovada','presente'):
+                        raise ValueError('A equipa não tem uma inscrição ativa.')
+                    cur.execute("""UPDATE torneios_equipas_inscricoes SET estado='rejeitada',
+                        presenca_por=NULL,presenca_em=NULL WHERE thread_id=%s AND equipa_id=%s""",
+                        (thread_id,equipa_id))
+                    resultado='Inscrição rejeitada/cancelada; vaga libertada.'
+                else:
+                    raise ValueError('Operação inválida.')
+        conn.commit()
+        return resultado
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _torneio_equipas_embed(thread_id, dados):
+    limite, rows = dados
+    inscritos = [r for r in rows if r[2] in ('pendente','aprovada','presente')]
+    presentes = sum(r[2]=='presente' for r in inscritos)
+    embed=discord.Embed(title='SHL 5X5 — Gestão de Equipas',
+        description=f'Thread: <#{thread_id}>\nEquipas: **{len(inscritos)}/{limite}** · Vagas: **{max(0,limite-len(inscritos))}** · Presenças: **{presentes}/{len(inscritos)}**',
+        color=discord.Color.blurple())
+    texto='\n'.join(f'**{discord.utils.escape_markdown(str(nome))}** — {estado}'
+        for _,nome,estado in rows if estado!='nao_inscrita')
+    embed.add_field(name='Inscrições',value=(texto[:1024] if texto else 'Sem equipas inscritas.'),inline=False)
+    embed.set_footer(text='Apenas administração · Inscrição → Aprovação → Presença')
+    return embed
+
+
+class TorneioEquipaAcaoSelect(discord.ui.Select):
+    def __init__(self, thread_id, rows):
+        self.thread_id=thread_id
+        options=[discord.SelectOption(label=str(nome)[:90],value=str(eid),description=estado[:90])
+                 for eid,nome,estado in rows[:25]]
+        super().__init__(placeholder='Selecionar equipa',options=options, min_values=1,max_values=1)
+
+    async def callback(self, interaction):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message('Apenas administradores.',ephemeral=True)
+        await interaction.response.edit_message(view=TorneioEquipaOperacoesView(self.thread_id,int(self.values[0])))
+
+
+class TorneioEquipaOperacoesView(discord.ui.View):
+    def __init__(self,thread_id,equipa_id):
+        super().__init__(timeout=600)
+        self.thread_id=thread_id
+        self.equipa_id=equipa_id
+
+    async def executar(self,interaction,operacao):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message('Apenas administradores.',ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        try:
+            msg=await asyncio.to_thread(_torneio_equipa_sync,operacao,self.thread_id,self.equipa_id,interaction.user.id)
+            dados=await asyncio.to_thread(_torneio_equipa_sync,'listar',self.thread_id)
+            await interaction.edit_original_response(content=msg,embed=_torneio_equipas_embed(self.thread_id,dados),view=TorneioEquipaView(self.thread_id,dados[1]))
+        except Exception as exc:
+            await interaction.followup.send(f'Não foi possível concluir: {exc}',ephemeral=True)
+
+    @discord.ui.button(label='Inscrever',style=discord.ButtonStyle.primary)
+    async def inscrever(self,interaction,button): await self.executar(interaction,'inscrever')
+
+    @discord.ui.button(label='Aprovar',style=discord.ButtonStyle.success)
+    async def aprovar(self,interaction,button): await self.executar(interaction,'aprovar')
+
+    @discord.ui.button(label='Confirmar Presença',style=discord.ButtonStyle.success)
+    async def presenca(self,interaction,button): await self.executar(interaction,'presenca')
+
+    @discord.ui.button(label='Rejeitar / Cancelar',style=discord.ButtonStyle.danger)
+    async def rejeitar(self,interaction,button): await self.executar(interaction,'rejeitar')
+
+    @discord.ui.button(label='Voltar',style=discord.ButtonStyle.secondary)
+    async def voltar(self,interaction,button):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message('Apenas administradores.',ephemeral=True)
+        dados=await asyncio.to_thread(_torneio_equipa_sync,'listar',self.thread_id)
+        await interaction.response.edit_message(content=None,embed=_torneio_equipas_embed(self.thread_id,dados),view=TorneioEquipaView(self.thread_id,dados[1]))
+
+
+class TorneioEquipaView(discord.ui.View):
+    def __init__(self,thread_id,rows):
+        super().__init__(timeout=600)
+        if rows:
+            self.add_item(TorneioEquipaAcaoSelect(thread_id,rows))
+
+
+class TorneioEquipaThreadModal(discord.ui.Modal,title='Gestão do torneio por equipas'):
+    thread_id=discord.ui.TextInput(label='ID da thread do SHL 5X5',placeholder='ID numérico da thread',min_length=15,max_length=22)
+
+    async def on_submit(self,interaction):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message('Apenas administradores.',ephemeral=True)
+        try:
+            tid=int(str(self.thread_id.value).strip())
+            thread=interaction.guild.get_thread(tid)
+            if thread is None:
+                thread=await interaction.guild.fetch_channel(tid)
+            if not isinstance(thread,discord.Thread):
+                return await interaction.response.send_message('O ID indicado não corresponde a uma thread.',ephemeral=True)
+        except (ValueError,discord.DiscordException):
+            return await interaction.response.send_message('Thread inválida ou inacessível.',ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        try:
+            await asyncio.to_thread(_torneio_equipa_sync,'configurar',tid)
+            dados=await asyncio.to_thread(_torneio_equipa_sync,'listar',tid)
+            await interaction.followup.send(embed=_torneio_equipas_embed(tid,dados),view=TorneioEquipaView(tid,dados[1]),ephemeral=True)
+        except Exception as exc:
+            await interaction.followup.send(f'Erro na gestão do torneio: {exc}',ephemeral=True)
+
 class CentralAdmJogoView(CentralAdmVoltarView):
+    @discord.ui.button(label='SHL 5X5 — Equipas e Presenças',style=discord.ButtonStyle.success,row=1)
+    async def torneio_equipas(self,interaction:discord.Interaction,button:discord.ui.Button):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message('Apenas administradores.',ephemeral=True)
+        await interaction.response.send_modal(TorneioEquipaThreadModal())
+
     @discord.ui.button(label="Abrir Painel do Jogo", emoji="🎮", style=discord.ButtonStyle.primary, row=0)
     async def abrir(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not _adm_autorizado(interaction):
