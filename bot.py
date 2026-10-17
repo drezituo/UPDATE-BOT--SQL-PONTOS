@@ -14523,6 +14523,139 @@ class CompraDestaqueCarteiraButton(discord.ui.Button):
             view=ComprarProdutoView(item_id, interaction.user.id), ephemeral=True)
 
 
+# FLYERS PROMOCIONAIS — até dois, persistidos no PostgreSQL.
+def obter_flyers_carteira():
+    conn = get_connection()
+    if not conn:
+        return []
+    cur = conn.cursor()
+    try:
+        cur.execute("""CREATE TABLE IF NOT EXISTS carteira_flyers (
+            slot SMALLINT PRIMARY KEY CHECK (slot IN (1,2)),
+            titulo VARCHAR(100) NOT NULL,
+            descricao VARCHAR(500),
+            imagem_url TEXT NOT NULL,
+            botao_texto VARCHAR(80),
+            botao_url TEXT,
+            ativo BOOLEAN NOT NULL DEFAULT TRUE
+        )""")
+        conn.commit()
+        cur.execute("SELECT slot,titulo,descricao,imagem_url,botao_texto,botao_url FROM carteira_flyers WHERE ativo=TRUE ORDER BY slot")
+        return cur.fetchall()
+    except Exception as exc:
+        conn.rollback()
+        print(f"[CARTEIRA] Erro ao carregar flyers: {exc!r}")
+        return []
+    finally:
+        cur.close(); conn.close()
+
+
+class EditarFlyerCarteiraModal(discord.ui.Modal):
+    titulo = discord.ui.TextInput(label="Título", max_length=100)
+    descricao = discord.ui.TextInput(label="Descrição", style=discord.TextStyle.paragraph, max_length=500, required=False)
+    imagem = discord.ui.TextInput(label="URL da imagem do flyer", max_length=1000)
+    botao = discord.ui.TextInput(label="Texto do botão (opcional)", max_length=80, required=False)
+    link = discord.ui.TextInput(label="URL do botão (opcional)", max_length=1000, required=False)
+
+    def __init__(self, slot):
+        super().__init__(title=f"Editar flyer promocional {slot}")
+        self.slot = slot
+        conn = get_connection()
+        if conn:
+            cur = conn.cursor()
+            try:
+                cur.execute("SELECT titulo,descricao,imagem_url,botao_texto,botao_url FROM carteira_flyers WHERE slot=%s", (slot,))
+                dados = cur.fetchone()
+                if dados:
+                    for campo, valor in zip((self.titulo,self.descricao,self.imagem,self.botao,self.link), dados):
+                        if valor: campo.default = str(valor)
+            except Exception:
+                conn.rollback()
+            finally:
+                cur.close(); conn.close()
+
+    async def on_submit(self, interaction):
+        import urllib.parse
+        imagem = str(self.imagem).strip()
+        link = str(self.link).strip()
+        botao = str(self.botao).strip()
+        def url_valido(url):
+            parsed = urllib.parse.urlsplit(url)
+            return parsed.scheme in ('http','https') and bool(parsed.netloc)
+        if not url_valido(imagem):
+            return await interaction.response.send_message("⚠️ Introduz um URL HTTPS/HTTP válido para a imagem.", ephemeral=True)
+        if bool(botao) != bool(link) or (link and not url_valido(link)):
+            return await interaction.response.send_message("⚠️ Para ter botão, preenche o texto e um URL válido. Ou deixa ambos vazios.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        conn = get_connection()
+        if not conn:
+            return await interaction.followup.send("❌ Sem ligação à base de dados.", ephemeral=True)
+        cur = conn.cursor()
+        try:
+            cur.execute("""INSERT INTO carteira_flyers(slot,titulo,descricao,imagem_url,botao_texto,botao_url,ativo)
+                VALUES (%s,%s,%s,%s,%s,%s,TRUE)
+                ON CONFLICT(slot) DO UPDATE SET titulo=EXCLUDED.titulo,descricao=EXCLUDED.descricao,
+                imagem_url=EXCLUDED.imagem_url,botao_texto=EXCLUDED.botao_texto,
+                botao_url=EXCLUDED.botao_url,ativo=TRUE""",
+                (self.slot,str(self.titulo).strip(),str(self.descricao).strip(),imagem,botao or None,link or None))
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            print(f"[CARTEIRA] Erro ao guardar flyer: {exc!r}")
+            return await interaction.followup.send("❌ Não foi possível guardar o flyer.", ephemeral=True)
+        finally:
+            cur.close(); conn.close()
+        try:
+            await garantir_painel_carteira_no_fundo()
+            await interaction.followup.send(f"✅ Flyer {self.slot} guardado e Carteira atualizada.", ephemeral=True)
+        except Exception as exc:
+            print(f"[CARTEIRA] Erro ao atualizar painel após flyer: {exc!r}")
+            await interaction.followup.send("✅ Flyer guardado. Atualiza a Carteira com /painel_carteira.", ephemeral=True)
+
+
+class GerirFlyersCarteiraView(discord.ui.View):
+    def __init__(self): super().__init__(timeout=300)
+
+    @discord.ui.button(label="Editar flyer 1", emoji="🖼️", style=discord.ButtonStyle.primary)
+    async def flyer1(self, interaction, button):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message("⛔ Apenas administradores.", ephemeral=True)
+        await interaction.response.send_modal(EditarFlyerCarteiraModal(1))
+
+    @discord.ui.button(label="Editar flyer 2", emoji="🖼️", style=discord.ButtonStyle.primary)
+    async def flyer2(self, interaction, button):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message("⛔ Apenas administradores.", ephemeral=True)
+        await interaction.response.send_modal(EditarFlyerCarteiraModal(2))
+
+    @discord.ui.button(label="Remover flyer 1", style=discord.ButtonStyle.danger, row=1)
+    async def remover1(self, interaction, button):
+        await self.remover(interaction, 1)
+
+    @discord.ui.button(label="Remover flyer 2", style=discord.ButtonStyle.danger, row=1)
+    async def remover2(self, interaction, button):
+        await self.remover(interaction, 2)
+
+    async def remover(self, interaction, slot):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message("⛔ Apenas administradores.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        conn = get_connection()
+        if not conn:
+            return await interaction.followup.send("❌ Sem ligação à base de dados.", ephemeral=True)
+        cur = conn.cursor()
+        try:
+            cur.execute("DELETE FROM carteira_flyers WHERE slot=%s", (slot,))
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            return await interaction.followup.send(f"❌ Erro ao remover: {type(exc).__name__}", ephemeral=True)
+        finally:
+            cur.close(); conn.close()
+        await garantir_painel_carteira_no_fundo()
+        await interaction.followup.send(f"✅ Flyer {slot} removido.", ephemeral=True)
+
+
 class PainelCarteiraV2View(discord.ui.LayoutView):
     """Painel público V2; mantém os mesmos IDs e callbacks das ações existentes."""
     def __init__(self):
@@ -14533,8 +14666,28 @@ class PainelCarteiraV2View(discord.ui.LayoutView):
         imagem_capa = url_imagem_carteira(capa_url)
         if imagem_capa:
             painel.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media=imagem_capa)))
-        painel.add_item(discord.ui.TextDisplay("🌟 **Conteúdo destacado**"))
-        if destaques:
+        flyers = obter_flyers_carteira()
+        if flyers:
+            painel.add_item(discord.ui.TextDisplay("📢 **Destaques**"))
+            painel.add_item(discord.ui.MediaGallery(*[
+                discord.MediaGalleryItem(media=flyer[3]) for flyer in flyers
+            ]))
+            painel.add_item(discord.ui.TextDisplay("\n".join(
+                f"**{flyer[0]}. {discord.utils.escape_markdown(flyer[1])}**"
+                + (f" — {discord.utils.escape_markdown(flyer[2])}" if flyer[2] else "")
+                for flyer in flyers
+            )))
+            linha_flyers = discord.ui.ActionRow()
+            for flyer in flyers:
+                if flyer[4] and flyer[5]:
+                    linha_flyers.add_item(discord.ui.Button(
+                        label=f"{flyer[0]} · {flyer[4]}",
+                        style=discord.ButtonStyle.link, url=flyer[5]))
+            if linha_flyers.children:
+                painel.add_item(linha_flyers)
+        else:
+            painel.add_item(discord.ui.TextDisplay("🌟 **Conteúdo destacado**"))
+        if not flyers and destaques:
             # Uma única galeria mostra até três fotografias lado a lado.
             # A ordem das legendas e dos botões corresponde à ordem da galeria.
             imagens = [discord.MediaGalleryItem(media=d[4]) for d in destaques
@@ -14549,9 +14702,9 @@ class PainelCarteiraV2View(discord.ui.LayoutView):
                 linha_compra.add_item(CompraDestaqueCarteiraButton(
                     posicao, "sorteio" if destaque[3] == "sorteio" else "produto"))
             painel.add_item(linha_compra)
-        elif destaque_texto and destaque_texto.strip():
+        elif not flyers and destaque_texto and destaque_texto.strip():
             painel.add_item(discord.ui.TextDisplay(destaque_texto.strip()[:1800]))
-        else:
+        elif not flyers:
             painel.add_item(discord.ui.TextDisplay("Em breve, novo conteúdo em destaque."))
         painel.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
         # A opção "ocultar novidades" não mostra sequer o título nem conteúdo antigo.
@@ -16421,6 +16574,16 @@ class CentralAdmLojaView(CentralAdmVoltarView):
 
 
 class CentralAdmCarteiraView(CentralAdmVoltarView):
+    @discord.ui.button(label="Gerir Flyers", emoji="📢", style=discord.ButtonStyle.primary, row=1)
+    async def flyers(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message("⛔ Apenas administradores.", ephemeral=True)
+        await interaction.response.send_message(
+            "📢 **Flyers promocionais** — máximo de 2, lado a lado. "
+            "Configura uma imagem, título, descrição e botão com ligação para cada flyer. "
+            "Os destaques antigos reaparecem se removeres ambos.",
+            view=GerirFlyersCarteiraView(), ephemeral=True)
+
     @discord.ui.button(label="Editar Carteira", emoji="🖼️", style=discord.ButtonStyle.primary, row=0)
     async def editar(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not _adm_autorizado(interaction):
