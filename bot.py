@@ -1635,6 +1635,8 @@ async def on_ready():
     await carregar_views_termos_pendentes()
     await garantir_painel_equipas_no_fundo()
     await garantir_painel_carteira_no_fundo()
+    bot.add_view(EstatisticasCanalView())
+    await garantir_painel_estatisticas_canal()
 
     if not verificar_inscricoes.is_running():
         verificar_inscricoes.start()
@@ -1678,6 +1680,9 @@ async def on_message(message):
 
     print(f"[MSG] {message.author} em #{message.channel}: {message.content}")
     await bot.process_commands(message)
+
+    if message.channel.id == ESTATISTICAS_CANAL_ID:
+        await garantir_painel_estatisticas_canal(force_repost=True)
 
     # Mantém o painel de equipas sempre como a última mensagem do canal configurado.
     if message.channel.id == EQUIPAS_PANEL_CHANNEL_ID:
@@ -16616,6 +16621,305 @@ async def abrir_loja_admin(ctx):
 
 
 # ============================================================
+# ANALYTICS — apenas interações recebidas pelo bot.
+# Botões de URL abrem diretamente e NÃO geram eventos contabilizáveis.
+# ============================================================
+_ANALYTICS_DB_READY = False
+_ANALYTICS_INIT_LOCK = asyncio.Lock()
+
+
+def _analytics_criar_tabela_sync():
+    conn = get_connection()
+    if conn is None:
+        raise RuntimeError("Base de dados indisponível")
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS painel_analytics_cliques (
+                    id BIGSERIAL PRIMARY KEY,
+                    guild_id BIGINT NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    area TEXT NOT NULL,
+                    botao TEXT NOT NULL,
+                    registado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_painel_analytics_guild_data
+                ON painel_analytics_cliques (guild_id, registado_em)
+            """)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+async def _analytics_preparar_db():
+    global _ANALYTICS_DB_READY
+    if _ANALYTICS_DB_READY:
+        return
+    async with _ANALYTICS_INIT_LOCK:
+        if not _ANALYTICS_DB_READY:
+            await asyncio.to_thread(_analytics_criar_tabela_sync)
+            _ANALYTICS_DB_READY = True
+
+
+def _analytics_classificar(custom_id):
+    """Só botões e menus de utilizadores; ignora modais e gestão administrativa."""
+    if not custom_id or not isinstance(custom_id, str):
+        return None
+    prefixos = {
+        "carteira:": "Carteira e Loja",
+        "inscricoes:": "Jogos e Inscrições",
+        "inscricoes_v2:": "Jogos e Inscrições",
+        "equipas:": "Status e Equipas",
+    }
+    for prefixo, area in prefixos.items():
+        if custom_id.startswith(prefixo):
+            return area, custom_id[:160]
+    return None
+
+
+def _analytics_registar_sync(guild_id, user_id, area, botao):
+    conn = get_connection()
+    if conn is None:
+        raise RuntimeError("Base de dados indisponível")
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO painel_analytics_cliques (guild_id, user_id, area, botao) "
+                "VALUES (%s, %s, %s, %s)",
+                (guild_id, user_id, area, botao),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@bot.listen("on_interaction")
+async def _analytics_ouvir_interacoes(interaction: discord.Interaction):
+    # Não substitui o processamento normal das interações do discord.py.
+    if not interaction.guild_id or interaction.type != discord.InteractionType.component:
+        return
+    dados = interaction.data or {}
+    if dados.get("component_type") not in (2, 3, 5, 6, 7, 8):
+        return
+    classificacao = _analytics_classificar(dados.get("custom_id"))
+    if not classificacao:
+        return
+    try:
+        await _analytics_preparar_db()
+        await asyncio.to_thread(
+            _analytics_registar_sync, interaction.guild_id, interaction.user.id, *classificacao
+        )
+    except Exception as exc:
+        # Uma falha nas métricas nunca deve impedir inscrições ou compras.
+        print(f"[ANALYTICS] Não foi possível registar interação: {exc!r}")
+
+
+def _analytics_resumo_sync(guild_id, dias):
+    conn = get_connection()
+    if conn is None:
+        raise RuntimeError("Base de dados indisponível")
+    try:
+        with conn.cursor() as cur:
+            filtro = "AND registado_em >= NOW() - (%s * INTERVAL '1 day')" if dias else ""
+            params = (guild_id, dias) if dias else (guild_id,)
+            cur.execute(
+                "SELECT COUNT(*), COUNT(DISTINCT user_id) FROM painel_analytics_cliques "
+                f"WHERE guild_id = %s {filtro}", params)
+            total, unicos = cur.fetchone()
+            cur.execute(
+                "SELECT area, COUNT(*) FROM painel_analytics_cliques "
+                f"WHERE guild_id = %s {filtro} GROUP BY area ORDER BY COUNT(*) DESC", params)
+            areas = cur.fetchall()
+            cur.execute(
+                "SELECT botao, COUNT(*), COUNT(DISTINCT user_id) "
+                "FROM painel_analytics_cliques "
+                f"WHERE guild_id = %s {filtro} "
+                "GROUP BY botao ORDER BY COUNT(*) DESC LIMIT 10", params)
+            botoes = cur.fetchall()
+        return total, unicos, areas, botoes
+    finally:
+        conn.close()
+
+
+def _analytics_embed(dias, resumo):
+    total, unicos, areas, botoes = resumo
+    periodo = f"Últimos {dias} dias" if dias else "Desde a ativação"
+    embed = discord.Embed(title="Estatísticas de Interações", color=discord.Color.blurple())
+    embed.description = (
+        f"**Período:** {periodo}\n"
+        f"**Interações registadas:** {total:,}\n"
+        f"**Jogadores únicos:** {unicos:,}"
+    )
+    embed.add_field(name="Por área", value="\n".join(
+        f"**{discord.utils.escape_markdown(area)}:** {n:,}" for area, n in areas
+    )[:1024] or "Sem dados ainda.", inline=False)
+    embed.add_field(name="Botões mais utilizados", value="\n".join(
+        f"**{discord.utils.escape_markdown(botao)}:** {n:,} cliques · {u:,} jogadores"
+        for botao, n, u in botoes
+    )[:1024] or "Sem dados ainda.", inline=False)
+    embed.set_footer(text=(
+        "Só interações recebidas pelo bot. Botões de ligação direta não são contados. "
+        "Os valores começam na instalação desta versão."
+    ))
+    return embed
+
+
+class CentralAdmEstatisticasView(discord.ui.View):
+    def __init__(self, dias=7):
+        super().__init__(timeout=600)
+        self.dias = dias
+
+    @discord.ui.select(placeholder="Escolher período", options=[
+        discord.SelectOption(label="Últimos 7 dias", value="7"),
+        discord.SelectOption(label="Últimos 30 dias", value="30"),
+        discord.SelectOption(label="Desde a ativação", value="0"),
+    ])
+    async def periodo(self, interaction: discord.Interaction, select: discord.ui.Select):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message("Apenas administradores.", ephemeral=True)
+        self.dias = int(select.values[0])
+        await self._atualizar(interaction)
+
+    @discord.ui.button(label="Atualizar estatísticas", style=discord.ButtonStyle.primary)
+    async def atualizar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message("Apenas administradores.", ephemeral=True)
+        await self._atualizar(interaction)
+
+    async def _atualizar(self, interaction):
+        await interaction.response.defer()
+        try:
+            await _analytics_preparar_db()
+            resumo = await asyncio.to_thread(_analytics_resumo_sync, interaction.guild_id, self.dias)
+            await interaction.edit_original_response(
+                embed=_analytics_embed(self.dias, resumo), view=self)
+        except Exception as exc:
+            print(f"[ANALYTICS] Erro a consultar métricas: {exc!r}")
+            await interaction.followup.send("Não foi possível consultar as estatísticas.", ephemeral=True)
+
+    @discord.ui.button(label="Voltar ao menu", style=discord.ButtonStyle.secondary)
+    async def voltar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message("Apenas administradores.", ephemeral=True)
+        await interaction.response.edit_message(
+            embed=discord.Embed(title="Central de Administração",
+                                description="Seleciona a área que queres gerir.",
+                                color=discord.Color.dark_gold()), view=CentralAdmView())
+
+
+# ============================================================
+# PAINEL FIXO DE ESTATÍSTICAS NO CANAL ADMINISTRATIVO
+# ============================================================
+ESTATISTICAS_CANAL_ID = 1458654762885972131
+_estatisticas_canal_lock = asyncio.Lock()
+
+
+def _estatisticas_msg_id_sync():
+    conn = get_connection()
+    if conn is None:
+        raise RuntimeError("Base de dados indisponível")
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""CREATE TABLE IF NOT EXISTS painel_analytics_canal (
+                canal_id BIGINT PRIMARY KEY,
+                mensagem_id BIGINT NOT NULL
+            )""")
+            cur.execute("SELECT mensagem_id FROM painel_analytics_canal WHERE canal_id=%s",
+                        (ESTATISTICAS_CANAL_ID,))
+            row = cur.fetchone()
+        conn.commit()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def _estatisticas_guardar_msg_id_sync(message_id):
+    conn = get_connection()
+    if conn is None:
+        raise RuntimeError("Base de dados indisponível")
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""INSERT INTO painel_analytics_canal(canal_id, mensagem_id)
+                VALUES (%s,%s) ON CONFLICT(canal_id) DO UPDATE
+                SET mensagem_id=EXCLUDED.mensagem_id""",
+                (ESTATISTICAS_CANAL_ID, message_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+class EstatisticasCanalView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Atualizar", style=discord.ButtonStyle.primary,
+                       custom_id="analytics_canal:atualizar")
+    async def atualizar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _adm_autorizado(interaction):
+            await interaction.response.send_message(
+                "Apenas administradores podem atualizar estas estatísticas.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            await _analytics_preparar_db()
+            resumo = await asyncio.to_thread(_analytics_resumo_sync, interaction.guild_id, 7)
+            await interaction.message.edit(embed=_analytics_embed(7, resumo),
+                                           view=EstatisticasCanalView())
+            await interaction.followup.send("Estatísticas atualizadas.", ephemeral=True)
+        except Exception as exc:
+            print(f"[ANALYTICS CANAL] Erro ao atualizar: {exc!r}")
+            await interaction.followup.send("Não foi possível atualizar as estatísticas.", ephemeral=True)
+
+
+async def garantir_painel_estatisticas_canal(force_repost=False):
+    async with _estatisticas_canal_lock:
+        canal = bot.get_channel(ESTATISTICAS_CANAL_ID)
+        if canal is None:
+            try:
+                canal = await bot.fetch_channel(ESTATISTICAS_CANAL_ID)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+                print(f"[ANALYTICS CANAL] Canal inacessível: {exc!r}")
+                return
+        if not isinstance(canal, discord.TextChannel):
+            print("[ANALYTICS CANAL] O ID não corresponde a um canal de texto.")
+            return
+        try:
+            await _analytics_preparar_db()
+            msg_id = await asyncio.to_thread(_estatisticas_msg_id_sync)
+            anterior = None
+            if msg_id:
+                try:
+                    anterior = await canal.fetch_message(msg_id)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    pass
+            if anterior and not force_repost:
+                ultima = [m async for m in canal.history(limit=1)]
+                if ultima and ultima[0].id == anterior.id:
+                    resumo = await asyncio.to_thread(_analytics_resumo_sync, canal.guild.id, 7)
+                    await anterior.edit(embed=_analytics_embed(7, resumo),
+                                        view=EstatisticasCanalView())
+                    return
+            resumo = await asyncio.to_thread(_analytics_resumo_sync, canal.guild.id, 7)
+            nova = await canal.send(embed=_analytics_embed(7, resumo),
+                                    view=EstatisticasCanalView())
+            await asyncio.to_thread(_estatisticas_guardar_msg_id_sync, nova.id)
+            # Afixar na lista de mensagens afixadas, para acesso pelo topo do canal.
+            try:
+                await nova.pin(reason="Painel permanente de estatísticas Stunhouse CQB")
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+            if anterior:
+                try:
+                    await anterior.delete()
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    pass
+        except Exception as exc:
+            print(f"[ANALYTICS CANAL] Erro ao publicar painel: {exc!r}")
+
+
+# ============================================================
 # CENTRAL DE ADMINISTRAÇÃO — /painel_adm
 # Acesso privado; atalhos reutilizam os fluxos administrativos.
 # ============================================================
@@ -16627,6 +16931,21 @@ def _adm_autorizado(interaction: discord.Interaction) -> bool:
 class CentralAdmView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=600)
+
+    @discord.ui.button(label="Estatísticas", style=discord.ButtonStyle.success, row=2)
+    async def estatisticas(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message("Apenas administradores.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        try:
+            await _analytics_preparar_db()
+            resumo = await asyncio.to_thread(_analytics_resumo_sync, interaction.guild_id, 7)
+            await interaction.followup.send(
+                embed=_analytics_embed(7, resumo),
+                view=CentralAdmEstatisticasView(7), ephemeral=True)
+        except Exception as exc:
+            print(f"[ANALYTICS] Erro no painel: {exc!r}")
+            await interaction.followup.send("Não foi possível carregar as estatísticas.", ephemeral=True)
 
     @discord.ui.button(label="Loja e Sorteios", emoji="🛍️", style=discord.ButtonStyle.primary)
     async def loja(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -16761,7 +17080,8 @@ async def painel_adm(interaction: discord.Interaction):
                          "🛍️ **Loja e Sorteios** — produtos, sorteios e gestão de itens\n"
                          "🪙 **Carteira e Montra** — capa, destaques e publicação\n"
                          "🏆 **Status e Rankings** — três capas e publicação\n"
-                         "🎮 **Gestão de Jogo** — operações na thread do jogo\n\n"
+                         "🎮 **Gestão de Jogo** — operações na thread do jogo\n"
+                         "**Estatísticas** — cliques e jogadores únicos\n\n"
                          "🔒 *Acesso reservado à administração.*"),
             color=discord.Color.dark_gold()),
         view=CentralAdmView(), ephemeral=True)
