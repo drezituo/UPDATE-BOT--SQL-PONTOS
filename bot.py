@@ -1662,6 +1662,37 @@ async def on_ready():
     bot.add_view(EstatisticasCanalView())
     await garantir_painel_estatisticas_canal()
 
+    # Recria os painéis públicos dos torneios por equipas após o deploy.
+    # Mensagens antigas do Discord não mudam só por alterar o código.
+    if not getattr(bot, "_torneios_equipas_atualizados_no_arranque", False):
+        bot._torneios_equipas_atualizados_no_arranque = True
+        try:
+            def _threads_torneios_ativos():
+                conn = get_connection()
+                if conn is None:
+                    return []
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT to_regclass('public.torneios_equipas_config')")
+                        if cur.fetchone()[0] is None:
+                            return []
+                        cur.execute("SELECT thread_id FROM torneios_equipas_config WHERE ativo=TRUE")
+                        return [int(row[0]) for row in cur.fetchall()]
+                finally:
+                    conn.close()
+
+            for thread_id in await asyncio.to_thread(_threads_torneios_ativos):
+                try:
+                    thread = bot.get_channel(thread_id)
+                    if thread is None:
+                        thread = await bot.fetch_channel(thread_id)
+                    if isinstance(thread, discord.Thread):
+                        await atualizar_embed_estado(thread)
+                except Exception as exc:
+                    print(f"[TORNEIO EQUIPAS] Não foi possível renovar painel {thread_id}: {exc!r}")
+        except Exception as exc:
+            print(f"[TORNEIO EQUIPAS] Erro na atualização inicial: {exc!r}")
+
     if not verificar_inscricoes.is_running():
         verificar_inscricoes.start()
 
@@ -2097,11 +2128,9 @@ class BotaoVerEquipasJogoV2(discord.ui.Button):
             torneio = await asyncio.to_thread(obter_equipas_torneio_publico_sync, interaction.channel.id)
             if torneio is not None:
                 limite, equipas = torneio
-                presentes = sum(estado == 'presente' for _, estado in equipas)
                 embed = discord.Embed(
                     title="Equipas do Torneio",
-                    description=(f"**{len(equipas)}/{limite}** equipas inscritas · "
-                                 f"**{presentes}** presenças confirmadas"),
+                    description=f"**{len(equipas)}/{limite}** equipas inscritas",
                     color=discord.Color.green())
                 if equipas:
                     embed.add_field(
