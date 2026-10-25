@@ -1658,6 +1658,8 @@ async def on_ready():
     bot.add_view(DevolucaoStaffView())
     await carregar_views_termos_pendentes()
     await garantir_painel_equipas_no_fundo()
+    if not atualizar_ranking_status_automaticamente.is_running():
+        atualizar_ranking_status_automaticamente.start()
     await garantir_painel_carteira_no_fundo()
     # Botão persistente do perfil no painel de patrocínio.
     _patro_persistente = discord.ui.View(timeout=None)
@@ -6227,6 +6229,38 @@ async def comando_painel_equipas(ctx, tipo: str = "equipas"):
     )
 
 
+# Verifica alterações reais ao Top 5 sem publicar mensagens repetidas.
+# A primeira verificação ocorre após o arranque; depois, a cada minuto.
+@tasks.loop(minutes=1)
+async def atualizar_ranking_status_automaticamente():
+    try:
+        canal = await obter_canal_painel_equipas()
+        if canal is None:
+            return
+        jogadores, equipas = await asyncio.to_thread(obter_rankings_hall_of_fame_sync)
+        assinatura = (
+            tuple((int(uid), int(pontos)) for uid, pontos in jogadores),
+            tuple((nome, int(pontos), logo or "") for nome, pontos, logo in equipas),
+        )
+        # Também confirma se o painel ainda existe, mesmo que os pontos não mudem.
+        mensagem_id = await asyncio.to_thread(obter_mensagem_painel_equipas_sync)
+        if assinatura == getattr(bot, "_assinatura_ranking_status", None) and mensagem_id:
+            return
+        # A função existente edita a mensagem quando está no fundo do canal.
+        # Se for preciso, republica-a para manter o comportamento original.
+        await garantir_painel_equipas_no_fundo()
+        bot._assinatura_ranking_status = assinatura
+        print("[STATUS] Top 5 jogadores/equipas sincronizado automaticamente.")
+    except Exception as exc:
+        print(f"[STATUS] Erro na atualização automática: {exc!r}")
+        traceback.print_exc()
+
+
+@atualizar_ranking_status_automaticamente.before_loop
+async def aguardar_bot_para_atualizar_status():
+    await bot.wait_until_ready()
+
+
 async def criar_painel_hall_view(guild):
     jogadores,equipas=await asyncio.to_thread(obter_rankings_hall_of_fame_sync)
     return PainelEquipasHallV2View(jogadores,equipas,guild),[]
@@ -6238,7 +6272,7 @@ async def garantir_painel_equipas_no_fundo(force_repost: bool = False):
         if canal is None:
             print(f"⚠️ Canal do painel de equipas não encontrado: {EQUIPAS_PANEL_CHANNEL_ID}")
             return
-        message_id=obter_mensagem_painel_equipas_sync()
+        message_id=await asyncio.to_thread(obter_mensagem_painel_equipas_sync)
         mensagem_antiga=None
         if message_id:
             try: mensagem_antiga=await canal.fetch_message(message_id)
@@ -6247,10 +6281,8 @@ async def garantir_painel_equipas_no_fundo(force_repost: bool = False):
         view,files=await criar_painel_hall_view(canal.guild)
         if mensagem_antiga is not None and not force_repost:
             try:
-                ultima=[m async for m in canal.history(limit=1)]
-                if ultima and ultima[0].id==mensagem_antiga.id:
-                    await mensagem_antiga.edit(embed=None,view=view,attachments=files)
-                    return
+                await mensagem_antiga.edit(embed=None,view=view,attachments=files)
+                return
             except (discord.Forbidden,discord.HTTPException) as exc:
                 print(f"[STATUS] Falha a editar painel: {exc}")
                 traceback.print_exc()
