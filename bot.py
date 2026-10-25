@@ -17247,28 +17247,76 @@ class PatrocinioPainelView(discord.ui.LayoutView):
         self.add_item(c)
 
 
+def _patro_eh_painel(mensagem):
+    """Identifica apenas painéis da parceria publicados pelo próprio bot."""
+    if not bot.user or mensagem.author.id != bot.user.id:
+        return False
+    texto = "\n".join(
+        str(getattr(comp, "content", "") or "")
+        for comp in _patro_componentes_recursivos(mensagem.components)
+    ).upper()
+    if "CONTRACTORHOUSE" in texto and "STUNHOUSE CQB" in texto:
+        return True
+    return any(
+        "CONTRACTORHOUSE" in str(getattr(embed, "title", "") or "").upper()
+        and "STUNHOUSE" in str(getattr(embed, "title", "") or "").upper()
+        for embed in mensagem.embeds
+    )
+
+
+def _patro_componentes_recursivos(componentes):
+    for comp in componentes:
+        yield comp
+        yield from _patro_componentes_recursivos(getattr(comp, "children", ()) or ())
+
+
 async def _patro_publicar(guild_id):
     async with PATROCINIO_LOCK:
-        conf, produtos = await asyncio.to_thread(_patro_ler_sync,guild_id)
+        conf, produtos = await asyncio.to_thread(_patro_ler_sync, guild_id)
         canal = bot.get_channel(PATROCINIO_CHANNEL_ID)
         if canal is None:
             canal = await bot.fetch_channel(PATROCINIO_CHANNEL_ID)
-        if getattr(canal.guild,'id',None) != guild_id:
-            raise RuntimeError('Canal de patrocínio não pertence ao servidor')
-        view = PatrocinioPainelView(conf,produtos)
+        if getattr(canal.guild, "id", None) != guild_id:
+            raise RuntimeError("Canal de patrocínio não pertence ao servidor")
+
+        view = PatrocinioPainelView(conf, produtos)
         mensagem = None
+
+        # Primeiro, tentar a mensagem guardada na base de dados.
         if conf[2]:
             try:
-                mensagem = await canal.fetch_message(int(conf[2]))
-                if mensagem.author.id != bot.user.id:
-                    mensagem = None
-            except (discord.NotFound,discord.Forbidden,discord.HTTPException):
-                mensagem = None
-        if mensagem:
-            await mensagem.edit(content=None,embed=None,view=view)
-        else:
+                candidata = await canal.fetch_message(int(conf[2]))
+                if candidata.author.id == bot.user.id and _patro_eh_painel(candidata):
+                    mensagem = candidata
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+
+        # Se o ID se perdeu, recuperar o painel já publicado em vez de criar outro.
+        duplicados = []
+        try:
+            async for candidata in canal.history(limit=300):
+                if _patro_eh_painel(candidata):
+                    if mensagem is None:
+                        mensagem = candidata
+                    elif candidata.id != mensagem.id:
+                        duplicados.append(candidata)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            print(f"[PATROCINIO] Histórico indisponível: {exc!r}")
+
+        if mensagem is None:
             mensagem = await canal.send(view=view)
-            await asyncio.to_thread(_patro_guardar_mensagem_sync,guild_id,mensagem.id)
+        else:
+            await mensagem.edit(content=None, embed=None, view=view)
+
+        await asyncio.to_thread(_patro_guardar_mensagem_sync, guild_id, mensagem.id)
+
+        # Limpar apenas cópias do painel publicadas por este bot.
+        for duplicado in duplicados:
+            try:
+                await duplicado.delete()
+            except (discord.Forbidden, discord.NotFound, discord.HTTPException) as exc:
+                print(f"[PATROCINIO] Não foi possível apagar duplicado {duplicado.id}: {exc!r}")
+
         return mensagem
 
 
