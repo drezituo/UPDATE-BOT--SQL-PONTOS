@@ -17409,6 +17409,109 @@ def _adm_autorizado(interaction: discord.Interaction) -> bool:
                 and interaction.user.guild_permissions.administrator)
 
 
+# ---------- CONFIGURAÇÃO ADMINISTRATIVA DE RECOMPENSAS ----------
+_RECOMPENSAS_CAMPOS = {
+    "presenca": ("Presença", "CREDITOS_POR_PRESENCA"),
+    "teamwin": ("Team Win", "CREDITOS_POR_TEAMWIN"),
+    "shl_win": ("SHL Mode Win", "CREDITOS_POR_SHL_WIN"),
+    "objetivo_equipa": ("Objetivo de equipa (por membro)", "CREDITOS_POR_OBJETIVO_EQUIPA"),
+    "bonus_2": ("Bónus 2 Team Wins/dia", None),
+    "bonus_5": ("Bónus 5 Team Wins/dia", None),
+    "bonus_10": ("Bónus 10 Team Wins/dia", None),
+}
+
+
+def _recompensas_valor_atual(chave):
+    if chave.startswith("bonus_"):
+        return BONUS_TEAMWINS_DIARIO[int(chave.split("_")[1])]
+    return globals()[_RECOMPENSAS_CAMPOS[chave][1]]
+
+
+def _recompensas_aplicar_valores(valores):
+    for chave, valor in valores.items():
+        if chave not in _RECOMPENSAS_CAMPOS:
+            continue
+        if chave.startswith("bonus_"):
+            BONUS_TEAMWINS_DIARIO[int(chave.split("_")[1])] = int(valor)
+        else:
+            globals()[_RECOMPENSAS_CAMPOS[chave][1]] = int(valor)
+
+
+def _recompensas_config_db_sync(alteracoes=None):
+    conn = get_connection()
+    if conn is None:
+        raise RuntimeError("Base de dados indisponível")
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""CREATE TABLE IF NOT EXISTS economia_recompensas_config (
+                chave TEXT PRIMARY KEY, valor INTEGER NOT NULL CHECK (valor >= 0),
+                atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
+            if alteracoes:
+                for chave, valor in alteracoes.items():
+                    if chave not in _RECOMPENSAS_CAMPOS or not 0 <= int(valor) <= 1000000:
+                        raise ValueError("Valor inválido para recompensa")
+                    cur.execute("""INSERT INTO economia_recompensas_config (chave, valor)
+                        VALUES (%s,%s) ON CONFLICT (chave) DO UPDATE
+                        SET valor=EXCLUDED.valor, atualizado_em=NOW()""", (chave, int(valor)))
+            cur.execute("SELECT chave, valor FROM economia_recompensas_config")
+            valores = {chave: valor for chave, valor in cur.fetchall() if chave in _RECOMPENSAS_CAMPOS}
+        conn.commit()
+        return valores
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _recompensas_resumo_embed():
+    linhas = [f"**{nome}:** `{_recompensas_valor_atual(chave):,}` créditos".replace(",", " ")
+              for chave, (nome, _) in _RECOMPENSAS_CAMPOS.items()]
+    return discord.Embed(title="🪙 Recompensas e Créditos",
+        description="Define os créditos atribuídos automaticamente aos jogadores.\n\n"
+                    + "\n".join(linhas)
+                    + "\n\n*As alterações aplicam-se às próximas recompensas; não alteram movimentos anteriores.*",
+        color=discord.Color.gold())
+
+
+class RecompensasEditarModal(discord.ui.Modal):
+    def __init__(self, bonus=False):
+        super().__init__(title="Bónus diários" if bonus else "Créditos por atividade")
+        self.chaves = (["bonus_2", "bonus_5", "bonus_10"] if bonus else
+                       ["presenca", "teamwin", "shl_win", "objetivo_equipa"])
+        self.campos = {}
+        for chave in self.chaves:
+            campo = discord.ui.TextInput(label=_RECOMPENSAS_CAMPOS[chave][0],
+                default=str(_recompensas_valor_atual(chave)),
+                placeholder="Número de créditos (0 a 1000000)", max_length=7,
+                required=True)
+            self.add_item(campo)
+            self.campos[chave] = campo
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message("⛔ Apenas administradores.", ephemeral=True)
+        try:
+            valores = {chave: int(str(campo.value).strip()) for chave, campo in self.campos.items()}
+            if any(valor < 0 or valor > 1000000 for valor in valores.values()):
+                raise ValueError()
+        except ValueError:
+            return await interaction.response.send_message(
+                "❌ Introduz apenas números inteiros entre 0 e 1000000.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        try:
+            guardados = await asyncio.to_thread(_recompensas_config_db_sync, valores)
+            _recompensas_aplicar_valores(guardados)
+            await interaction.followup.send(embed=_recompensas_resumo_embed(), ephemeral=True)
+            await enviar_log_bot(interaction.guild, "🪙 Recompensas atualizadas",
+                f"Administrador: {interaction.user.mention}\n" +
+                "\n".join(f"{_RECOMPENSAS_CAMPOS[k][0]}: **{v}**" for k, v in valores.items()),
+                cor=discord.Color.gold())
+        except Exception as exc:
+            print(f"[RECOMPENSAS] Erro ao guardar: {exc!r}")
+            await interaction.followup.send("❌ Erro ao guardar na base de dados.", ephemeral=True)
+
+
 class CentralAdmView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=600)
@@ -17437,6 +17540,12 @@ class CentralAdmView(discord.ui.View):
         except Exception as exc:
             print(f"[ANALYTICS] Erro no painel: {exc!r}")
             await interaction.followup.send("Não foi possível carregar as estatísticas.", ephemeral=True)
+
+    @discord.ui.button(label="Recompensas e Créditos", emoji="🪙", style=discord.ButtonStyle.success, row=1)
+    async def recompensas(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message("⛔ Apenas administradores.", ephemeral=True)
+        await interaction.response.edit_message(embed=_recompensas_resumo_embed(), view=CentralAdmRecompensasView())
 
     @discord.ui.button(label="Loja e Sorteios", emoji="🛍️", style=discord.ButtonStyle.primary)
     async def loja(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -17487,6 +17596,26 @@ class CentralAdmVoltarView(discord.ui.View):
             embed=discord.Embed(title="⚙️ Central de Administração",
                 description="Seleciona a área que queres gerir.\n🔒 Painel privado — apenas administradores.",
                 color=discord.Color.dark_gold()), view=CentralAdmView())
+
+
+class CentralAdmRecompensasView(CentralAdmVoltarView):
+    @discord.ui.button(label="Editar recompensas", emoji="🪙", style=discord.ButtonStyle.primary, row=0)
+    async def editar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message("⛔ Apenas administradores.", ephemeral=True)
+        await interaction.response.send_modal(RecompensasEditarModal())
+
+    @discord.ui.button(label="Editar bónus diários", emoji="🏆", style=discord.ButtonStyle.primary, row=0)
+    async def bonus(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message("⛔ Apenas administradores.", ephemeral=True)
+        await interaction.response.send_modal(RecompensasEditarModal(bonus=True))
+
+    @discord.ui.button(label="Consultar valores", emoji="🔄", style=discord.ButtonStyle.secondary, row=1)
+    async def consultar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _adm_autorizado(interaction):
+            return await interaction.response.send_message("⛔ Apenas administradores.", ephemeral=True)
+        await interaction.response.edit_message(embed=_recompensas_resumo_embed(), view=CentralAdmRecompensasView())
 
 
 class CentralAdmLojaView(CentralAdmVoltarView):
@@ -17785,6 +17914,7 @@ async def painel_adm(interaction: discord.Interaction):
             description=("Todos os painéis num único lugar.\n\n"
                          "🛍️ **Loja e Sorteios** — produtos, sorteios e gestão de itens\n"
                          "🪙 **Carteira e Montra** — capa, destaques e publicação\n"
+                         "💰 **Recompensas e Créditos** — valores por atividade e bónus\n"
                          "🏆 **Status e Rankings** — três capas e publicação\n"
                          "🎮 **Gestão de Jogo** — operações na thread do jogo\n"
                          "**Estatísticas** — cliques e jogadores únicos\n"
@@ -17792,5 +17922,11 @@ async def painel_adm(interaction: discord.Interaction):
                          "🔒 *Acesso reservado à administração.*"),
             color=discord.Color.dark_gold()),
         view=CentralAdmView(), ephemeral=True)
+
+# Carregar os valores persistidos antes de iniciar o bot e os seus eventos.
+try:
+    _recompensas_aplicar_valores(_recompensas_config_db_sync())
+except Exception as exc:
+    print(f"[RECOMPENSAS] Não foi possível carregar configuração; valores padrão ativos: {exc!r}")
 
 bot.run(TOKEN)
