@@ -1,0 +1,26 @@
+IMPORTAR NOMES DO DISCORD
+
+Publica este pacote no serviço do BOT no Railway, mantendo as variáveis.
+Inclui também os comandos de importação de termos anteriores.
+
+No canal 1513707988022595755, como administrador:
+!nomes_site verificar
+
+Consulta o CSV: ID Discord, nome atual do site, novo nome e ação prevista.
+O modo verificar não altera a base de dados.
+
+Para aplicar:
+!nomes_site importar
+
+Atualiza o nome público de todos os membros humanos atuais do servidor,
+incluindo nomes públicos personalizados já existentes no site.
+Usa a alcunha/nome apresentado no servidor e associa pelo ID Discord.
+Remove o prefixo #número apenas se corresponder ao número STUNHOUSE existente.
+Cria um perfil básico quando ainda não existe, sem atribuir número de jogador,
+aprovar candidatura ou alterar permissões. Mantém os campos privados de
+primeiro/último nome, avatar, biografia, termos, estatísticas e saldos.
+
+O comando de importação consulta os nomes atuais novamente. Alterações no nome
+público feitas enquanto a gravação decorre são preservadas e assinaladas.
+A auditoria guarda nome anterior, novo nome, servidor, administrador e data.
+Não precisas de executar SQL adicional. Não é uma sincronização contínua.

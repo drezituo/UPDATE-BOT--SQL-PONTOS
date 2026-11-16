@@ -17932,4 +17932,7 @@ except Exception as exc:
 from importar_termos_site import register as register_term_import
 register_term_import(bot, DATABASE_URL, TERMOS_CHANNEL_ID)
 
+from importar_nomes_site import register as register_name_import
+register_name_import(bot, DATABASE_URL, TERMOS_CHANNEL_ID)
+
 bot.run(TOKEN)
