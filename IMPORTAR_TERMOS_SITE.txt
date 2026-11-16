@@ -1,0 +1,33 @@
+IMPORTAR TERMOS DO DISCORD PARA O SITE
+
+1. Publica este ZIP no serviço Railway do BOT (não no serviço do site).
+   Mantém DISCORD_TOKEN e DATABASE_URL existentes. TERMOS_CHANNEL_ID deve
+   apontar para 1513707988022595755, já usado pelo bot.
+2. Como administrador do Discord, nesse canal escreve:
+   !termos_site verificar
+   Este comando verifica aprovações e recupera os anexos para os validar,
+   mas não grava documentos nem altera a base de dados.
+3. Consulta o resumo e o relatório CSV no mesmo canal. Depois executa:
+   !termos_site importar
+4. Consulta os termos no painel administrativo do site.
+
+Não precisas de novo SQL: o modo importar cria a tabela de auditoria.
+O esquema de termos do site (009 e 055) tem de estar aplicado na mesma base.
+Os comandos só funcionam para administradores e no canal configurado.
+
+Regras:
+- Só o último upload do jogador é considerado. Tem de estar aprovado
+  e confirmado também em termos_responsabilidade.
+- Os ficheiros são copiados da mensagem da staff. PDF, JPG ou PNG até 20 MB.
+- Preserva exatamente os bytes do anexo, sem comprimir documentos assinados.
+- Cria o termo no site quando ainda não existe. Copia quem aprovou e a data.
+- Se existir uma aprovação discord_manual sem documento, anexa o ficheiro
+  sem alterar os dados dessa aprovação.
+- Nunca substitui documentos existentes nem decisões pendentes/rejeitadas
+  do site. A origem do bot e as mensagens no Discord não são alteradas.
+- Mensagens apagadas, anexos inacessíveis ou aprovações sem upload são
+  reportados, sem serem marcados como importados.
+- Podes repetir o comando; os documentos existentes são preservados.
+- Não é criada uma sincronização contínua: esta é uma importação manual.
+
+Nunca coloques o token do bot nas mensagens do Discord.
